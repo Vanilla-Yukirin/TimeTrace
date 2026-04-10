@@ -22,12 +22,6 @@ dependencies = [
 timetrace = "timetrace.main:main"
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "httpx>=0.27.0",
-    "ruff>=0.4.0",
-]
 analysis = [
     # VLM / embedding providers (optional, Phase 1.5+)
     "openai>=1.30.0",
