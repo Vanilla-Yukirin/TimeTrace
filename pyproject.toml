@@ -1,0 +1,61 @@
+[project]
+name = "timetrace"
+version = "0.1.0"
+description = "Local-first desktop activity memory layer for Windows"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # API server
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    # Screenshot capture
+    "mss>=9.0.0",
+    # Database
+    "aiosqlite>=0.20.0",
+    # Data validation
+    "pydantic>=2.7.0",
+    # Structured logging
+    "structlog>=24.1.0",
+]
+
+[project.scripts]
+timetrace = "timetrace.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+    "ruff>=0.4.0",
+]
+analysis = [
+    # VLM / embedding providers (optional, Phase 1.5+)
+    "openai>=1.30.0",
+    "numpy>=1.26.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/timetrace"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.9",
+]
