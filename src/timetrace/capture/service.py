@@ -56,7 +56,7 @@ class CaptureService:
                 await self._tick()
                 await asyncio.sleep(1.0)
         finally:
-            await self._idle.stop()
+            self._idle.stop()  # sync – call directly, no executor needed
             await self._cancel_pending_screenshot()
 
     async def _tick(self) -> None:
@@ -158,12 +158,26 @@ class CaptureService:
                 )
                 return
 
+            # Respect minimum capture interval (rate-limit rapid sequential screenshots)
+            elapsed_since_last = time.monotonic() - self._last_capture_ts
+            if elapsed_since_last < self._cfg.min_capture_interval_s:
+                logger.debug(
+                    "capture.screenshot_skipped",
+                    reason="min_interval_not_elapsed",
+                    elapsed_s=round(elapsed_since_last, 2),
+                )
+                return
+
             await self._save_screenshot(record_id, expected_hwnd, time.monotonic())
             logger.debug("capture.screenshot_taken", record_id=record_id)
 
         except asyncio.CancelledError:
             logger.debug("capture.screenshot_cancelled", reason="new_window_switch")
             raise
+        finally:
+            # Release the reference once this task is done (natural completion or cancel)
+            if self._pending_screenshot_task is asyncio.current_task():
+                self._pending_screenshot_task = None
 
     async def _save_screenshot(self, record_id: str, hwnd: int, now: float) -> None:
         """Capture screenshot + thumbnail and persist to DB."""
