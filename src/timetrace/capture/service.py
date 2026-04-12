@@ -41,6 +41,7 @@ class CaptureService:
         self._last_capture_ts: float = 0.0
         self._last_record_id: str | None = None
         self._is_idle: bool = False
+        self._pending_screenshot_task: asyncio.Task | None = None
 
         # Track the previous window to detect switches
         self._prev_hwnd: int | None = None
@@ -55,7 +56,8 @@ class CaptureService:
                 await self._tick()
                 await asyncio.sleep(1.0)
         finally:
-            await loop.run_in_executor(None, self._idle.stop)
+            await self._idle.stop()
+            await self._cancel_pending_screenshot()
 
     async def _tick(self) -> None:
         now = time.monotonic()
@@ -105,9 +107,13 @@ class CaptureService:
             record_id = await self._db.insert_record(
                 ctx, reason="switch", event_type="window_switch"
             )
-            # Wait for window content to render before capturing
-            await asyncio.sleep(self._cfg.switch_capture_delay_s)
-            await self._save_screenshot(record_id, win.hwnd, now)
+
+            # Cancel any pending screenshot task and start a new delayed one
+            await self._cancel_pending_screenshot()
+            self._pending_screenshot_task = asyncio.create_task(
+                self._delayed_screenshot(record_id, win.hwnd)
+            )
+
             self._last_record_id = record_id
             self._prev_hwnd = win.hwnd
             self._prev_app = win.app_name
@@ -127,6 +133,37 @@ class CaptureService:
             await self._save_screenshot(record_id, win.hwnd, now)
             self._last_record_id = record_id
             logger.debug("capture.heartbeat", app=win.app_name)
+
+    async def _cancel_pending_screenshot(self) -> None:
+        """Cancel any pending screenshot task."""
+        if self._pending_screenshot_task and not self._pending_screenshot_task.done():
+            self._pending_screenshot_task.cancel()
+            try:
+                await self._pending_screenshot_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _delayed_screenshot(self, record_id: str, expected_hwnd: int) -> None:
+        """Take a screenshot after a delay, verifying the window hasn't changed."""
+        try:
+            await asyncio.sleep(self._cfg.switch_capture_delay_s)
+
+            current_win = get_active_window()
+            if current_win is None or current_win.hwnd != expected_hwnd:
+                logger.debug(
+                    "capture.screenshot_cancelled",
+                    reason="window_switched_during_delay",
+                    expected_hwnd=expected_hwnd,
+                    actual_hwnd=current_win.hwnd if current_win else None,
+                )
+                return
+
+            await self._save_screenshot(record_id, expected_hwnd, time.monotonic())
+            logger.debug("capture.screenshot_taken", record_id=record_id)
+
+        except asyncio.CancelledError:
+            logger.debug("capture.screenshot_cancelled", reason="new_window_switch")
+            raise
 
     async def _save_screenshot(self, record_id: str, hwnd: int, now: float) -> None:
         """Capture screenshot + thumbnail and persist to DB."""
