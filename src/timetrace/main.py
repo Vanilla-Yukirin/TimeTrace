@@ -11,16 +11,24 @@ from timetrace.api.app import create_app
 from timetrace.capture.service import CaptureService
 from timetrace.config import AppConfig
 from timetrace.storage.database import Database
+from timetrace.tray import start_tray_thread
 from timetrace.worker.loop import AnalysisWorker
 
 logger = structlog.get_logger(__name__)
 
+_STALE_TASK_RECLAIM_INTERVAL_S = 60
 
-async def _run(config: AppConfig) -> None:
+
+async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
     db = Database(config.storage)
     await db.init()
 
-    capture_svc = CaptureService(config.capture, config.privacy, db)
+    capture_svc = CaptureService(
+        config.capture,
+        config.privacy,
+        db,
+        storage_cfg=config.storage,
+    )
     worker = AnalysisWorker(db)
     app = create_app(db)
 
@@ -30,20 +38,54 @@ async def _run(config: AppConfig) -> None:
         app,
         host=config.api_host,
         port=config.api_port,
-        log_level="info",
+        log_level="warning",
     )
     server = uvicorn.Server(server_config)
 
+    async def _watch_quit() -> None:
+        """Wait for the asyncio quit event, then ask uvicorn to stop."""
+        await quit_event.wait()
+        logger.info("main.stop_requested")
+        server.should_exit = True
+
+    async def _reclaim_loop() -> None:
+        while True:
+            await asyncio.sleep(_STALE_TASK_RECLAIM_INTERVAL_S)
+            await db.reclaim_stale_tasks()
+
     async with asyncio.TaskGroup() as tg:
-        tg.create_task(capture_svc.run(), name="capture")
-        tg.create_task(worker.run(), name="worker")
-        tg.create_task(server.serve(), name="api")
+        tg.create_task(capture_svc.run(),  name="capture")
+        tg.create_task(worker.run(),        name="worker")
+        tg.create_task(server.serve(),      name="api")
+        tg.create_task(_watch_quit(),       name="quit_watcher")
+        tg.create_task(_reclaim_loop(),     name="reclaim")
+
+    await db.close()
+    logger.info("main.shutdown_complete")
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.WARNING)
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    )
+
     config = AppConfig()
-    asyncio.run(_run(config))
+    loop = asyncio.new_event_loop()
+    quit_event = asyncio.Event()
+
+    # Tray needs to signal into the asyncio event loop from its own thread.
+    def _on_quit() -> None:
+        loop.call_soon_threadsafe(quit_event.set)
+
+    start_tray_thread(config.privacy, _on_quit)
+
+    try:
+        loop.run_until_complete(_run(config, quit_event))
+    except* KeyboardInterrupt:
+        pass
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":

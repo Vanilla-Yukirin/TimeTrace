@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+import json
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 router = APIRouter(tags=["feedback"])
@@ -10,13 +12,44 @@ router = APIRouter(tags=["feedback"])
 
 class FeedbackRequest(BaseModel):
     record_id: str
-    action: str  # "confirm" | "edit"
+    action: str          # "confirm" | "edit"
     category: str | None = None
     tags: list[str] | None = None
+    user_note: str | None = None
 
 
 @router.post("/feedback")
 async def submit_feedback(req: FeedbackRequest, request: Request) -> dict:
-    """Accept user feedback for a record classification."""
-    # Phase 2: persist to feedback table and update KNN prototype store.
-    return {"status": "accepted", "record_id": req.record_id}
+    """Persist user feedback for a record classification."""
+    if req.action not in ("confirm", "edit"):
+        raise HTTPException(status_code=422, detail="action must be 'confirm' or 'edit'")
+
+    db = request.app.state.db
+
+    # Fetch current category for before/after diff
+    async with db.conn.execute(
+        "SELECT category_final FROM analysis_results WHERE record_id=?",
+        (req.record_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    category_before = row["category_final"] if row else None
+
+    feedback_id = await db.insert_feedback(
+        record_id=req.record_id,
+        action=req.action,
+        category_before=category_before,
+        category_after=req.category,
+        tags_before=None,
+        tags_after=json.dumps(req.tags) if req.tags else None,
+        user_note=req.user_note,
+    )
+
+    return {"status": "accepted", "record_id": req.record_id, "feedback_id": feedback_id}
+
+
+@router.get("/categories")
+async def list_categories(request: Request) -> dict:
+    """Return all visible activity categories."""
+    db = request.app.state.db
+    cats = await db.get_categories(include_hidden=False)
+    return {"categories": cats}

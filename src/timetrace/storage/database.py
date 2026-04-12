@@ -115,6 +115,24 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
+_BUILTIN_CATEGORIES = [
+    ("work/coding",        "工作/编程",    None),
+    ("work/meeting",       "工作/会议",    None),
+    ("work/writing",       "工作/写作",    None),
+    ("work/other",         "工作/其他",    None),
+    ("study/reading",      "学习/阅读",    None),
+    ("study/video",        "学习/视频",    None),
+    ("study/other",        "学习/其他",    None),
+    ("entertainment/video","娱乐/视频",    None),
+    ("entertainment/game", "娱乐/游戏",    None),
+    ("entertainment/other","娱乐/其他",    None),
+    ("social/chat",        "社交/聊天",    None),
+    ("social/other",       "社交/其他",    None),
+    ("system/idle",        "系统/空闲",    None),
+    ("system/other",       "系统/其他",    None),
+    ("uncategorized",      "未分类",        None),
+]
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -137,14 +155,34 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
+        await self._seed_categories()
         logger.info("database.init", path=str(self._cfg.db_path))
+
+    async def _seed_categories(self) -> None:
+        """Insert built-in categories if they don't exist yet."""
+        for cat_id, name, parent_id in _BUILTIN_CATEGORIES:
+            await self._conn.execute(
+                """INSERT OR IGNORE INTO categories (id, name, parent_id, is_builtin)
+                   VALUES (?, ?, ?, 1)""",
+                (cat_id, name, parent_id),
+            )
+        await self._conn.commit()
 
     @property
     def conn(self) -> aiosqlite.Connection:
         assert self._conn is not None, "Database not initialised"
         return self._conn
 
-    async def insert_record(self, ctx: CaptureContext, reason: str) -> str:
+    # ------------------------------------------------------------------ #
+    # Records                                                              #
+    # ------------------------------------------------------------------ #
+
+    async def insert_record(
+        self,
+        ctx: CaptureContext,
+        reason: str,
+        event_type: str = "heartbeat",
+    ) -> str:
         record_id = _new_id()
         now = _now_ms()
         await self.conn.execute(
@@ -155,7 +193,7 @@ class Database:
             (
                 record_id,
                 now,
-                "heartbeat",
+                event_type,
                 ctx.app_name,
                 ctx.process_name,
                 ctx.window_title,
@@ -169,6 +207,15 @@ class Database:
         await self.conn.commit()
         return record_id
 
+    async def close_record(self, record_id: str) -> None:
+        """Set ts_end on a record (e.g. when window switches away)."""
+        now = _now_ms()
+        await self.conn.execute(
+            "UPDATE records SET ts_end=?, updated_at=? WHERE id=?",
+            (now, now, record_id),
+        )
+        await self.conn.commit()
+
     async def mark_pending(self, record_id: str) -> None:
         now = _now_ms()
         await self.conn.execute(
@@ -181,6 +228,89 @@ class Database:
             (now, record_id),
         )
         await self.conn.commit()
+
+    async def query_records(
+        self,
+        start_ms: int,
+        end_ms: int,
+        limit: int = 200,
+        cursor: str | None = None,
+        app_name: str | None = None,
+        apps: list[str] | None = None,
+        keyword: str | None = None,
+    ) -> list[dict]:
+        conditions = ["ts_start BETWEEN ? AND ?"]
+        params: list[Any] = [start_ms, end_ms]
+
+        if cursor is not None:
+            conditions.append("ts_start > (SELECT ts_start FROM records WHERE id=?)")
+            params.append(cursor)
+
+        if app_name:
+            conditions.append("app_name = ?")
+            params.append(app_name)
+
+        if apps:
+            placeholders = ",".join("?" * len(apps))
+            conditions.append(f"app_name IN ({placeholders})")
+            params.extend(apps)
+
+        if keyword:
+            conditions.append("window_title LIKE ?")
+            params.append(f"%{keyword}%")
+
+        where = " AND ".join(conditions)
+        params.append(limit)
+
+        async with self.conn.execute(
+            f"""SELECT r.*, a.vlm_desc, a.category_final, a.confidence
+                FROM records r
+                LEFT JOIN analysis_results a ON a.record_id = r.id
+                WHERE {where}
+                ORDER BY r.ts_start ASC LIMIT ?""",
+            params,
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Screenshots                                                          #
+    # ------------------------------------------------------------------ #
+
+    async def insert_screenshot(
+        self,
+        record_id: str,
+        path: str,
+        thumb_path: str | None,
+        width: int,
+        height: int,
+        hash_sha256: str,
+        privacy_level: str = "normal",
+    ) -> str:
+        screenshot_id = _new_id()
+        now = _now_ms()
+        await self.conn.execute(
+            """INSERT INTO screenshots
+               (id, record_id, path, thumb_path, width, height,
+                hash_sha256, privacy_level, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (screenshot_id, record_id, path, thumb_path,
+             width, height, hash_sha256, privacy_level, now),
+        )
+        await self.conn.commit()
+        return screenshot_id
+
+    async def get_screenshots_for_record(self, record_id: str) -> list[dict]:
+        async with self.conn.execute(
+            "SELECT * FROM screenshots WHERE record_id=? AND deleted_at IS NULL",
+            (record_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Analysis worker                                                      #
+    # ------------------------------------------------------------------ #
 
     async def claim_next_task(self, kind: str) -> dict | None:
         now = _now_ms()
@@ -204,12 +334,14 @@ class Database:
 
     async def save_description(self, record_id: str, desc: str) -> None:
         now = _now_ms()
-        await self.conn.execute(
-            """UPDATE analysis_results
-               SET vlm_desc=?, updated_at=? WHERE record_id=?""",
+        async with self.conn.execute(
+            "UPDATE analysis_results SET vlm_desc=?, updated_at=? WHERE record_id=?",
             (desc, now, record_id),
-        )
+        ) as cur:
+            rows_updated = cur.rowcount
         await self.conn.commit()
+        if rows_updated == 0:
+            logger.warning("database.save_description.not_found", record_id=record_id)
 
     async def transition(self, record_id: str, new_status: str) -> None:
         now = _now_ms()
@@ -232,27 +364,109 @@ class Database:
         )
         await self.conn.commit()
 
-    async def query_records(
+    # ------------------------------------------------------------------ #
+    # Feedback                                                             #
+    # ------------------------------------------------------------------ #
+
+    async def insert_feedback(
         self,
-        start_ms: int,
-        end_ms: int,
-        limit: int = 200,
-        cursor: str | None = None,
-    ) -> list[dict]:
-        params: list[Any] = [start_ms, end_ms]
-        extra = ""
-        if cursor is not None:
-            extra = "AND id > ?"
-            params.append(cursor)
-        params.append(limit)
-        async with self.conn.execute(
-            f"""SELECT * FROM records
-                WHERE ts_start BETWEEN ? AND ? {extra}
-                ORDER BY ts_start ASC LIMIT ?""",
-            params,
-        ) as cur:
+        record_id: str,
+        action: str,
+        category_before: str | None,
+        category_after: str | None,
+        tags_before: str | None = None,
+        tags_after: str | None = None,
+        user_note: str | None = None,
+    ) -> str:
+        feedback_id = _new_id()
+        now = _now_ms()
+        await self.conn.execute(
+            """INSERT INTO feedback
+               (id, record_id, action, category_before, category_after,
+                tags_before, tags_after, user_note, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                feedback_id, record_id, action,
+                category_before, category_after,
+                tags_before, tags_after, user_note, now,
+            ),
+        )
+        # Update category_final in analysis_results when user edits
+        if action == "edit" and category_after:
+            await self.conn.execute(
+                """UPDATE analysis_results SET category_final=?, updated_at=?
+                   WHERE record_id=?""",
+                (category_after, now, record_id),
+            )
+        await self.conn.commit()
+        return feedback_id
+
+    # ------------------------------------------------------------------ #
+    # Categories                                                           #
+    # ------------------------------------------------------------------ #
+
+    async def get_categories(self, include_hidden: bool = False) -> list[dict]:
+        query = "SELECT * FROM categories"
+        if not include_hidden:
+            query += " WHERE is_hidden=0"
+        query += " ORDER BY name"
+        async with self.conn.execute(query) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Settings                                                             #
+    # ------------------------------------------------------------------ #
+
+    async def get_setting(self, key: str, default: str | None = None) -> str | None:
+        async with self.conn.execute(
+            "SELECT value_json FROM settings WHERE key=?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+        return row["value_json"] if row else default
+
+    async def set_setting(self, key: str, value_json: str) -> None:
+        now = _now_ms()
+        await self.conn.execute(
+            """INSERT OR REPLACE INTO settings (key, value_json, updated_at)
+               VALUES (?, ?, ?)""",
+            (key, value_json, now),
+        )
+        await self.conn.commit()
+
+    # ------------------------------------------------------------------ #
+    # Housekeeping                                                         #
+    # ------------------------------------------------------------------ #
+
+    async def reclaim_stale_tasks(self, timeout_ms: int = 300_000) -> int:
+        """Reset tasks stuck in processing_* back to pending_*.
+
+        Called periodically to recover from worker crashes.
+        Returns the number of tasks reclaimed.
+        """
+        now = _now_ms()
+        cutoff = now - timeout_ms
+        async with self.conn.execute(
+            """SELECT record_id, status FROM analysis_results
+               WHERE status LIKE 'processing_%' AND locked_at <= ?""",
+            (cutoff,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        count = 0
+        for row in rows:
+            pending_status = row["status"].replace("processing_", "pending_", 1)
+            await self.conn.execute(
+                "UPDATE analysis_results"
+                " SET status=?, locked_at=NULL, updated_at=? WHERE record_id=?",
+                (pending_status, now, row["record_id"]),
+            )
+            count += 1
+
+        if count:
+            await self.conn.commit()
+            logger.info("database.reclaim_stale_tasks", count=count)
+        return count
 
     async def close(self) -> None:
         if self._conn:
