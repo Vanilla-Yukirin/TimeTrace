@@ -24,8 +24,13 @@ PRAGMA synchronous = NORMAL;    -- 性能与安全平衡
 
 **WAL 模式建议**：
 - 适合"多读少写，小事务"场景 ✓
-- 避免超大事务（会使 WAL 文件膨胀）
+- 避免超大事务（会使 WAL 文件膨胀并减慢写入）
 - 明确事务边界，减少长事务对读的阻塞
+
+**`synchronous=NORMAL` 行为细节**：
+- fsync 主要发生在 **checkpoint** 阶段，而非每次 commit
+- 比 `FULL` 模式快，但存在极小的断电丢数据风险（checkpoint 前的未落盘数据）
+- 对本地时间追踪应用可接受（最坏情况：丢失最近几条记录）
 
 ---
 
@@ -46,6 +51,7 @@ PRAGMA synchronous = NORMAL;    -- 性能与安全平衡
 - WAL 模式已大幅缓解读写冲突
 - 写操作使用**小事务**（单条 insert / update），不批量累积
 - 若出现 `SQLITE_BUSY`：短退避重试（10–50ms 抖动，最多 3 次）
+- **可选**：连接级 `busy_timeout`（`PRAGMA busy_timeout = N`）让 SQLite 在锁冲突时自动 sleep 累计到 N ms 后才返回错误，比应用层手动重试逻辑更简单；当前实现使用应用层退避，二者选其一即可
 
 ---
 

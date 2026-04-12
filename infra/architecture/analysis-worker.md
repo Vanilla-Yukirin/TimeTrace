@@ -99,11 +99,28 @@ class AnalysisWorker:
 
 ---
 
+## Provider 抽象（Phase 1.5）
+
+Worker 通过 `Provider` Protocol 与模型交互，不绑定具体厂商：
+
+```python
+class Provider(Protocol):
+    async def vlm_describe(self, image_path: str, title: str) -> str: ...
+    async def embed(self, text: str) -> list[float]: ...
+```
+
+默认实现对接 **OpenAI 兼容协议**（`POST /v1/chat/completions` + `POST /v1/embeddings`），可通过配置切换到任何兼容端点（OpenAI、Azure、本地 Ollama 等）。
+
+---
+
 ## 性能约束
 
 - Worker 不限制 CPU 峰值，但需通过**并发上限**（semaphore）避免常驻 CPU 升高
 - 核心约束：对用户交互无感（优先级低于采集服务）
-- 并发建议：Phase 1.5 初始 `max_concurrent = 2`，按实际 API 限速调整
+- 并发建议：
+  - **VLM 推理**：`vlm_concurrency = 1–2`（API 限流 + 单卡显存限制）
+  - **Embedding 生成**：`embed_concurrency = 2–4`（批量化，比 VLM 更轻量）
+  - Phase 1.5 初始以 1 并发启动，按实际 API 限速和机器负载调整
 
 ---
 

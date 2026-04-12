@@ -47,6 +47,12 @@ idx_records_app_ts    ON records(app_name, ts_start)
 idx_records_status    ON records(status) WHERE status LIKE 'pending_%'  -- Partial Index
 ```
 
+> **Phase 1 关键词检索（FTS5）**：建议在 `window_title`、`vlm_desc`（`analysis_results`）、`url` 上建 SQLite FTS5 虚表，用于关键词搜索，无需额外依赖：
+> ```sql
+> CREATE VIRTUAL TABLE records_fts USING fts5(window_title, url, content='records');
+> ```
+> Phase 1.5 向量相似检索是 FTS5 的补充，不是替代。
+
 ---
 
 ## screenshots — 截图资产表
