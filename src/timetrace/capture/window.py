@@ -19,11 +19,11 @@ _BROWSER_PROCESSES = frozenset(
 
 @dataclass
 class WindowInfo:
-    app_name: str        # Friendly name (e.g. "Visual Studio Code")
-    process_name: str    # Executable name (e.g. "Code.exe")
-    window_title: str    # Full window title
-    hwnd: int            # Window handle
-    pid: int             # Process ID
+    app_name: str  # Friendly name (e.g. "Visual Studio Code")
+    process_name: str  # Executable name (e.g. "Code.exe")
+    window_title: str  # Full window title
+    hwnd: int  # Window handle
+    pid: int  # Process ID
     url: str | None = None
 
 
@@ -59,15 +59,14 @@ def _get_process_info(pid: int) -> tuple[str, str]:
         import win32api
         import win32con
 
-        handle = win32api.OpenProcess(
-            win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid
-        )
+        handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         try:
             exe_path: str = win32api.GetModuleFileNameEx(handle, 0)
         finally:
             win32api.CloseHandle(handle)
 
         import os
+
         process_name = os.path.basename(exe_path)
         app_name = _friendly_name(process_name, exe_path)
         return process_name, app_name

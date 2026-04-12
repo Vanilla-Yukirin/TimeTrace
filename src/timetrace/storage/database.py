@@ -116,21 +116,21 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 _BUILTIN_CATEGORIES = [
-    ("work/coding",        "工作/编程",    None),
-    ("work/meeting",       "工作/会议",    None),
-    ("work/writing",       "工作/写作",    None),
-    ("work/other",         "工作/其他",    None),
-    ("study/reading",      "学习/阅读",    None),
-    ("study/video",        "学习/视频",    None),
-    ("study/other",        "学习/其他",    None),
-    ("entertainment/video","娱乐/视频",    None),
-    ("entertainment/game", "娱乐/游戏",    None),
-    ("entertainment/other","娱乐/其他",    None),
-    ("social/chat",        "社交/聊天",    None),
-    ("social/other",       "社交/其他",    None),
-    ("system/idle",        "系统/空闲",    None),
-    ("system/other",       "系统/其他",    None),
-    ("uncategorized",      "未分类",        None),
+    ("work/coding", "工作/编程", None),
+    ("work/meeting", "工作/会议", None),
+    ("work/writing", "工作/写作", None),
+    ("work/other", "工作/其他", None),
+    ("study/reading", "学习/阅读", None),
+    ("study/video", "学习/视频", None),
+    ("study/other", "学习/其他", None),
+    ("entertainment/video", "娱乐/视频", None),
+    ("entertainment/game", "娱乐/游戏", None),
+    ("entertainment/other", "娱乐/其他", None),
+    ("social/chat", "社交/聊天", None),
+    ("social/other", "社交/其他", None),
+    ("system/idle", "系统/空闲", None),
+    ("system/other", "系统/其他", None),
+    ("uncategorized", "未分类", None),
 ]
 
 
@@ -294,8 +294,17 @@ class Database:
                (id, record_id, path, thumb_path, width, height,
                 hash_sha256, privacy_level, created_at)
                VALUES (?,?,?,?,?,?,?,?,?)""",
-            (screenshot_id, record_id, path, thumb_path,
-             width, height, hash_sha256, privacy_level, now),
+            (
+                screenshot_id,
+                record_id,
+                path,
+                thumb_path,
+                width,
+                height,
+                hash_sha256,
+                privacy_level,
+                now,
+            ),
         )
         await self.conn.commit()
         return screenshot_id
@@ -386,9 +395,15 @@ class Database:
                 tags_before, tags_after, user_note, created_at)
                VALUES (?,?,?,?,?,?,?,?,?)""",
             (
-                feedback_id, record_id, action,
-                category_before, category_after,
-                tags_before, tags_after, user_note, now,
+                feedback_id,
+                record_id,
+                action,
+                category_before,
+                category_after,
+                tags_before,
+                tags_after,
+                user_note,
+                now,
             ),
         )
         # Update category_final in analysis_results when user edits
@@ -419,9 +434,7 @@ class Database:
     # ------------------------------------------------------------------ #
 
     async def get_setting(self, key: str, default: str | None = None) -> str | None:
-        async with self.conn.execute(
-            "SELECT value_json FROM settings WHERE key=?", (key,)
-        ) as cur:
+        async with self.conn.execute("SELECT value_json FROM settings WHERE key=?", (key,)) as cur:
             row = await cur.fetchone()
         return row["value_json"] if row else default
 

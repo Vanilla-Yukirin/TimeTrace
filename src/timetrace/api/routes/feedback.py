@@ -12,7 +12,7 @@ router = APIRouter(tags=["feedback"])
 
 class FeedbackRequest(BaseModel):
     record_id: str
-    action: str          # "confirm" | "edit"
+    action: str  # "confirm" | "edit"
     category: str | None = None
     tags: list[str] | None = None
     user_note: str | None = None

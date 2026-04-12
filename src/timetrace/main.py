@@ -54,11 +54,11 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
             await db.reclaim_stale_tasks()
 
     async with asyncio.TaskGroup() as tg:
-        tg.create_task(capture_svc.run(),  name="capture")
-        tg.create_task(worker.run(),        name="worker")
-        tg.create_task(server.serve(),      name="api")
-        tg.create_task(_watch_quit(),       name="quit_watcher")
-        tg.create_task(_reclaim_loop(),     name="reclaim")
+        tg.create_task(capture_svc.run(), name="capture")
+        tg.create_task(worker.run(), name="worker")
+        tg.create_task(server.serve(), name="api")
+        tg.create_task(_watch_quit(), name="quit_watcher")
+        tg.create_task(_reclaim_loop(), name="reclaim")
 
     await db.close()
     logger.info("main.shutdown_complete")
