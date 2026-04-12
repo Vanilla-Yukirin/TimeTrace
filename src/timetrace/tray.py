@@ -74,7 +74,7 @@ class TrayIcon:
     # ------------------------------------------------------------------ #
 
     def _build_menu(self, pystray):
-        def pause_label(icon, item) -> str:  # noqa: ANN001
+        def pause_label(icon) -> str:
             return "继续采集" if self._privacy.paused else "暂停采集"
 
         def on_pause(icon, item) -> None:  # noqa: ANN001

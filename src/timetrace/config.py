@@ -13,6 +13,7 @@ class CaptureConfig:
     min_capture_interval_s: float = 2.0
     max_capture_interval_s: float = 30.0
     idle_threshold_s: float = 180.0
+    switch_capture_delay_s: float = 1.5  # Delay after window switch before screenshot
     capture_mode: str = "active_window"  # "active_window" | "fullscreen"
 
 

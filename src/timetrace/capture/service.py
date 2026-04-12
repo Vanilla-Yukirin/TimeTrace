@@ -105,6 +105,8 @@ class CaptureService:
             record_id = await self._db.insert_record(
                 ctx, reason="switch", event_type="window_switch"
             )
+            # Wait for window content to render before capturing
+            await asyncio.sleep(self._cfg.switch_capture_delay_s)
             await self._save_screenshot(record_id, win.hwnd, now)
             self._last_record_id = record_id
             self._prev_hwnd = win.hwnd
