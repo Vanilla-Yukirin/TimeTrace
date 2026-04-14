@@ -219,12 +219,12 @@ class Database:
     async def mark_pending(self, record_id: str) -> None:
         now = _now_ms()
         await self.conn.execute(
-            """INSERT OR REPLACE INTO analysis_results
+            """INSERT OR IGNORE INTO analysis_results
                (record_id, status, updated_at) VALUES (?, 'pending_vlm', ?)""",
             (record_id, now),
         )
         await self.conn.execute(
-            "UPDATE records SET status='pending_vlm', updated_at=? WHERE id=?",
+            "UPDATE records SET status='pending_vlm', updated_at=? WHERE id=? AND status='captured'",
             (now, record_id),
         )
         await self.conn.commit()

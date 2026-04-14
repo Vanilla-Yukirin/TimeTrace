@@ -165,3 +165,52 @@ async def test_reclaim_stale_tasks(db):
     ) as cur:
         row = await cur.fetchone()
     assert row["status"].startswith("pending_")
+
+
+async def test_mark_pending_idempotent_preserves_existing_data(db):
+    """Second mark_pending must not overwrite existing analysis_results fields."""
+    ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
+    record_id = await db.insert_record(ctx, reason="heartbeat")
+
+    # First mark_pending – creates the analysis_results row
+    await db.mark_pending(record_id)
+
+    # Simulate worker completing VLM analysis
+    await db.claim_next_task("pending_vlm")
+    await db.save_description(record_id, "a real description")
+    await db.transition(record_id, "vlm_done")
+
+    # Second mark_pending – must NOT reset status or wipe vlm_desc
+    await db.mark_pending(record_id)
+
+    async with db.conn.execute(
+        "SELECT status, vlm_desc FROM analysis_results WHERE record_id=?",
+        (record_id,),
+    ) as cur:
+        row = await cur.fetchone()
+
+    assert row["status"] == "vlm_done"            # not reset to pending_vlm
+    assert row["vlm_desc"] == "a real description"  # not wiped
+
+
+async def test_mark_pending_records_status_guard(db):
+    """records.status must not be downgraded once past 'captured'."""
+    ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
+    record_id = await db.insert_record(ctx, reason="heartbeat")
+
+    # First mark_pending: captured → pending_vlm (normal path)
+    await db.mark_pending(record_id)
+
+    # Advance through analysis
+    await db.claim_next_task("pending_vlm")
+    await db.transition(record_id, "vlm_done")
+
+    # Second mark_pending: records.status should remain vlm_done
+    await db.mark_pending(record_id)
+
+    async with db.conn.execute(
+        "SELECT status FROM records WHERE id=?", (record_id,)
+    ) as cur:
+        row = await cur.fetchone()
+
+    assert row["status"] == "vlm_done"  # not downgraded

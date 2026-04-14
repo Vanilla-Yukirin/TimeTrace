@@ -32,7 +32,6 @@ uv run ruff format src/    # 格式化
 
 | 文件 | 方法 | 计划 Phase |
 |------|------|-----------|
-| `capture/service.py` | `_get_active_context()` | Phase 1（pywin32） |
 | `worker/loop.py` | `_describe()` | Phase 1.5（VLM） |
 | `mcp_layer/tools.py` | `get_category_stats()`, `search_activity()` | Phase 1.5 |
 
