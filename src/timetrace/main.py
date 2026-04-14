@@ -30,7 +30,9 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
         storage_cfg=config.storage,
     )
     worker = AnalysisWorker(db)
-    app = create_app(db)
+    app = create_app(db, storage_cfg=config.storage)
+    app.state.api_host = config.api_host
+    app.state.api_port = config.api_port
 
     import uvicorn
 
@@ -43,10 +45,14 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
     server = uvicorn.Server(server_config)
 
     async def _watch_quit() -> None:
-        """Wait for the asyncio quit event, then ask uvicorn to stop."""
+        """Wait for the asyncio quit event, then cancel all sibling tasks."""
         await quit_event.wait()
         logger.info("main.stop_requested")
         server.should_exit = True
+        # Cancel infinite-loop tasks so the TaskGroup can exit cleanly.
+        for task in asyncio.all_tasks():
+            if task.get_name() in ("capture", "worker", "reclaim"):
+                task.cancel()
 
     async def _reclaim_loop() -> None:
         while True:
@@ -76,13 +82,16 @@ def main() -> None:
 
     # Tray needs to signal into the asyncio event loop from its own thread.
     def _on_quit() -> None:
-        loop.call_soon_threadsafe(quit_event.set)
+        try:
+            loop.call_soon_threadsafe(quit_event.set)
+        except RuntimeError:
+            pass  # Event loop already closed; process is already exiting
 
     start_tray_thread(config.privacy, _on_quit)
 
     try:
         loop.run_until_complete(_run(config, quit_event))
-    except* KeyboardInterrupt:
+    except* (KeyboardInterrupt, SystemExit):
         pass
     finally:
         loop.close()

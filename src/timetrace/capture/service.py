@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -56,7 +57,12 @@ class CaptureService:
                 await self._tick()
                 await asyncio.sleep(1.0)
         finally:
-            self._idle.stop()  # sync – call directly, no executor needed
+            # Use a daemon thread so that a hung pynput stop() cannot prevent
+            # the process from exiting.  The default executor uses non-daemon
+            # threads, which would block process exit if stop() stalls.
+            threading.Thread(
+                target=self._idle.stop, name="idle-stop", daemon=True
+            ).start()
             await self._cancel_pending_screenshot()
 
     async def _tick(self) -> None:
@@ -109,6 +115,11 @@ class CaptureService:
             )
 
             # Cancel any pending screenshot task and start a new delayed one
+            logger.info(
+                "capture.window_switch",
+                app=win.app_name,
+                title=win.window_title[:60],
+            )
             await self._cancel_pending_screenshot()
             self._pending_screenshot_task = asyncio.create_task(
                 self._delayed_screenshot(record_id, win.hwnd)
@@ -117,11 +128,6 @@ class CaptureService:
             self._last_record_id = record_id
             self._prev_hwnd = win.hwnd
             self._prev_app = win.app_name
-            logger.debug(
-                "capture.window_switch",
-                app=win.app_name,
-                title=win.window_title[:60],
-            )
             return
 
         # --- Heartbeat / max-interval补帧 ---
@@ -135,13 +141,26 @@ class CaptureService:
             logger.debug("capture.heartbeat", app=win.app_name)
 
     async def _cancel_pending_screenshot(self) -> None:
-        """Cancel any pending screenshot task."""
-        if self._pending_screenshot_task and not self._pending_screenshot_task.done():
-            self._pending_screenshot_task.cancel()
-            try:
-                await self._pending_screenshot_task
-            except asyncio.CancelledError:
-                pass
+        """Cancel any pending screenshot task without blocking indefinitely.
+
+        Detach the reference first so that _tick() is never blocked by a task
+        that is stuck inside run_in_executor (capture_active_window).
+        After cancelling, we wait at most 0.2 s for the task to acknowledge the
+        cancellation (fast path: sleeping in the delay).  If it is still running
+        after the timeout it means the executor thread has not finished yet — we
+        log a warning and move on rather than blocking the capture loop or the
+        shutdown path.
+        """
+        task = self._pending_screenshot_task
+        self._pending_screenshot_task = None  # detach immediately
+
+        if task is None or task.done():
+            return
+
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=0.2)
+        if not done:
+            logger.warning("capture.pending_screenshot_timed_out")
 
     async def _delayed_screenshot(self, record_id: str, expected_hwnd: int) -> None:
         """Take a screenshot after a delay, verifying the window hasn't changed."""

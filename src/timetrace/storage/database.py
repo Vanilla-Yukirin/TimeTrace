@@ -264,9 +264,19 @@ class Database:
         params.append(limit)
 
         async with self.conn.execute(
-            f"""SELECT r.*, a.vlm_desc, a.category_final, a.confidence
+            f"""SELECT r.*, a.vlm_desc, a.category_final, a.confidence,
+                       s.thumb_path,
+                       (SELECT COUNT(*) FROM screenshots
+                        WHERE record_id = r.id AND deleted_at IS NULL
+                       ) AS screenshot_count
                 FROM records r
                 LEFT JOIN analysis_results a ON a.record_id = r.id
+                LEFT JOIN (
+                    SELECT record_id, MIN(thumb_path) AS thumb_path
+                    FROM screenshots
+                    WHERE deleted_at IS NULL
+                    GROUP BY record_id
+                ) s ON s.record_id = r.id
                 WHERE {where}
                 ORDER BY r.ts_start ASC LIMIT ?""",
             params,
@@ -481,6 +491,23 @@ class Database:
             await self.conn.commit()
             logger.info("database.reclaim_stale_tasks", count=count)
         return count
+
+    async def get_record_by_id(self, record_id: str) -> dict | None:
+        """Return a single record with analysis results and screenshots list."""
+        async with self.conn.execute(
+            """SELECT r.*, a.vlm_desc, a.category_final, a.confidence,
+                      a.status AS analysis_status
+               FROM records r
+               LEFT JOIN analysis_results a ON a.record_id = r.id
+               WHERE r.id = ?""",
+            (record_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["screenshots"] = await self.get_screenshots_for_record(record_id)
+        return result
 
     async def close(self) -> None:
         if self._conn:
