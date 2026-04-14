@@ -224,7 +224,8 @@ class Database:
             (record_id, now),
         )
         await self.conn.execute(
-            "UPDATE records SET status='pending_vlm', updated_at=? WHERE id=? AND status='captured'",
+            "UPDATE records SET status='pending_vlm', updated_at=?"
+            " WHERE id=? AND status='captured'",
             (now, record_id),
         )
         await self.conn.commit()
