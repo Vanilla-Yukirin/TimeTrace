@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 
 import structlog
 
@@ -49,7 +50,6 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
         await quit_event.wait()
         logger.info("main.stop_requested")
         server.should_exit = True
-        # Cancel infinite-loop tasks so the TaskGroup can exit cleanly.
         for task in asyncio.all_tasks():
             if task.get_name() in ("capture", "worker", "reclaim"):
                 task.cancel()
@@ -80,20 +80,36 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     quit_event = asyncio.Event()
 
-    # Tray needs to signal into the asyncio event loop from its own thread.
-    def _on_quit() -> None:
+    def _request_quit() -> None:
+        """Schedule graceful shutdown on the event loop (safe from any thread)."""
         try:
             loop.call_soon_threadsafe(quit_event.set)
         except RuntimeError:
-            pass  # Event loop already closed; process is already exiting
+            pass
 
-    start_tray_thread(config.privacy, _on_quit)
+    # Route Ctrl+C through the same graceful-shutdown path as tray quit so
+    # uvicorn exits via should_exit=True instead of a signal re-raise that
+    # interrupts the event loop mid-flight.
+    signal.signal(signal.SIGINT, lambda sig, frame: _request_quit())
+
+    start_tray_thread(config.privacy, _request_quit)
 
     try:
         loop.run_until_complete(_run(config, quit_event))
-    except* (KeyboardInterrupt, SystemExit):
+    except (KeyboardInterrupt, SystemExit):
+        # Fallback: double Ctrl+C or OS-level interrupt bypasses our handler.
         pass
     finally:
+        pending = asyncio.all_tasks(loop)
+        for t in pending:
+            t.cancel()
+        if pending:
+            try:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            except (KeyboardInterrupt, SystemExit, Exception):
+                pass
         loop.close()
 
 

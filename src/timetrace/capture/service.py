@@ -50,7 +50,11 @@ class CaptureService:
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._idle.start)
+        # Run pynput listener in a daemon thread so it doesn't block executor
+        # shutdown (pynput.start() blocks until stop() is called).
+        threading.Thread(
+            target=self._idle.start, name="idle-listen", daemon=True
+        ).start()
         logger.info("capture_service.started")
         try:
             while True:

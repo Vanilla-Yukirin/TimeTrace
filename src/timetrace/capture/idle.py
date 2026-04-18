@@ -34,6 +34,9 @@ class IdleDetector:
             on_scroll=self._on_activity,
             suppress=False,
         )
+        # Mark as daemon so process exit is not blocked if stop() never runs.
+        self._kb_listener.daemon = True
+        self._ms_listener.daemon = True
         self._kb_listener.start()
         self._ms_listener.start()
 
