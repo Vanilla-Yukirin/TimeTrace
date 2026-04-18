@@ -33,7 +33,7 @@ export function useCanvasEvents({
   }, [])
 
   const onMouseMove = useCallback((e: MouseEvent) => {
-    const el = e.currentTarget as HTMLElement
+    const el = e.target as HTMLElement
     const rect = el.getBoundingClientRect()
     const mouseX = e.clientX - rect.left
     const mouseY = e.clientY - rect.top
@@ -52,7 +52,7 @@ export function useCanvasEvents({
 
   const onMouseUp = useCallback((e: MouseEvent) => {
     if (!moved.current) {
-      const el = e.currentTarget as HTMLElement
+      const el = e.target as HTMLElement
       const rect = el.getBoundingClientRect()
       const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top, records, viewport)
       onClick(hit?.record ?? null)

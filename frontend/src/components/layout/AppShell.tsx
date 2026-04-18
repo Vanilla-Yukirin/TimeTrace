@@ -18,7 +18,7 @@ export function MainLayout({ sidebar, topbar, children }: {
       {topbar}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {sidebar}
-        <main style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+        <main style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           {children}
         </main>
       </div>
