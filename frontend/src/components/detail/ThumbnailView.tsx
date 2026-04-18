@@ -3,13 +3,15 @@ import type { ApiScreenshot } from '@/types/api'
 interface ThumbnailViewProps {
   screenshots?: ApiScreenshot[]
   thumbPath?: string | null
+  screenshotCount?: number
 }
 
-export function ThumbnailView({ screenshots, thumbPath }: ThumbnailViewProps) {
+export function ThumbnailView({ screenshots, thumbPath, screenshotCount }: ThumbnailViewProps) {
   // Phase A: 只显示第一张缩略图
-  const hasThumb = thumbPath && thumbPath.length > 0
+  const rawPath = thumbPath || screenshots?.[0]?.thumb_path || null
+  const url: string | null = rawPath ? `/thumbs/${rawPath.replace(/\\/g, '/')}` : null
 
-  if (!hasThumb && (!screenshots || screenshots.length === 0)) {
+  if (!url) {
     return (
       <div style={{
         width: '100%',
@@ -25,14 +27,12 @@ export function ThumbnailView({ screenshots, thumbPath }: ThumbnailViewProps) {
         <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
           <div>无截图</div>
           <div style={{ marginTop: 2, opacity: 0.7 }}>
-            Phase 1.5 启用后自动捕获
+            {screenshotCount === 0 ? '切换过快，未触发截图' : 'Phase 1.5 启用后自动捕获'}
           </div>
         </div>
       </div>
     )
   }
-
-  const url = thumbPath ? `/thumbs/${thumbPath.replace(/\\/g, '/')}` : ''
 
   return (
     <div style={{ marginBottom: 16 }}>

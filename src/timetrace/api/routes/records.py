@@ -9,19 +9,29 @@ router = APIRouter(tags=["records"])
 _THUMBS_PREFIX = ("thumbs/", "thumbs\\")
 
 
+def _strip_prefix(path: str) -> str:
+    for prefix in _THUMBS_PREFIX:
+        if path.startswith(prefix):
+            return path[len(prefix):].replace("\\", "/")
+    return path.replace("\\", "/")
+
+
 def _strip_thumbs_prefix(row: dict) -> dict:
-    """Normalize thumb_path to be relative to thumbs_dir (not data_dir).
+    """Normalize thumb_path fields to be relative to thumbs_dir (not data_dir).
 
     DB stores paths like "thumbs/2026/04/15/uuid.jpg" (relative to data_dir).
     The /thumbs static route serves from thumbs_dir, so the URL must be
     "/thumbs/2026/04/15/uuid.jpg" — i.e. strip the leading "thumbs/" segment.
+    Applies to both the record-level thumb_path and each screenshot's thumb_path.
     """
-    tp = row.get("thumb_path")
-    if tp:
-        for prefix in _THUMBS_PREFIX:
-            if tp.startswith(prefix):
-                row = {**row, "thumb_path": tp[len(prefix) :].replace("\\", "/")}
-                break
+    row = dict(row)
+    if row.get("thumb_path"):
+        row["thumb_path"] = _strip_prefix(row["thumb_path"])
+    if row.get("screenshots"):
+        row["screenshots"] = [
+            {**s, "thumb_path": _strip_prefix(s["thumb_path"])} if s.get("thumb_path") else s
+            for s in row["screenshots"]
+        ]
     return row
 
 

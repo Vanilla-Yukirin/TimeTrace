@@ -125,6 +125,7 @@ export function RecordDetailPanel({ recordId, onClose }: RecordDetailPanelProps)
       <ThumbnailView
         thumbPath={record.thumb_path}
         screenshots={record.screenshots}
+        screenshotCount={record.screenshot_count}
       />
 
       {/* Meta info */}
