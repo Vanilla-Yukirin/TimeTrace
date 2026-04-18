@@ -33,20 +33,17 @@
 多轨道时间轴渲染，支持缩放、hover、选区。
 
 ```ts
-type TimelineItem = {
-  ts: number;        // 起始时间戳（epoch ms）
-  dur: number;       // 持续时长（ms）
-  lane: string;      // 轨道名：Activity / App / Category / Frames
-  label: string;     // 显示文字
-  id: string;
-};
-
+// Phase 1 实现：直接传 ApiRecord[]，无须转换
 function TimelineCanvas(props: {
-  items: TimelineItem[];
-  onSelectRange: (startTs: number, endTs: number) => void;
-  onClickItem: (id: string) => void;
-}) { /* ... */ }
+  records: ApiRecord[];        // GET /v1/records 返回的原始记录
+  date: Date;                  // 当前查看日期（用于初始化视口）
+  selectedRecordId: string | null;
+  onSelectRecord: (id: string | null) => void;
+  onGoToday: () => void;
+}) { /* Canvas 2D 渲染，双轨道：Activity + Frames */ }
 ```
+
+> Phase 1.5+：多轨道（App / Category）时再引入 `TimelineItem` 抽象层做统一转换。
 
 **Phase 1 范围**：单日视图、少轨道（Activity + Frames）、基础缩放。
 **Phase 1.5+**：多轨道（App / Category）、批量选区、统计面板。

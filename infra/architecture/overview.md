@@ -45,14 +45,45 @@ flowchart TD
 | `timetrace_api` | 本地 API（供 UI 与 MCP 复用） |
 | `timetrace_ui` | 静态前端文件（由 API server 提供或单独静态服务） |
 
-> **当前实现**：三个任务由 `asyncio.TaskGroup` 在同一进程内并发运行（见 `src/timetrace/main.py`）。
+> **当前实现**：五个任务由 `asyncio.TaskGroup` 在同一进程内并发运行（见 `src/timetrace/main.py`）。
 
 ```python
 async with asyncio.TaskGroup() as tg:
     tg.create_task(capture_svc.run(),  name="capture")
     tg.create_task(worker.run(),        name="worker")
     tg.create_task(server.serve(),      name="api")
+    tg.create_task(_watch_quit(),       name="quit_watcher")
+    tg.create_task(_reclaim_loop(),     name="reclaim")
 ```
+
+**退出流程**（Ctrl+C 与托盘退出共用同一路径）：
+
+```
+SIGINT / 托盘"退出"
+  → signal.signal(SIGINT) handler 或 tray on_quit()
+  → loop.call_soon_threadsafe(quit_event.set)
+  → _watch_quit() 唤醒
+      → server.should_exit = True       # uvicorn 通过轮询退出
+      → cancel(capture / worker / reclaim)
+  → TaskGroup 等待所有任务结束
+  → db.close()
+  → main.shutdown_complete
+```
+
+Ctrl+C 通过 `signal.signal(signal.SIGINT, ...)` 拦截，路由到与托盘退出相同的 `quit_event` 路径，避免 uvicorn `capture_signals` 在 finally 中二次抛出信号打断清理流程。
+
+**线程模型**：
+
+| 线程 | daemon | 职责 |
+|------|--------|------|
+| 主线程 | — | asyncio 事件循环 |
+| tray | True | pystray 消息泵 |
+| idle-listen | True | 启动 pynput 监听器后立即返回 |
+| pynput kb/ms listener | True | 键鼠事件 Windows hook 消息泵 |
+| idle-stop | True | 关闭 pynput 监听器（短暂） |
+| screenshot executor | False | `run_in_executor` 截图（短暂，< 1s） |
+
+daemon=True 的线程在进程退出时被 OS 自动终止，不阻塞退出。
 
 ---
 

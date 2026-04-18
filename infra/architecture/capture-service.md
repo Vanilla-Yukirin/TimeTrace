@@ -20,7 +20,7 @@
 |----|------|
 | `pywin32` | Windows API 访问（窗口焦点、标题、进程名、URL） |
 | `mss` | 截图（ultra-fast、ctypes、thread-safe） |
-| `pynput` | 键鼠事件监听（计数 + idle 检测） |
+| `pynput` | 键鼠事件监听（计数 + idle 检测）；listener 线程设为 daemon=True，进程退出不被其阻塞 |
 | `pystray` | Windows 托盘图标（暂停、隐私模式切换） |
 
 ---
@@ -34,7 +34,7 @@
 
 **输出**
 - SQLite：插入 `records`、`screenshots`
-- 文件系统：写入 `screenshots/YYYY/MM/DD/<record_id>.png`、`thumbs/YYYY/MM/DD/<record_id>.jpg`
+- 文件系统：写入 `screenshots/YYYY/MM/DD/<YYYYMMDD_HHMMSS>_<record_id>.png`、`thumbs/YYYY/MM/DD/<YYYYMMDD_HHMMSS>_<record_id>.jpg`
 - 日志：结构化 jsonl（structlog）
 
 ---
@@ -42,14 +42,18 @@
 ## 截图触发策略
 
 ```
-切窗事件触发 → 插入 record → 取消前一个截图 Task → 创建新的延迟 Task（switch_capture_delay_s）
+切窗事件触发 → close_record(旧记录) → 插入新 record → 取消前一个截图 Task → 创建新的延迟 Task（switch_capture_delay_s）
     └─ 延迟结束后：验证 HWND 是否与预期一致？
          ├─ 不一致（用户已切走） → 放弃，不截图
          └─ 一致 → elapsed < min_capture_interval_s? → 跳过（速率保护）
                └─ 通过 → 截图、落库、标记 pending
 
-心跳 tick（每秒轮询） → elapsed >= max_capture_interval_s? → 截图补帧
+心跳 tick（每秒轮询） → elapsed >= max_capture_interval_s?
+    → close_record(旧记录) → 插入新 record → 截图补帧
+    （每条心跳记录 ts_end ≤ max_capture_interval_s，保证有界）
 ```
+
+**有界时间块设计**：每条 record 的持续时长上限为 `max_capture_interval_s`（默认 30s）。分析层若需展示连续 session，按相邻同应用记录合并即可，不依赖 `ts_end = null` 的开区间。
 
 **关键设计：可取消 Task**
 - 每次切窗先 `cancel()` 前一个待截图任务，再新建延迟任务
@@ -77,31 +81,29 @@ Phase 1 采用 1s 轮询：实现简单，对时间追踪/回放场景够用。W
 
 ```python
 class CaptureService:
-    def __init__(self, ...):
-        self._pending_screenshot_task: asyncio.Task | None = None
-
     async def run(self) -> None:
-        while True:
-            await self._tick()
-            await asyncio.sleep(1.0)
+        try:
+            while True:
+                await self._tick()
+                await asyncio.sleep(1.0)
+        finally:
+            # 优雅退出：关闭最后一条未结束记录
+            if self._last_record_id:
+                await self._db.close_record(self._last_record_id)
 
     async def _tick(self) -> None:
         win = get_active_window()
         if window_switched:
+            await self._db.close_record(self._last_record_id)   # 关旧记录
             record_id = await self._db.insert_record(ctx, reason="switch")
-            await self._cancel_pending_screenshot()   # 取消上一个
+            await self._cancel_pending_screenshot()
             self._pending_screenshot_task = asyncio.create_task(
                 self._delayed_screenshot(record_id, win.hwnd)
             )
-
-    async def _delayed_screenshot(self, record_id: str, expected_hwnd: int) -> None:
-        await asyncio.sleep(self._cfg.switch_capture_delay_s)
-        current_win = get_active_window()
-        if current_win is None or current_win.hwnd != expected_hwnd:
-            return  # 窗口已变，放弃
-        if time.monotonic() - self._last_capture_ts < self._cfg.min_capture_interval_s:
-            return  # 速率保护
-        await self._save_screenshot(record_id, expected_hwnd, time.monotonic())
+        elif elapsed >= max_capture_interval_s:
+            await self._db.close_record(self._last_record_id)   # 关旧记录
+            record_id = await self._db.insert_record(ctx, reason="heartbeat")
+            await self._save_screenshot(record_id, ...)          # 开新记录
 ```
 
 ---

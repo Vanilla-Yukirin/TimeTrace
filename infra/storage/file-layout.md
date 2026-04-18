@@ -17,13 +17,13 @@ TimeTraceData/
 │   └── YYYY/
 │       └── MM/
 │           └── DD/
-│               └── <record_id>.png   ← 截图原图
+│               └── <YYYYMMDD_HHMMSS>_<record_id>.png   ← 截图原图
 │
 ├── thumbs/
 │   └── YYYY/
 │       └── MM/
 │           └── DD/
-│               └── <record_id>.jpg   ← 缩略图（用于时间轴 hover）
+│               └── <YYYYMMDD_HHMMSS>_<record_id>.jpg   ← 缩略图（用于时间轴 hover）
 │
 └── logs/
     └── timetrace-YYYYMMDD.jsonl    ← 结构化日志（structlog 输出）
@@ -42,14 +42,16 @@ TimeTraceData/
 
 ---
 
-## record_id 文件命名
+## 文件命名规则
 
-文件名使用 `records.id`（UUID）：
+文件名格式为 `{YYYYMMDD_HHMMSS}_{record_id}`，时间戳取自截图实际拍摄时刻：
 
 ```
-screenshots/2026/04/10/550e8400-e29b-41d4-a716-446655440000.png
-thumbs/2026/04/10/550e8400-e29b-41d4-a716-446655440000.jpg
+screenshots/2026/04/10/20260410_143022_550e8400-e29b-41d4-a716-446655440000.png
+thumbs/2026/04/10/20260410_143022_550e8400-e29b-41d4-a716-446655440000.jpg
 ```
+
+时间戳前缀固定 15 位，保证文件名按字典序排列即为时间顺序；后缀 UUID 保证唯一性。
 
 SQLite 中 `screenshots.path` 与 `screenshots.thumb_path` 存储相对路径（相对 `TimeTraceData/`）。
 
