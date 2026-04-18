@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -42,13 +43,14 @@ def capture_active_window(
         width, height = img.size
         sha256 = _image_hash(img)
 
-        img_path = _build_path(storage_cfg.screenshots_dir, record_id, "png")
+        captured_at = datetime.now()
+        img_path = _build_path(storage_cfg.screenshots_dir, record_id, "png", captured_at)
         img_path.parent.mkdir(parents=True, exist_ok=True)
         img.save(str(img_path), format="PNG", optimize=False)
 
         thumb = img.copy()
         thumb.thumbnail(_THUMB_SIZE, Image.Resampling.LANCZOS)
-        thumb_path = _build_path(storage_cfg.thumbs_dir, record_id, "jpg")
+        thumb_path = _build_path(storage_cfg.thumbs_dir, record_id, "jpg", captured_at)
         thumb_path.parent.mkdir(parents=True, exist_ok=True)
         thumb.save(str(thumb_path), format="JPEG", quality=75, optimize=True)
 
@@ -70,12 +72,11 @@ def capture_active_window(
         return None
 
 
-def _build_path(base: Path, record_id: str, ext: str) -> Path:
-    """Return a date-bucketed file path: base/YYYY/MM/DD/<record_id>.<ext>"""
-    from datetime import date
-
-    today = date.today()
-    return base / f"{today.year}" / f"{today.month:02d}" / f"{today.day:02d}" / f"{record_id}.{ext}"
+def _build_path(base: Path, record_id: str, ext: str, dt: datetime | None = None) -> Path:
+    """Return a date-bucketed file path: base/YYYY/MM/DD/<YYYYMMDD_HHMMSS>_<record_id>.<ext>"""
+    dt = dt or datetime.now()
+    ts = dt.strftime("%Y%m%d_%H%M%S")
+    return base / f"{dt.year}" / f"{dt.month:02d}" / f"{dt.day:02d}" / f"{ts}_{record_id}.{ext}"
 
 
 def _image_hash(img: Image.Image) -> str:
