@@ -105,9 +105,7 @@ def main() -> None:
             t.cancel()
         if pending:
             try:
-                loop.run_until_complete(
-                    asyncio.gather(*pending, return_exceptions=True)
-                )
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             except (KeyboardInterrupt, SystemExit, Exception):
                 pass
         loop.close()

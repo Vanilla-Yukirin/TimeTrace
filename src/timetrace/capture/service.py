@@ -49,12 +49,9 @@ class CaptureService:
         self._prev_app: str = ""
 
     async def run(self) -> None:
-        loop = asyncio.get_running_loop()
         # Run pynput listener in a daemon thread so it doesn't block executor
         # shutdown (pynput.start() blocks until stop() is called).
-        threading.Thread(
-            target=self._idle.start, name="idle-listen", daemon=True
-        ).start()
+        threading.Thread(target=self._idle.start, name="idle-listen", daemon=True).start()
         logger.info("capture_service.started")
         try:
             while True:
@@ -69,9 +66,7 @@ class CaptureService:
             # Use a daemon thread so that a hung pynput stop() cannot prevent
             # the process from exiting.  The default executor uses non-daemon
             # threads, which would block process exit if stop() stalls.
-            threading.Thread(
-                target=self._idle.stop, name="idle-stop", daemon=True
-            ).start()
+            threading.Thread(target=self._idle.stop, name="idle-stop", daemon=True).start()
             await self._cancel_pending_screenshot()
 
     async def _tick(self) -> None:

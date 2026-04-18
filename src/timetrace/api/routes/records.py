@@ -20,7 +20,7 @@ def _strip_thumbs_prefix(row: dict) -> dict:
     if tp:
         for prefix in _THUMBS_PREFIX:
             if tp.startswith(prefix):
-                row = {**row, "thumb_path": tp[len(prefix):].replace("\\", "/")}
+                row = {**row, "thumb_path": tp[len(prefix) :].replace("\\", "/")}
                 break
     return row
 
