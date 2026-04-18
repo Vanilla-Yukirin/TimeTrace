@@ -61,6 +61,11 @@ class CaptureService:
                 await self._tick()
                 await asyncio.sleep(1.0)
         finally:
+            if self._last_record_id:
+                try:
+                    await self._db.close_record(self._last_record_id)
+                except Exception:
+                    logger.warning("capture.close_record_on_shutdown_failed", exc_info=True)
             # Use a daemon thread so that a hung pynput stop() cannot prevent
             # the process from exiting.  The default executor uses non-daemon
             # threads, which would block process exit if stop() stalls.
@@ -137,6 +142,11 @@ class CaptureService:
         # --- Heartbeat / max-interval补帧 ---
         elapsed = now - self._last_capture_ts
         if elapsed >= self._cfg.max_capture_interval_s:
+            if self._last_record_id:
+                try:
+                    await self._db.close_record(self._last_record_id)
+                except Exception:
+                    logger.warning("capture.heartbeat_close_record_failed", exc_info=True)
             record_id = await self._db.insert_record(
                 ctx, reason="heartbeat", event_type="heartbeat"
             )
