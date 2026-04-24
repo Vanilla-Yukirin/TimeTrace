@@ -189,7 +189,7 @@ async def test_mark_pending_idempotent_preserves_existing_data(db):
     ) as cur:
         row = await cur.fetchone()
 
-    assert row["status"] == "vlm_done"            # not reset to pending_vlm
+    assert row["status"] == "vlm_done"  # not reset to pending_vlm
     assert row["vlm_desc"] == "a real description"  # not wiped
 
 
@@ -208,9 +208,7 @@ async def test_mark_pending_records_status_guard(db):
     # Second mark_pending: records.status should remain vlm_done
     await db.mark_pending(record_id)
 
-    async with db.conn.execute(
-        "SELECT status FROM records WHERE id=?", (record_id,)
-    ) as cur:
+    async with db.conn.execute("SELECT status FROM records WHERE id=?", (record_id,)) as cur:
         row = await cur.fetchone()
 
     assert row["status"] == "vlm_done"  # not downgraded

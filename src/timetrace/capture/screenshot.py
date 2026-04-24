@@ -12,6 +12,8 @@ import mss.tools
 import structlog
 from PIL import Image
 
+from timetrace.phash_index.hash import compute_phash
+
 if TYPE_CHECKING:
     from timetrace.config import StorageConfig
 
@@ -24,11 +26,12 @@ def capture_active_window(
     record_id: str,
     storage_cfg: StorageConfig,
     hwnd: int | None = None,
-) -> tuple[Path, Path, str, int, int] | None:
+) -> tuple[Path, Path, str, int, int, int | None] | None:
     """Capture a screenshot and generate a thumbnail.
 
-    Returns (img_path, thumb_path, sha256_hash, width, height) relative to
-    storage_cfg.data_dir, or None on failure.
+    Returns (img_path, thumb_path, sha256_hash, width, height, phash) relative to
+    storage_cfg.data_dir, or None on failure. `phash` is a 64-bit int or None if
+    computation failed.
     """
     try:
         with mss.mss() as sct:
@@ -42,6 +45,11 @@ def capture_active_window(
 
         width, height = img.size
         sha256 = _image_hash(img)
+        try:
+            phash: int | None = compute_phash(img)
+        except Exception:
+            logger.warning("screenshot.phash_failed", record_id=record_id, exc_info=True)
+            phash = None
 
         captured_at = datetime.now()
         img_path = _build_path(storage_cfg.screenshots_dir, record_id, "png", captured_at)
@@ -65,7 +73,7 @@ def capture_active_window(
             height=height,
             sha256=sha256[:8],
         )
-        return rel_img, rel_thumb, sha256, width, height
+        return rel_img, rel_thumb, sha256, width, height, phash
 
     except Exception:
         logger.warning("screenshot.failed", record_id=record_id, exc_info=True)

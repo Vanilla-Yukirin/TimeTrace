@@ -11,6 +11,7 @@ import structlog
 from timetrace.api.app import create_app
 from timetrace.capture.service import CaptureService
 from timetrace.config import AppConfig
+from timetrace.phash_index.index import PHashIndex
 from timetrace.storage.database import Database
 from timetrace.tray import start_tray_thread
 from timetrace.worker.loop import AnalysisWorker
@@ -24,11 +25,14 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
     db = Database(config.storage)
     await db.init()
 
+    phash_index = await PHashIndex.from_db(db)
+
     capture_svc = CaptureService(
         config.capture,
         config.privacy,
         db,
         storage_cfg=config.storage,
+        phash_index=phash_index,
     )
     worker = AnalysisWorker(db)
     app = create_app(db, storage_cfg=config.storage)

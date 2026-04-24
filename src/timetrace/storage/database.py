@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS screenshots (
     width       INTEGER,
     height      INTEGER,
     hash_sha256 TEXT,
+    phash       BLOB,
     deleted_at  INTEGER,
     privacy_level TEXT NOT NULL DEFAULT 'normal',
     created_at  INTEGER NOT NULL
@@ -155,8 +156,18 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
+        await self._migrate()
         await self._seed_categories()
         logger.info("database.init", path=str(self._cfg.db_path))
+
+    async def _migrate(self) -> None:
+        """Idempotent schema migrations for databases created by older versions."""
+        async with self._conn.execute("PRAGMA table_info(screenshots)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+        if "phash" not in cols:
+            await self._conn.execute("ALTER TABLE screenshots ADD COLUMN phash BLOB")
+            await self._conn.commit()
+            logger.info("database.migrate", added_column="screenshots.phash")
 
     async def _seed_categories(self) -> None:
         """Insert built-in categories if they don't exist yet."""
@@ -297,14 +308,15 @@ class Database:
         height: int,
         hash_sha256: str,
         privacy_level: str = "normal",
+        phash: bytes | None = None,
     ) -> str:
         screenshot_id = _new_id()
         now = _now_ms()
         await self.conn.execute(
             """INSERT INTO screenshots
                (id, record_id, path, thumb_path, width, height,
-                hash_sha256, privacy_level, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                hash_sha256, phash, privacy_level, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (
                 screenshot_id,
                 record_id,
@@ -313,12 +325,21 @@ class Database:
                 width,
                 height,
                 hash_sha256,
+                phash,
                 privacy_level,
                 now,
             ),
         )
         await self.conn.commit()
         return screenshot_id
+
+    async def get_record_ts_start(self, record_id: str) -> int | None:
+        """Return `records.ts_start` for the given record, or None if missing."""
+        async with self.conn.execute(
+            "SELECT ts_start FROM records WHERE id=?", (record_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return row["ts_start"] if row else None
 
     async def get_screenshots_for_record(self, record_id: str) -> list[dict]:
         async with self.conn.execute(

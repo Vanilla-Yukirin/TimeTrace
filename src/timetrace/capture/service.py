@@ -13,10 +13,12 @@ from timetrace.capture.idle import IdleDetector
 from timetrace.capture.privacy import should_capture
 from timetrace.capture.screenshot import capture_active_window
 from timetrace.capture.window import get_active_window
+from timetrace.phash_index.hash import phash_to_blob
 from timetrace.storage.models import CaptureContext
 
 if TYPE_CHECKING:
     from timetrace.config import CaptureConfig, PrivacyConfig, StorageConfig
+    from timetrace.phash_index.index import PHashIndex
     from timetrace.storage.database import Database
 
 logger = structlog.get_logger(__name__)
@@ -31,11 +33,13 @@ class CaptureService:
         privacy_cfg: PrivacyConfig,
         db: Database,
         storage_cfg: StorageConfig | None = None,
+        phash_index: PHashIndex | None = None,
     ) -> None:
         self._cfg = capture_cfg
         self._privacy = privacy_cfg
         self._db = db
         self._storage_cfg = storage_cfg
+        self._phash_index = phash_index
 
         self._idle = IdleDetector()
 
@@ -225,14 +229,20 @@ class CaptureService:
         )
 
         if result is not None:
-            rel_img, rel_thumb, sha256, width, height = result
-            await self._db.insert_screenshot(
+            rel_img, rel_thumb, sha256, width, height, phash = result
+            phash_blob = phash_to_blob(phash) if phash is not None else None
+            screenshot_id = await self._db.insert_screenshot(
                 record_id=record_id,
                 path=str(rel_img),
                 thumb_path=str(rel_thumb),
                 width=width,
                 height=height,
                 hash_sha256=sha256,
+                phash=phash_blob,
             )
+            if phash is not None and self._phash_index is not None:
+                ts_start = await self._db.get_record_ts_start(record_id)
+                if ts_start is not None:
+                    self._phash_index.insert(screenshot_id, phash, ts_start)
 
         await self._db.mark_pending(record_id)

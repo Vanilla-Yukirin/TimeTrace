@@ -824,6 +824,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "fastapi" },
     { name = "mss" },
+    { name = "numpy" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pynput" },
@@ -835,7 +836,6 @@ dependencies = [
 
 [package.optional-dependencies]
 analysis = [
-    { name = "numpy" },
     { name = "openai" },
 ]
 
@@ -852,7 +852,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "mss", specifier = ">=9.0.0" },
-    { name = "numpy", marker = "extra == 'analysis'", specifier = ">=1.26.0" },
+    { name = "numpy", specifier = ">=1.26.0" },
     { name = "openai", marker = "extra == 'analysis'", specifier = ">=1.30.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pydantic", specifier = ">=2.7.0" },

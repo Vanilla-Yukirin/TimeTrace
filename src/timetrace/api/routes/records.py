@@ -12,7 +12,7 @@ _THUMBS_PREFIX = ("thumbs/", "thumbs\\")
 def _strip_prefix(path: str) -> str:
     for prefix in _THUMBS_PREFIX:
         if path.startswith(prefix):
-            return path[len(prefix):].replace("\\", "/")
+            return path[len(prefix) :].replace("\\", "/")
     return path.replace("\\", "/")
 
 
