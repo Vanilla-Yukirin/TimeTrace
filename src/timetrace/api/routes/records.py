@@ -35,6 +35,13 @@ def _strip_thumbs_prefix(row: dict) -> dict:
     return row
 
 
+def _parse_csv(raw: str | None) -> list[str] | None:
+    if not raw:
+        return None
+    items = [tok.strip() for tok in raw.split(",") if tok.strip()]
+    return items or None
+
+
 @router.get("/records")
 async def list_records(
     request: Request,
@@ -43,6 +50,8 @@ async def list_records(
     limit: int = 200,
     cursor: str | None = None,
     app: str | None = None,
+    apps: str | None = None,
+    categories: str | None = None,
     q: str | None = None,
 ) -> dict:
     """Return records within a time range (epoch ms).
@@ -50,8 +59,10 @@ async def list_records(
     - **start** / **end**: epoch milliseconds (inclusive)
     - **limit**: max items returned (≤ 500)
     - **cursor**: last record id for keyset pagination
-    - **app**: filter by exact app_name
-    - **q**: filter by window_title keyword (LIKE %q%)
+    - **app**: exact app_name (single); kept for backwards compatibility
+    - **apps**: comma-separated app_name list (multi-select)
+    - **categories**: comma-separated category_final list
+    - **q**: keyword over window_title OR vlm_desc (LIKE %q%)
     """
     db = request.app.state.db
     limit = min(limit, 500)
@@ -61,10 +72,19 @@ async def list_records(
         limit=limit,
         cursor=cursor,
         app_name=app,
+        apps=_parse_csv(apps),
+        categories=_parse_csv(categories),
         keyword=q,
     )
     next_cursor = rows[-1]["id"] if len(rows) == limit else None
     return {"items": [_strip_thumbs_prefix(r) for r in rows], "next_cursor": next_cursor}
+
+
+@router.get("/apps")
+async def list_apps(request: Request) -> dict:
+    """Return distinct app names with record counts (most used first)."""
+    db = request.app.state.db
+    return {"items": await db.list_apps()}
 
 
 @router.get("/records/{record_id}")

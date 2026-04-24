@@ -12,7 +12,10 @@ export function TimelinePage() {
     return dateStr ? fromDateParam(dateStr) : new Date()
   })
 
-  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null)
+  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('highlight')
+  })
 
   const { data: records } = useRecords(selectedDate)
 
@@ -37,7 +40,7 @@ export function TimelinePage() {
       const params = new URLSearchParams(window.location.search)
       const dateStr = params.get('date')
       setSelectedDate(dateStr ? fromDateParam(dateStr) : new Date())
-      setSelectedRecordId(null)
+      setSelectedRecordId(params.get('highlight'))
     }
     window.addEventListener('popstate', handler)
     return () => window.removeEventListener('popstate', handler)

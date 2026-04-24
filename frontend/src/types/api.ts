@@ -76,3 +76,45 @@ export interface RuntimeInfo {
   api_host: string
   api_port: number
 }
+
+export interface ApiApp {
+  name: string
+  count: number
+}
+
+export interface AppsResponse {
+  items: ApiApp[]
+}
+
+/** Per-result explanation of why a screenshot matched the search query. */
+export interface SearchMatchInfo {
+  visual_distance: number | null
+  semantic_rank: number | null
+  text_rank: number | null
+  rrf_score: number
+  reasons: string[]
+}
+
+/** Single item returned by POST /v1/search/by-image */
+export interface SearchResultItem {
+  screenshot_id: string
+  record_id: string
+  ts_start: number
+  ts_end: number | null
+  app_name: string
+  window_title: string
+  url: string | null
+  thumb_path: string | null
+  vlm_desc: string | null
+  category_final: string | null
+  match: SearchMatchInfo
+}
+
+export type ChannelStatus = 'ok' | 'disabled' | 'unavailable'
+
+export interface SearchByImageResponse {
+  items: SearchResultItem[]
+  total: number
+  visual_channel: ChannelStatus
+  semantic_channel: ChannelStatus
+}

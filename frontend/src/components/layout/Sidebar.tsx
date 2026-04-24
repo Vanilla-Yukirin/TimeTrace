@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { Clock, Settings } from 'lucide-react'
+import { Clock, Search, Settings } from 'lucide-react'
 
 export function Sidebar() {
   const { pathname } = useLocation()
@@ -35,5 +35,6 @@ export function Sidebar() {
 
 const NAV = [
   { to: '/', icon: Clock, label: '时间轴' },
+  { to: '/search', icon: Search, label: '搜索' },
   { to: '/settings', icon: Settings, label: '设置' },
 ]

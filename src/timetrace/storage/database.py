@@ -249,27 +249,40 @@ class Database:
         cursor: str | None = None,
         app_name: str | None = None,
         apps: list[str] | None = None,
+        categories: list[str] | None = None,
         keyword: str | None = None,
     ) -> list[dict]:
-        conditions = ["ts_start BETWEEN ? AND ?"]
+        conditions = ["r.ts_start BETWEEN ? AND ?"]
         params: list[Any] = [start_ms, end_ms]
 
         if cursor is not None:
-            conditions.append("ts_start > (SELECT ts_start FROM records WHERE id=?)")
+            conditions.append("r.ts_start > (SELECT ts_start FROM records WHERE id=?)")
             params.append(cursor)
 
         if app_name:
-            conditions.append("app_name = ?")
+            conditions.append("r.app_name = ?")
             params.append(app_name)
 
         if apps:
             placeholders = ",".join("?" * len(apps))
-            conditions.append(f"app_name IN ({placeholders})")
+            conditions.append(f"r.app_name IN ({placeholders})")
             params.extend(apps)
 
+        if categories:
+            placeholders = ",".join("?" * len(categories))
+            conditions.append(f"a.category_final IN ({placeholders})")
+            params.extend(categories)
+
         if keyword:
-            conditions.append("window_title LIKE ?")
-            params.append(f"%{keyword}%")
+            # Match across window title and VLM description (vlm_desc is NULL until Phase 1.5).
+            # Escape LIKE metachars so literal %/_ in user input don't over-match.
+            conditions.append(
+                "(r.window_title LIKE ? ESCAPE '\\' OR a.vlm_desc LIKE ? ESCAPE '\\')"
+            )
+            escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{escaped}%"
+            params.append(like)
+            params.append(like)
 
         where = " AND ".join(conditions)
         params.append(limit)
@@ -291,6 +304,36 @@ class Database:
                 WHERE {where}
                 ORDER BY r.ts_start ASC LIMIT ?""",
             params,
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def list_apps(self) -> list[dict]:
+        """Return distinct app names with record counts, most-used first."""
+        async with self.conn.execute(
+            """SELECT app_name AS name, COUNT(*) AS count
+               FROM records
+               WHERE app_name != ''
+               GROUP BY app_name
+               ORDER BY count DESC, name ASC"""
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_screenshots_with_records(self, screenshot_ids: list[str]) -> list[dict]:
+        """Fetch rich metadata for the given screenshot ids (used by image search)."""
+        if not screenshot_ids:
+            return []
+        placeholders = ",".join("?" * len(screenshot_ids))
+        async with self.conn.execute(
+            f"""SELECT s.id AS screenshot_id, s.record_id, s.thumb_path,
+                       r.ts_start, r.ts_end, r.app_name, r.window_title, r.url,
+                       a.vlm_desc, a.category_final, a.confidence
+                FROM screenshots s
+                JOIN records r ON r.id = s.record_id
+                LEFT JOIN analysis_results a ON a.record_id = s.record_id
+                WHERE s.id IN ({placeholders}) AND s.deleted_at IS NULL""",
+            screenshot_ids,
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]

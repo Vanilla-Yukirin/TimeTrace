@@ -39,13 +39,6 @@ def test_list_records_empty(client):
     assert data["next_cursor"] is None
 
 
-def test_search_placeholder(client):
-    resp = client.post("/v1/search", json={"query_text": "hello"})
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["items"] == []
-
-
 def test_feedback_accepted(client):
     resp = client.post(
         "/v1/feedback",

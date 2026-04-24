@@ -35,7 +35,7 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
         phash_index=phash_index,
     )
     worker = AnalysisWorker(db)
-    app = create_app(db, storage_cfg=config.storage)
+    app = create_app(db, storage_cfg=config.storage, phash_index=phash_index)
     app.state.api_host = config.api_host
     app.state.api_port = config.api_port
 

@@ -61,9 +61,13 @@ class PHashIndex:
         - `k`: optional limit on number of results
         """
         if ts_range is not None:
+            # Iterate existing buckets and filter by day-key; O(bucket_count).
+            # Avoids iterating a giant integer range when the caller passes a
+            # wide open-ended upper bound (e.g. 2**62 for "no upper limit").
             start_ms, end_ms = ts_range
-            keys = range(_day_key(start_ms), _day_key(end_ms) + 1)
-            trees = (self._buckets[k2] for k2 in keys if k2 in self._buckets)
+            start_key = _day_key(start_ms)
+            end_key = _day_key(end_ms)
+            trees = (self._buckets[k] for k in self._buckets if start_key <= k <= end_key)
         else:
             trees = iter(self._buckets.values())
 

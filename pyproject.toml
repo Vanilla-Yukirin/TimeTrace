@@ -8,6 +8,7 @@ dependencies = [
     # API server
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",
     # Screenshot capture
     "mss>=9.0.0",
     # Database

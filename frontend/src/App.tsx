@@ -4,6 +4,7 @@ import { MainLayout } from './components/layout/AppShell'
 import { Sidebar } from './components/layout/Sidebar'
 import { TopBar } from './components/layout/TopBar'
 import { TimelinePage } from './pages/TimelinePage'
+import { SearchPage } from './pages/SearchPage'
 import { SettingsPage } from './pages/SettingsPage'
 
 const queryClient = new QueryClient({
@@ -25,6 +26,7 @@ export function App() {
         >
           <Routes>
             <Route path="/" element={<TimelinePage />} />
+            <Route path="/search" element={<SearchPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </MainLayout>
