@@ -54,8 +54,32 @@ function TimelineCanvas(props: {
 
 ### SearchPage
 
-- 文本相似检索结果列表（Phase 1.5+）
-- 点击结果跳转时间轴定位
+路由 `/search`，独立入口。实现位置：`frontend/src/pages/SearchPage.tsx` + `frontend/src/components/search/`。
+
+**查询形态（可任意组合）**：
+- 关键词（作用于 `window_title` + `vlm_desc`）
+- 参考图（多图，上限 5 张；支持点击、拖拽、Ctrl+V 粘贴）
+- 时间范围（预设 "今天 / 近 7 天 / 近 30 天"，或自定义日期）
+- 应用多选（chip，数据来自 `GET /v1/apps`）
+- 分类多选（chip，数据来自 `GET /v1/categories`）
+
+**搜索模式切换（仅在上传参考图后显示）**：
+- **视觉相似**：pHash 通道，画面像素层面一致
+- **语义相似**：VLM + BM25 通道，内容层面一致
+- 两者可二选一或都选；都选时走 RRF 融合
+- 语义通道不可用时（VLM 未配置）显示行内提示，不报错
+
+**结果展示**：
+- 行内展开（点击整行折叠/展开详情）
+- 匹配徽标说明理由："pHash 距离 4" / "语义 rank 3" / "关键词 rank 7"
+- 每行 **「在时间轴中查看」** 按钮 → `navigate('/?date=YYYY-MM-DD&highlight=recordId')`
+
+**请求分派逻辑**（`hooks/useSearchQuery.ts`）：
+- 有图 → `POST /v1/search/by-image`（multipart）
+- 无图、有关键词或筛选 → `GET /v1/records?q=...&apps=...&categories=...`
+- 完全空查询 → 搜索按钮 disabled
+
+**TanStack Query key 稳定性**：`File[]` 在默认 hash 器下会坍塌为 `{}`，需要把文件用 `name:size:lastModified` 串成指纹作为 key，避免不同参考图撞缓存。
 
 ### SettingsPage
 
@@ -75,14 +99,18 @@ function TimelineCanvas(props: {
 ## 前端与 API 交互
 
 ```
-Web UI ──GET /v1/records──► Local API
+Web UI ──GET /v1/records──► Local API ──► SQLite
        ◄── JSON records ────
 
-Web UI ──POST /v1/feedback──► Local API ──► SQLite feedback 表
+Web UI ──POST /v1/feedback──► Local API ──► feedback 表
        ◄── {ok} ─────────────
 
-Web UI ──POST /v1/search───► Local API ──► Vector Layer
-       ◄── {items} ──────────
+Web UI ──POST /v1/search/by-image──► Local API ──► pHash Index（视觉）
+       ◄── {items, channels} ──          └───► FTS5 / LIKE（语义 / 关键词）
+                                         └───► RRF 融合
+
+Web UI ──GET /v1/apps───────► Local API ──► records 聚合
+       ◄── [{name, count}] ──
 ```
 
 ---
@@ -91,8 +119,8 @@ Web UI ──POST /v1/search───► Local API ──► Vector Layer
 
 | Phase | UI 复杂度 |
 |-------|----------|
-| Phase 1 | 单日时间轴、少轨道、详情表、基础过滤 |
-| Phase 1.5 | 搜索页、VLM 描述展示、摘要触发 |
+| Phase 1 | 单日时间轴、少轨道、详情面板、搜索页（关键词 + pHash 视觉通道 + 筛选） |
+| Phase 1.5 | VLM 描述展示、语义通道启用、摘要触发 |
 | Phase 2 | 批量反馈、统计面板、多轨道、高级隐私设置 |
 
 ---

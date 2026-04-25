@@ -47,11 +47,15 @@ idx_records_app_ts    ON records(app_name, ts_start)
 idx_records_status    ON records(status) WHERE status LIKE 'pending_%'  -- Partial Index
 ```
 
-> **Phase 1 关键词检索（FTS5）**：建议在 `window_title`、`vlm_desc`（`analysis_results`）、`url` 上建 SQLite FTS5 虚表，用于关键词搜索，无需额外依赖：
+> **关键词 / 语义检索**：当前用 LIKE 兜底（`window_title` + `vlm_desc`）。Phase 1.5 接入 VLM 描述后，在 `analysis_results.vlm_desc` 的结构化字段上建 SQLite FTS5 虚表，用 BM25 做多字段加权打分：
 > ```sql
-> CREATE VIRTUAL TABLE records_fts USING fts5(window_title, url, content='records');
+> CREATE VIRTUAL TABLE frames_fts USING fts5(
+>     activity, scene, summary, keywords,
+>     content='analysis_results', content_rowid='rowid'
+> );
 > ```
-> Phase 1.5 向量相似检索是 FTS5 的补充，不是替代。
+> 中文分词采用 jieba `cut_for_search` 在写入与查询双方预处理。
+> 视觉相似检索走独立通道（[pHash + BK-tree](vector-search.md)），与 FTS5 互补，由 API 层用 RRF 融合。
 
 ---
 
@@ -65,6 +69,7 @@ idx_records_status    ON records(status) WHERE status LIKE 'pending_%'  -- Parti
 | `thumb_path` | TEXT | 缩略图路径 |
 | `width` / `height` | INTEGER | 图片尺寸 |
 | `hash_sha256` | TEXT | 内容哈希（去重检测） |
+| `phash` | BLOB(8) | 64-bit 感知哈希（DCT pHash），`int.to_bytes(8, "big")` 存入 |
 | `deleted_at` | INTEGER | 软删除时间（NULL = 未删除） |
 | `privacy_level` | TEXT | `normal` / `blurred` / `no_image` |
 | `created_at` | INTEGER | — |
@@ -73,6 +78,8 @@ idx_records_status    ON records(status) WHERE status LIKE 'pending_%'  -- Parti
 ```sql
 idx_screenshots_record  ON screenshots(record_id)
 ```
+
+> `phash` 列是视觉检索层（[相似检索](vector-search.md)）的底数据；启动时由 `PHashIndex.from_db()` 扫出构建内存 BK-tree。列是后加的，`Database._migrate()` 用 `ALTER TABLE ADD COLUMN` 幂等补齐旧库。
 
 ---
 

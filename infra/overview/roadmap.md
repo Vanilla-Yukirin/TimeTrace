@@ -4,18 +4,19 @@
 
 ---
 
-## Phase 1 — MVP：记住并回放
+## Phase 1 — MVP：记住、回放与视觉检索
 
-**目标**：证明稳定采集、存储、回放、检索的可行性，无外部模型依赖。
+**目标**：证明稳定采集、存储、回放、多维检索的可行性，无外部模型依赖。
 
 ### 必做功能
 
 | 模块 | 具体内容 |
 |------|---------|
-| **Capture** | 活跃窗口切换事件 + 关键帧截图（带节流/补帧）；min/max 间隔；idle 段判定 |
+| **Capture** | 活跃窗口切换事件 + 关键帧截图（带节流/补帧）；min/max 间隔；idle 段判定；每帧计算 64-bit pHash 落库 |
 | **Storage** | SQLite WAL 模式落库；图片文件系统（原图 + 缩略图）；配额删除（只删图不删记录） |
-| **API** | records 查询、时间轴聚合、应用过滤、关键词匹配 |
-| **UI** | 日历 + TimelineCanvas（基础版：单日、少轨道）+ 详情表 |
+| **相似检索** | pHash + 按天分桶的 BK-tree（视觉通道），关键词 LIKE 回退 |
+| **API** | records 查询、时间轴聚合、应用 / 分类多选过滤、关键词匹配、`/v1/search/by-image` 多模态检索 |
+| **UI** | 日历 + TimelineCanvas（基础版：单日、少轨道）+ 详情面板；`/search` 页（关键词 + 参考图 + 筛选，行内展开结果） |
 | **Privacy** | 托盘一键暂停；应用/标题黑名单；隐私模式（不存图） |
 
 ### 验收标准
@@ -27,26 +28,30 @@
 
 ---
 
-## Phase 1.5 — 轻智能：能检索与能摘要
+## Phase 1.5 — 轻智能：语义检索与摘要
 
-**目标**：引入 VLM + Embedding，支持语义检索与自动摘要，上线 MCP 最小工具集。
+**目标**：引入 VLM 结构化描述 + FTS5 BM25 打通语义通道，与 Phase 1 的视觉通道通过 RRF 融合；上线 MCP 最小工具集。
 
 ### 功能增量
 
 | 功能 | 说明 |
 |------|------|
-| **VLM 描述** | 每帧生成 20–50 字"画面任务描述"（不做 OCR 复刻） |
-| **Embedding** | 对描述文本做向量嵌入（优先 numpy 暴力，再迁 Faiss） |
-| **相似检索** | 文本查询 → top-k 相似帧，Search 页跳转定位时间轴 |
+| **VLM 描述** | 每帧生成结构化描述（活动 / 场景 / 内容摘要 / 关键文字四字段），写入 `analysis_results.vlm_desc` |
+| **FTS5 + BM25** | 在描述四字段上建 FTS5 虚表，多列加权 BM25 打分（`keywords` 列权重最高）；jieba `cut_for_search` 做中文分词 |
+| **语义通道激活** | `/v1/search/by-image` 的 `_bm25_search` 从 LIKE 兜底升级为 FTS5 `MATCH`；上传参考图时走 VLM 描述生成再检索 |
 | **摘要** | 手动触发时间段摘要（100–200 字）+ 分类统计（系统算，不让模型瞎编） |
 | **MCP** | 上线最小工具集：`list_categories` / `get_activity` / `search_activity` / `get_category_stats` |
 
 ### Analysis Worker 状态机（Phase 1.5）
 
 ```
-captured → pending_vlm → vlm_done → pending_embed → embed_done → done
+captured → pending_vlm → vlm_done → done
 任意阶段失败 → error_retryable（带 retry_count/next_retry_at）或 error_final
 ```
+
+> 原规划里的 `pending_embed → embed_done` 阶段已移除：
+> 视觉相似改走 pHash（不依赖模型），语义相似改走 VLM 描述 + BM25（不存向量），
+> 整条 pipeline 不再需要独立的 embedding 步骤。
 
 ---
 
@@ -69,7 +74,8 @@ captured → pending_vlm → vlm_done → pending_embed → embed_done → done
 - 多设备合并（device_id + last_modified）
 - 端侧轻量隐私检测
 - 浏览器 URL 提取增强
-- 增量 Faiss 索引维护
+- 条件性 OCR（对 IDE / 终端 / 聊天窗口注入到 VLM prompt；游戏场景关闭以避免稀释）
+- 字符 bigram 兜底索引（若 jieba 多粒度召回仍不足）
 - 导出到 Markdown / 日记系统
 
 ---
@@ -79,9 +85,9 @@ captured → pending_vlm → vlm_done → pending_embed → embed_done → done
 | 债务 | 说明 |
 |------|------|
 | 时间轴组件性能 | TimelineCanvas 大量帧时的渲染优化 |
-| Schema 版本管理 | SQLite 迁移策略（Alembic 或手写 migration） |
+| Schema 版本管理 | SQLite 迁移策略（Alembic 或手写 migration）；当前 `Database._migrate()` 是临时方案 |
 | Worker 并发限流 | 多 worker 并发上限与 429 退避策略 |
-| 向量存储抽象 | 统一 Faiss / sqlite-vec / file 后端接口 |
+| pHash 索引持久化 | 目前每次启动从 SQLite 全量重建；库量超过 100 万帧时可考虑序列化快照 |
 
 ---
 

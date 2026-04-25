@@ -19,16 +19,15 @@
 
 ```mermaid
 flowchart TD
-  A[Capture Service\n窗口事件 / 截图 / 键鼠计数] -->|insert raw| B[(SQLite: records / screenshots)]
+  A[Capture Service\n窗口事件 / 截图 / 键鼠计数] -->|insert raw + phash| B[(SQLite: records / screenshots)]
   A -->|write files| C[(FS: screenshots/ thumbs/)]
+  A -->|insert screenshot_id, phash, ts| G[PHashIndex\n按天分桶 BK-tree（内存）]
   B --> D[Analysis Worker\npoll pending tasks]
   D -->|VLM describe| E[Cloud / Local Model Provider]
-  D -->|Embedding| F[Embedding Provider]
   D -->|update analyzed| B
-  D -->|update vectors| G[(Vector Layer: faiss / sqlite-vec / files)]
   B --> H[Local API Server\nFastAPI / ASGI]
   G --> H
-  H --> I[Web UI\nTimeline / Search / Settings]
+  H -->|RRF 融合视觉 / 语义 / 关键词| I[Web UI\nTimeline / Search / Settings]
   H --> J[MCP Layer\nTools / Context]
   I -->|feedback| H -->|write feedback| B
   J -->|no raw image by default| H
@@ -91,12 +90,14 @@ daemon=True 的线程在进程退出时被 OS 自动终止，不阻塞退出。
 
 | 模块 | 文件 | 核心职责 |
 |------|------|---------|
-| Capture Service | `src/timetrace/capture/service.py` | 监听窗口切换、触发截图、写 records |
+| Capture Service | `src/timetrace/capture/service.py` | 监听窗口切换、触发截图、写 records / screenshots（含 phash），同步 PHashIndex |
 | Privacy Guard | `src/timetrace/capture/privacy.py` | 黑名单过滤、暂停判断 |
-| Analysis Worker | `src/timetrace/worker/loop.py` | 状态机驱动 VLM/Embedding 流程 |
+| Analysis Worker | `src/timetrace/worker/loop.py` | 状态机驱动 VLM 流程 |
 | Rule Engine | `src/timetrace/rules/engine.py` | 规则匹配 + KNN 投票分类 |
-| Database | `src/timetrace/storage/database.py` | aiosqlite 封装、Schema 初始化 |
-| API Factory | `src/timetrace/api/app.py` | FastAPI 应用工厂 |
+| Database | `src/timetrace/storage/database.py` | aiosqlite 封装、Schema 初始化与迁移 |
+| PHash Index | `src/timetrace/phash_index/` | pHash 计算（`hash.py`）、BK-tree（`bk_tree.py`）、按天分桶索引（`index.py`） |
+| API Factory | `src/timetrace/api/app.py` | FastAPI 应用工厂（注入 db / phash_index / thumbs 静态挂载） |
+| Search Route | `src/timetrace/api/routes/search.py` | `/v1/search/by-image` 多通道检索 + RRF 融合 |
 | MCP Tools | `src/timetrace/mcp_layer/tools.py` | MCP 工具函数 |
 | Config | `src/timetrace/config.py` | Dataclass 配置，带合理默认值 |
 

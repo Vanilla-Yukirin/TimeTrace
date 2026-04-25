@@ -8,9 +8,9 @@
 
 | 层 | 技术 | 存储内容 | 特点 |
 |----|------|---------|------|
-| **结构化元数据** | SQLite（单文件） | records、screenshots 元信息、analysis_results、feedback、settings | Serverless / zero-config，事务，便于分发 |
+| **结构化元数据** | SQLite（单文件） | records、screenshots 元信息（含 `phash` BLOB）、analysis_results、feedback、settings | Serverless / zero-config，事务，便于分发 |
 | **文件系统** | 本地目录 | 截图原图（PNG）、缩略图（JPG） | 支持"删图不删记录"；I/O 与 SQLite 解耦 |
-| **向量层** | Faiss / numpy / sqlite-vec | embedding 向量，支持相似检索 | Phase 1.5 引入；见 [向量检索](vector-search.md) |
+| **相似检索层** | 内存 BK-tree + 未来 SQLite FTS5 | pHash 按天分桶的 BK-tree（视觉）；VLM 描述文本的倒排索引（语义） | SQLite 是真源；内存索引启动时重建。见 [相似检索](vector-search.md) |
 
 ---
 
@@ -38,7 +38,7 @@ PRAGMA synchronous = NORMAL;    -- 性能与安全平衡
 
 | 策略 | 说明 |
 |------|------|
-| **只删图不删记录** | 图片超配额后删除原图，保留 records + analysis 元信息 + embedding 向量 |
+| **只删图不删记录** | 图片超配额后删除原图，保留 records + analysis 元信息 + pHash 指纹（8 字节，可继续参与视觉检索） |
 | **缩略图优先** | UI 时间轴 hover 使用缩略图，避免频繁解码大图 |
 | **配额提示** | 图片文件夹超过阈值时提示用户，不强制自动删除 |
 | **删除标记** | `screenshots.deleted_at` 软删除，便于统计与恢复 |
@@ -59,5 +59,5 @@ PRAGMA synchronous = NORMAL;    -- 性能与安全平衡
 
 - [数据库 Schema](schema.md)
 - [文件系统布局](file-layout.md)
-- [向量检索层](vector-search.md)
+- [相似检索层](vector-search.md)
 - [打包部署（数据目录位置）](../architecture/packaging.md)

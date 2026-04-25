@@ -42,13 +42,18 @@
 
 ---
 
-## 向量检索
+## 相似检索
 
-| 选项 | 决策 | 理由 |
-|------|------|------|
-| **numpy 暴力** | Phase 1.5 原型 | 零依赖，快速验证 |
-| **Faiss** | Phase 1.5–2 主推 | 高效、成熟、支持大规模 |
-| **sqlite-vec** | Phase 2 可选 | 向量与元数据同库，但 pre-v1 有风险 |
+拆成"视觉"与"语义"两条正交通道，刻意**不**使用图像 embedding（避免换模型导致整库失效）。
+
+| 通道 | 方案 | 决策 | 理由 |
+|------|------|------|------|
+| **视觉** | pHash (64-bit DCT) + BK-tree（按天分桶） | ✅ Phase 1 已落地 | 模型无关、可复现；换 VLM 不需重算；汉明度量天然适配 BK-tree |
+| **视觉** | Faiss IndexBinary / ANN | ❌ | Faiss 为欧式/余弦优化，汉明支持使用成本不划算；BK-tree 在本体量更轻 |
+| **视觉** | 图像 embedding (e.g. qwen3-vl-embedding) | ❌ | 换模型即整库失效；2560 维存储代价高；放弃语义泛化换"可迁移" |
+| **语义** | FTS5 多字段 BM25 over VLM 描述 | ✅ Phase 1.5 计划 | SQLite 原生，零新依赖；每列独立 IDF 可做字段加权 |
+| **语义** | 文本 embedding (e.g. text-embedding-v3) + Faiss | ⏸ 留作后续评估 | 实验中 Hybrid 比纯 BM25 只提升 ~1%（见 `D:\Code\20260419测试阿里vlemb`）；先观察 BM25 不足再引入 |
+| **融合** | Reciprocal Rank Fusion (k=60) | ✅ Phase 1 已落地 | 不依赖分数量纲，温和偏好多通道共识，不枪毙单通道强项 |
 
 ---
 
@@ -63,6 +68,8 @@
 | `structlog` | 结构化日志（JSON Lines） |
 | `pydantic` | 数据验证与序列化 |
 | `aiosqlite` | 异步 SQLite 访问 |
+| `numpy` | pHash 的 DCT-II 矩阵运算（核心依赖） |
+| `python-multipart` | FastAPI 接收参考图上传 |
 
 ---
 
@@ -70,4 +77,4 @@
 
 - [架构总览](../architecture/overview.md)
 - [打包部署](../architecture/packaging.md)
-- [向量检索](../storage/vector-search.md)
+- [相似检索层](../storage/vector-search.md)

@@ -10,10 +10,12 @@
 
 | 文件 | 覆盖范围 |
 |------|---------|
-| `tests/test_storage.py` | Database 初始化、insert_record、mark_pending、claim_next_task |
+| `tests/test_storage.py` | Database 初始化、insert_record、mark_pending、claim_next_task、schema 迁移 |
 | `tests/test_api.py` | FastAPI 路由、/healthz、/v1/records |
 | `tests/test_privacy.py` | `should_capture()` 黑名单、暂停模式 |
 | `tests/test_rules.py` | `decide_category()` 规则匹配、KNN 投票、decision_trace 格式 |
+| `tests/test_phash_index.py` | pHash 计算、BK-tree 范围搜索 vs 暴力扫比对、PHashIndex 日桶过滤、`from_db` roundtrip、旧 DB 加 `phash` 列的幂等迁移 |
+| `tests/test_search.py` | `/v1/search/by-image` 视觉 / 语义 / 融合通道、多图上限、半开时间窗口、LIKE 元字符转义、`/v1/apps` 与 `/v1/records` 的 apps/categories 多选 |
 
 运行测试：
 ```bash
@@ -29,9 +31,10 @@ uv run pytest -v --tb=short
 | 功能点 | 验收条件 |
 |--------|---------|
 | 时间轴回放 | 任意选择某天，可加载时间轴并定位到任意时间点 |
-| 搜索过滤 | 按时间范围 / 应用 / 关键词筛选返回正确结果集 |
+| 搜索过滤 | 按时间范围 / 应用 / 分类 / 关键词筛选返回正确结果集 |
+| 以图搜图（视觉） | 上传参考图后返回 pHash 距离升序的相似截图；搜索结果可"跳转时间轴"并高亮定位 |
 | 隐私模式 | 暂停后无新记录写入；黑名单应用的截图 0 条 |
-| 数据恢复 | 进程强制终止后重启，pending 任务可被正确 reclaim |
+| 数据恢复 | 进程强制终止后重启，pending 任务可被正确 reclaim；pHash 索引从 SQLite 亚秒级重建 |
 | 导出 summary | 指定时间段触发摘要，返回 100–200 字文本 |
 
 ---

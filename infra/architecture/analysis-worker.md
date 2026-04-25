@@ -7,9 +7,11 @@
 ## 职责
 
 - 从 SQLite 中原子 claim `pending_vlm` 任务
-- 执行 VLM 描述（20–50 字）、embedding 生成、基础分类建议
-- 写回 `analysis_results`、`embeddings`（或向量层）并更新 `records.status`
+- 执行 VLM 结构化描述（活动 / 场景 / 内容摘要 / 关键文字四字段）、基础分类建议
+- 写回 `analysis_results` 并更新 `records.status`
 - 失败任务按策略重试 / 降级 / 入死信（dead-letter）
+
+> **不含 embedding 生成**：文本语义检索改走 VLM 描述 + FTS5 BM25（见 [相似检索层](../storage/vector-search.md)），视觉相似检索在采集时就由 pHash 给出，Worker 侧不再承担向量化工作。
 
 ---
 
@@ -22,10 +24,6 @@ captured
                                     claim + VLM describe
                                               │
                                           vlm_done
-                                              │
-                                    embedding generation
-                                              │
-                                          embed_done
                                               │
                                       classify / rules
                                               │
@@ -105,11 +103,11 @@ Worker 通过 `Provider` Protocol 与模型交互，不绑定具体厂商：
 
 ```python
 class Provider(Protocol):
-    async def vlm_describe(self, image_path: str, title: str) -> str: ...
-    async def embed(self, text: str) -> list[float]: ...
+    async def vlm_describe(self, image_path: str, title: str) -> dict: ...
+    # 返回结构化字段：{"activity", "scene", "summary", "keywords"}
 ```
 
-默认实现对接 **OpenAI 兼容协议**（`POST /v1/chat/completions` + `POST /v1/embeddings`），可通过配置切换到任何兼容端点（OpenAI、Azure、本地 Ollama 等）。
+默认实现对接 **OpenAI 兼容协议**（`POST /v1/chat/completions`），可通过配置切换到任何兼容端点（DashScope、OpenAI、Azure、本地 Ollama 等）。实验数据（`D:\Code\20260419测试阿里vlemb`）倾向使用 DashScope 上的 `qwen3.6-plus`（`enable_thinking=False`）。
 
 ---
 
@@ -119,7 +117,6 @@ class Provider(Protocol):
 - 核心约束：对用户交互无感（优先级低于采集服务）
 - 并发建议：
   - **VLM 推理**：`vlm_concurrency = 1–2`（API 限流 + 单卡显存限制）
-  - **Embedding 生成**：`embed_concurrency = 2–4`（批量化，比 VLM 更轻量）
   - Phase 1.5 初始以 1 并发启动，按实际 API 限速和机器负载调整
 
 ---
@@ -128,5 +125,5 @@ class Provider(Protocol):
 
 - [存储 Schema（analysis_results 表）](../storage/schema.md)
 - [规则/反馈引擎](rule-engine.md)
-- [向量检索层](../storage/vector-search.md)
+- [相似检索层](../storage/vector-search.md)
 - [开发路线图（Phase 1.5）](../overview/roadmap.md)

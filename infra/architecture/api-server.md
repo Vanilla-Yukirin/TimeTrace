@@ -25,29 +25,72 @@
 
 ```
 GET  /v1/records
-     ?date=2026-04-09
-     &start=<epoch_ms>
+     ?start=<epoch_ms>
      &end=<epoch_ms>
-     &apps=<comma_separated>
-     &cats=<comma_separated>
-     &q=<keyword>
+     &app=<name>                 # 单个应用（保留，向后兼容）
+     &apps=<a,b,c>               # 多个应用（逗号分隔）
+     &categories=<cat1,cat2>     # 多个分类（作用于 analysis_results.category_final）
+     &q=<keyword>                # 匹配 window_title OR vlm_desc，LIKE 元字符自动转义
      &limit=200
      &cursor=<record_id>
 
-POST /v1/summary
-     {start, end, mode, max_frames, include_stats}
+GET  /v1/records/{record_id}     # 单条详情（含 screenshots 列表）
+
+GET  /v1/apps                    # 聚合返回 [{name, count}]，count 降序，用于筛选 UI
+
+GET  /v1/categories
 
 POST /v1/feedback
      {record_id, action: "confirm"|"edit", category, tags}
 
-GET  /v1/categories
+POST /v1/search/by-image (multipart)
+     images: List[UploadFile]    # 1–5 张参考图
+     visual: bool = true         # 启用 pHash 通道（用第一张图）
+     semantic: bool = true       # 启用 VLM→BM25 通道（用所有图）
+     radius: int = 10            # pHash 汉明半径上限
+     q: str | None               # 可选关键词（与图搜一起走）
+     start, end: int | None      # epoch ms，支持半开区间
+     apps, categories: str | None (csv)
+     limit: int = 50 (≤ 200)
+     → {items, total, visual_channel, semantic_channel}
 
-POST /v1/search
-     {query_text, start?, end?, top_k, filters}
+POST /v1/summary                 # Phase 1.5 目标，未实现
+     {start, end, mode, max_frames, include_stats}
 
 GET  /healthz
      → {"status": "ok"}
 ```
+
+### /v1/search/by-image 响应形态
+
+```json
+{
+  "items": [
+    {
+      "screenshot_id": "...",
+      "record_id": "...",
+      "ts_start": 1712345678000,
+      "app_name": "Chrome",
+      "window_title": "...",
+      "thumb_path": "2026/04/22/xxx.jpg",
+      "vlm_desc": null,
+      "category_final": null,
+      "match": {
+        "visual_distance": 4,
+        "semantic_rank": null,
+        "text_rank": null,
+        "rrf_score": 0.0164,
+        "reasons": ["pHash 距离 4"]
+      }
+    }
+  ],
+  "total": 37,
+  "visual_channel": "ok",          // ok / disabled / unavailable
+  "semantic_channel": "unavailable"
+}
+```
+
+融合策略见 [相似检索层](../storage/vector-search.md)（RRF k=60）。`unavailable` 表示该通道选中但无法产出结果（如 pHash 索引为空、VLM 未接入）。
 
 ---
 
@@ -64,12 +107,19 @@ GET  /healthz
 
 ```
 src/timetrace/api/
-├── app.py           ← FastAPI 工厂，注册路由
+├── app.py           ← FastAPI 工厂，注册路由与共享 state
 └── routes/
-    ├── records.py   ← GET /v1/records
-    ├── search.py    ← POST /v1/search
+    ├── records.py   ← GET /v1/records, GET /v1/records/{id}, GET /v1/apps, GET /v1/runtime-info
+    ├── search.py    ← POST /v1/search/by-image（pHash + BM25 + RRF 融合）
     └── feedback.py  ← POST /v1/feedback, GET /v1/categories
 ```
+
+**共享状态**（`app.state`）：
+- `db` — `Database` 实例
+- `phash_index` — 进程启动时从 SQLite 重建的 `PHashIndex` 单例，供 `/search/by-image` 查询
+- `data_dir` / `thumbs_dir` — 静态 `/thumbs` 挂载
+
+**静态路由**：`/thumbs/*` 由 FastAPI `StaticFiles` 挂载至 `thumbs_dir`，前端直接访问。
 
 ---
 
@@ -85,13 +135,22 @@ src/timetrace/api/
 
 ```python
 # src/timetrace/api/app.py
-def create_app(db: Database) -> FastAPI:
+def create_app(
+    db: Database,
+    storage_cfg: StorageConfig | None = None,
+    phash_index: PHashIndex | None = None,
+) -> FastAPI:
     app = FastAPI(
         title="TimeTrace Local API",
         version="0.1.0",
         description="Local-first desktop activity memory layer – Local API",
     )
     app.state.db = db
+    app.state.phash_index = phash_index
+    if storage_cfg is not None:
+        storage_cfg.thumbs_dir.mkdir(parents=True, exist_ok=True)
+        app.mount("/thumbs", StaticFiles(directory=storage_cfg.thumbs_dir))
+
     app.include_router(records.router,  prefix="/v1")
     app.include_router(search.router,   prefix="/v1")
     app.include_router(feedback.router, prefix="/v1")

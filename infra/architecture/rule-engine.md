@@ -135,5 +135,5 @@ rules:
 
 - [分类权重与置信度详解](../engineering/classification.md)
 - [Analysis Worker（触发分类）](analysis-worker.md)
-- [向量检索（KNN 数据来源）](../storage/vector-search.md)
+- [相似检索层（KNN 数据来源）](../storage/vector-search.md)
 - [存储 Schema（feedback 表）](../storage/schema.md)

@@ -33,9 +33,22 @@
 - 键鼠事件流（pynput）
 
 **输出**
-- SQLite：插入 `records`、`screenshots`
+- SQLite：插入 `records`、`screenshots`（含 `phash` 8 字节 BLOB）
 - 文件系统：写入 `screenshots/YYYY/MM/DD/<YYYYMMDD_HHMMSS>_<record_id>.png`、`thumbs/YYYY/MM/DD/<YYYYMMDD_HHMMSS>_<record_id>.jpg`
+- 内存：同步调用 `PHashIndex.insert(screenshot_id, phash, ts_start)` 保持视觉索引热态（见 [相似检索层](../storage/vector-search.md)）
 - 日志：结构化 jsonl（structlog）
+
+### 每帧的 pHash 计算
+
+`capture_active_window()` 在图像保存后立即计算 64-bit 感知哈希（32×32 灰度 → DCT-II → 8×8 低频 → 中位数阈值）。计算失败时 `phash = None` 并打 warning，不中断截图落库流程；失败的帧不会进入视觉索引。
+
+`CaptureService` 在 DB 插入成功后：
+```python
+if phash is not None and self._phash_index is not None:
+    ts_start = await self._db.get_record_ts_start(record_id)
+    self._phash_index.insert(screenshot_id, phash, ts_start)
+```
+`ts_start` 从 record 读取而不是用 `time.time()`，确保运行时 insert 与 `PHashIndex.from_db()` 重建用的桶键一致（见 `src/timetrace/phash_index/index.py`）。
 
 ---
 

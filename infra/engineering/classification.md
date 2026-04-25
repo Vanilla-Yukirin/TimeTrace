@@ -34,7 +34,7 @@ def decay(distance: float, alpha: float = 1.0) -> float:
 - `distance = 1.0` → `decay ≈ 0.37`
 - `distance = 3.0` → `decay ≈ 0.05`（几乎不影响投票）
 
-`alpha` 可按 embedding 空间的分布特性调整。
+`alpha` 可按相似度空间的分布特性调整（Hamming / BM25 归一化距离等）。
 
 ---
 
