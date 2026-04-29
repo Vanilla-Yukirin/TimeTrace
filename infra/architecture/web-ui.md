@@ -50,7 +50,30 @@ function TimelineCanvas(props: {
 
 ### RecordDetailPanel
 
-展示单帧信息与反馈按钮：缩略图、窗口标题、应用名、VLM 描述、分类、confidence、decision_trace 折叠展示。
+展示单帧信息与反馈按钮：缩略图、窗口标题、应用名、VLM 描述、分类、confidence、decision_trace 折叠展示。缩略图点击后触发 `ImageLightbox` 进入放大查看模式。
+
+### ImageLightbox
+
+跨页面共享的弹层放大查看组件，触发点位于详情面板缩略图与搜索结果行缩略图。
+
+**核心交互**：
+- 居中弹层（非全屏，最大 `min(1200px, 92vw) × 90vh`），半透明遮罩 + 背景模糊
+- 关闭：点击遮罩 / 右上角 ✕ / Esc 三种方式（基于 Radix Dialog 默认行为）
+- 上下条切换：图片左右覆盖式圆形按钮 + 全局键盘 ← / →；首尾边界自动 disabled
+- 底部黑色渐变阴影区呈现分类徽章、时间区间、应用名 + 窗口标题、URL、VLM 描述
+
+**切换范围语义**：
+- 时间线页：`useRecords(date)` 返回的当日全部记录（保留时间相邻关系）
+- 搜索页：当前搜索结果列表（保留检索相关性顺序）
+- **不过滤无截图项**：切到没有 `thumb_path` 的活动时主图区显示「该活动无截图」占位，底部信息条照常显示该活动元数据
+- 单条活动只展示首张截图（`thumb_path`），不切换 `screenshots[]` 多帧
+
+**实现要点**：
+- 基于 `@radix-ui/react-dialog`，自带 portal / focus trap / Esc 关闭
+- 父组件维护 `lightboxIndex` 状态（`-1` 为关闭），把列表整体映射成 `LightboxItem[]` 传入；切换时由父组件回调 `onIndexChange`
+- 索引钳位 `Math.min(idx, len - 1)`，`open` 严格要求 `items.length > 0`，防止后台 refetch 缩短列表导致越界
+- 搜索页提交新 `submitted` 时通过 `useEffect` 关闭弹层（旧索引指向的活动可能已不在新结果集里）
+- 动画：CSS @keyframes 配合 Radix `data-state` 属性钩子（`lightbox-overlay-in` / `lightbox-content-in`），约 180–200ms 淡入 + 缩放，无需引入 framer-motion
 
 ### SearchPage
 
@@ -71,6 +94,7 @@ function TimelineCanvas(props: {
 
 **结果展示**：
 - 行内展开（点击整行折叠/展开详情）
+- 行内缩略图（折叠态 80×50、展开态最大 320 高）点击触发 `ImageLightbox` 放大查看，并支持在结果列表内左右切换
 - 匹配徽标说明理由："pHash 距离 4" / "语义 rank 3" / "关键词 rank 7"
 - 每行 **「在时间轴中查看」** 按钮 → `navigate('/?date=YYYY-MM-DD&highlight=recordId')`
 
