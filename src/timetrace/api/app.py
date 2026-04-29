@@ -13,12 +13,14 @@ if TYPE_CHECKING:
     from timetrace.config import StorageConfig
     from timetrace.phash_index.index import PHashIndex
     from timetrace.storage.database import Database
+    from timetrace.vlm.client import VLMClient
 
 
 def create_app(
     db: Database,
     storage_cfg: StorageConfig | None = None,
     phash_index: PHashIndex | None = None,
+    vlm_client: VLMClient | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="TimeTrace Local API",
@@ -28,6 +30,7 @@ def create_app(
 
     app.state.db = db
     app.state.phash_index = phash_index
+    app.state.vlm_client = vlm_client
     if storage_cfg is not None:
         app.state.data_dir = str(storage_cfg.data_dir)
         # Ensure thumbs dir exists before mounting (first-run has no screenshots yet)

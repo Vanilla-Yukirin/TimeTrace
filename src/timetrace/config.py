@@ -5,6 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from timetrace.vlm.client import VLMConfig
+
+
+@dataclass
+class WorkerConfig:
+    """Tunable parameters for the analysis worker."""
+
+    vlm_concurrency: int = 2
+    max_retries: int = 5
+    backoff_base_s: float = 60.0
+    backoff_max_s: float = 600.0
+
 
 @dataclass
 class CaptureConfig:
@@ -57,5 +69,7 @@ class AppConfig:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
+    worker: WorkerConfig = field(default_factory=WorkerConfig)
+    vlm: VLMConfig | None = field(default_factory=VLMConfig.from_env)
     api_host: str = "127.0.0.1"
     api_port: int = 8765

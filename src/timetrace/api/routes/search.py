@@ -18,8 +18,8 @@ Pipeline (see `infra/overview/roadmap.md` for context):
                                                     ▼
                                            top-N items
 
-VLM (`_describe_image`) and BM25 (`_bm25_search`) are stubs until Phase 1.5 wires
-real clients in. The full orchestration is live so enabling them is a one-file change.
+`_bm25_search` is currently a LIKE fallback over `vlm_desc`; once FTS5 tables
+are built it is the only function that needs to flip to a `MATCH` query.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from PIL import Image
 
 from timetrace.phash_index.hash import compute_phash
+from timetrace.vlm.client import VLMError, format_description
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["search"])
@@ -48,16 +49,8 @@ def _escape_like(s: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# VLM / BM25 stubs (Phase 1.5 will implement these)                            #
+# BM25 fallback (LIKE-based scoring; FTS5 MATCH is the planned upgrade)        #
 # --------------------------------------------------------------------------- #
-
-
-def _describe_image(img: Image.Image) -> str | None:
-    """Return a VLM-generated structured description, or None when unconfigured.
-
-    Phase 1.5 will swap this for a real DashScope (qwen3.6-plus) call.
-    """
-    return None
 
 
 async def _bm25_search(
@@ -105,8 +98,9 @@ async def _bm25_search(
         ORDER BY score DESC, ts DESC
         LIMIT ?
     """
-    async with db.conn.execute(sql, params) as cur:
-        rows = await cur.fetchall()
+    async with db.lock:
+        async with db.conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
     return [(row["sid"], float(row["score"])) for row in rows]
 
 
@@ -137,8 +131,9 @@ async def _like_fallback(
         ORDER BY r.ts_start DESC
         LIMIT ?
     """
-    async with db.conn.execute(sql, params) as cur:
-        rows = await cur.fetchall()
+    async with db.lock:
+        async with db.conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
     # Rank by ts_start desc → score = 1/(1+position)
     return [(row["sid"], 1.0 / (1 + i)) for i, row in enumerate(rows)]
 
@@ -321,8 +316,20 @@ async def search_by_image(
     # ---------- Semantic channel (VLM describe all images → BM25) ----------
     semantic_hits: list[tuple[str, float]] = []
     semantic_status = "disabled"
+    vlm_client = getattr(request.app.state, "vlm_client", None)
     if semantic:
-        descriptions = [d for d in (_describe_image(img) for img in pil_images) if d]
+        descriptions: list[str] = []
+        if vlm_client is not None and pil_images:
+            for uf, img in zip(images, pil_images, strict=False):
+                try:
+                    payload = await vlm_client.describe(img, window_title=uf.filename)
+                except VLMError as exc:
+                    logger.info("search.vlm_describe_failed", error=str(exc))
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("search.vlm_describe_unexpected", error=str(exc))
+                    continue
+                descriptions.append(format_description(payload))
         if not descriptions:
             semantic_status = "unavailable"
         else:

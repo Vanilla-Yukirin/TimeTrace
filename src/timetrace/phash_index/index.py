@@ -84,14 +84,15 @@ class PHashIndex:
     async def from_db(cls, db: Database) -> PHashIndex:
         """Rebuild the index from SQLite (the source of truth)."""
         index = cls()
-        async with db.conn.execute(
-            """SELECT s.id AS sid, s.phash AS phash, r.ts_start AS ts
-               FROM screenshots s
-               JOIN records r ON r.id = s.record_id
-               WHERE s.phash IS NOT NULL AND s.deleted_at IS NULL
-               ORDER BY r.ts_start ASC, s.id ASC"""
-        ) as cur:
-            rows = await cur.fetchall()
+        async with db.lock:
+            async with db.conn.execute(
+                """SELECT s.id AS sid, s.phash AS phash, r.ts_start AS ts
+                   FROM screenshots s
+                   JOIN records r ON r.id = s.record_id
+                   WHERE s.phash IS NOT NULL AND s.deleted_at IS NULL
+                   ORDER BY r.ts_start ASC, s.id ASC"""
+            ) as cur:
+                rows = await cur.fetchall()
 
         for row in rows:
             index.insert(row["sid"], phash_from_blob(row["phash"]), row["ts"])

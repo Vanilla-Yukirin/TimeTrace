@@ -68,6 +68,12 @@ async def test_mark_error_final(db):
     assert row["status"] == "error_final"
     assert row["error_msg"] == "model unavailable"
 
+    # records.status must mirror the analysis state — otherwise the timeline
+    # keeps showing pending_vlm while the worker has already given up.
+    async with db.conn.execute("SELECT status FROM records WHERE id=?", (record_id,)) as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "error_final"
+
 
 async def test_insert_screenshot(db):
     ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
@@ -147,7 +153,7 @@ async def test_reclaim_stale_tasks(db):
     ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
     record_id = await db.insert_record(ctx, reason="heartbeat")
     await db.mark_pending(record_id)
-    await db.claim_next_task("pending_vlm")  # sets status = processing_pending_vlm
+    await db.claim_next_task("pending_vlm")  # status → processing_vlm
 
     # Force locked_at to be very old
     old_ts = int((time.time() - 400) * 1000)
@@ -164,7 +170,46 @@ async def test_reclaim_stale_tasks(db):
         "SELECT status FROM analysis_results WHERE record_id=?", (record_id,)
     ) as cur:
         row = await cur.fetchone()
-    assert row["status"].startswith("pending_")
+    # Must be exactly the pending queue name — not "pending_pending_vlm" — so a
+    # subsequent claim_next_task("pending_vlm") finds it again.
+    assert row["status"] == "pending_vlm"
+
+    reclaimed = await db.claim_next_task("pending_vlm")
+    assert reclaimed is not None
+    assert reclaimed["record_id"] == record_id
+
+
+async def test_reclaim_handles_legacy_processing_pending_state(db):
+    """Rows left over from older builds carried `processing_pending_vlm`; after
+    reclaim they must end up in `pending_vlm`, not `pending_pending_vlm`."""
+    import time as _t
+
+    ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
+    record_id = await db.insert_record(ctx, reason="heartbeat")
+    await db.mark_pending(record_id)
+
+    # Manually inject the legacy bad state.
+    old_ts = int((_t.time() - 1000) * 1000)
+    await db.conn.execute(
+        "UPDATE analysis_results SET status='processing_pending_vlm', locked_at=?"
+        " WHERE record_id=?",
+        (old_ts, record_id),
+    )
+    await db.conn.commit()
+
+    count = await db.reclaim_stale_tasks(timeout_ms=300_000)
+    assert count == 1
+
+    async with db.conn.execute(
+        "SELECT status FROM analysis_results WHERE record_id=?", (record_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending_vlm"
+
+    # And it can now be claimed again — the original orphaning bug is gone.
+    reclaimed = await db.claim_next_task("pending_vlm")
+    assert reclaimed is not None
+    assert reclaimed["record_id"] == record_id
 
 
 async def test_mark_pending_idempotent_preserves_existing_data(db):

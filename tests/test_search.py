@@ -296,6 +296,46 @@ async def test_search_placeholder_endpoint_removed(db):
     assert resp.status_code in (404, 405)
 
 
+class _StubVLMClient:
+    """Returns a fixed dict from describe(); mimics the surface used by the route."""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    async def describe(self, image, window_title=None):  # noqa: ANN001
+        return self.payload
+
+
+async def test_search_by_image_semantic_with_stub_vlm(db):
+    """When VLM returns a real dict and DB has matching vlm_desc, semantic channel hits."""
+    ph = compute_phash(_checker())
+    rid, _ = await _seed_record_with_screenshot(db, "App", "vscode-window", ph)
+
+    # Manually populate vlm_desc with text that overlaps the stub VLM output
+    await db.mark_pending(rid)
+    await db.conn.execute(
+        "UPDATE analysis_results SET vlm_desc=? WHERE record_id=?",
+        ("用户正在 VSCode 编辑代码\n\n摘要：调试\n关键词：VSCode、调试", rid),
+    )
+    await db.conn.commit()
+
+    index = await PHashIndex.from_db(db)
+    app = create_app(db, phash_index=index)
+    app.state.vlm_client = _StubVLMClient(
+        {"keywords": ["VSCode", "调试"], "summary": "调试代码", "description": "在 VSCode 调试代码"}
+    )
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/search/by-image",
+            files={"images": ("q.png", _img_bytes(_checker()), "image/png")},
+            data={"visual": "false", "semantic": "true"},
+        )
+    body = resp.json()
+    assert body["semantic_channel"] == "ok"
+    assert len(body["items"]) >= 1
+
+
 async def test_search_by_image_thumb_path_stripped(db):
     ph = compute_phash(_checker())
     _, _ = await _seed_record_with_screenshot(db, "App", "x", ph)

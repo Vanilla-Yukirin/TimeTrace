@@ -27,11 +27,12 @@ async def submit_feedback(req: FeedbackRequest, request: Request) -> dict:
     db = request.app.state.db
 
     # Fetch current category for before/after diff
-    async with db.conn.execute(
-        "SELECT category_final FROM analysis_results WHERE record_id=?",
-        (req.record_id,),
-    ) as cur:
-        row = await cur.fetchone()
+    async with db.lock:
+        async with db.conn.execute(
+            "SELECT category_final FROM analysis_results WHERE record_id=?",
+            (req.record_id,),
+        ) as cur:
+            row = await cur.fetchone()
     category_before = row["category_final"] if row else None
 
     feedback_id = await db.insert_feedback(

@@ -17,8 +17,9 @@ if TYPE_CHECKING:
 
 async def list_categories(db: Database) -> dict:
     """Return all known activity categories."""
-    async with db.conn.execute("SELECT id, name, parent_id FROM categories") as cur:
-        rows = await cur.fetchall()
+    async with db.lock:
+        async with db.conn.execute("SELECT id, name, parent_id FROM categories") as cur:
+            rows = await cur.fetchall()
     return {"categories": [dict(r) for r in rows]}
 
 

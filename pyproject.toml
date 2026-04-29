@@ -27,16 +27,14 @@ dependencies = [
     "pystray>=0.19.0",
     # Numerical operations (pHash DCT, Phase 1)
     "numpy>=1.26.0",
+    # VLM client (OpenAI-compatible chat completions, Phase 1.5)
+    "openai>=1.30.0",
+    # Load VLM credentials from .env at startup
+    "python-dotenv>=1.0.0",
 ]
 
 [project.scripts]
 timetrace = "timetrace.main:main"
-
-[project.optional-dependencies]
-analysis = [
-    # VLM / embedding providers (optional, Phase 1.5+)
-    "openai>=1.30.0",
-]
 
 [build-system]
 requires = ["hatchling"]

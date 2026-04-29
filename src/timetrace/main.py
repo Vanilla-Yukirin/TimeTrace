@@ -7,14 +7,20 @@ import logging
 import signal
 
 import structlog
+from dotenv import load_dotenv
 
-from timetrace.api.app import create_app
-from timetrace.capture.service import CaptureService
-from timetrace.config import AppConfig
-from timetrace.phash_index.index import PHashIndex
-from timetrace.storage.database import Database
-from timetrace.tray import start_tray_thread
-from timetrace.worker.loop import AnalysisWorker
+# Load .env before AppConfig() so VLMConfig.from_env() sees the values.
+load_dotenv()
+
+from timetrace.api.app import create_app  # noqa: E402
+from timetrace.capture.service import CaptureService  # noqa: E402
+from timetrace.config import AppConfig  # noqa: E402
+from timetrace.phash_index.index import PHashIndex  # noqa: E402
+from timetrace.storage.database import Database  # noqa: E402
+from timetrace.tray import start_tray_thread  # noqa: E402
+from timetrace.vlm.client import VLMClient  # noqa: E402
+from timetrace.vlm.health import VLMHealthGate  # noqa: E402
+from timetrace.worker.loop import AnalysisWorker  # noqa: E402
 
 logger = structlog.get_logger(__name__)
 
@@ -27,6 +33,15 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
 
     phash_index = await PHashIndex.from_db(db)
 
+    if config.vlm is not None:
+        vlm_client = VLMClient(config.vlm)
+        gate = VLMHealthGate(vlm_client)
+        logger.info("vlm.ready", model=config.vlm.model, base_url=config.vlm.base_url)
+    else:
+        vlm_client = None
+        gate = None
+        logger.info("vlm.disabled", reason="no_api_key")
+
     capture_svc = CaptureService(
         config.capture,
         config.privacy,
@@ -34,8 +49,19 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
         storage_cfg=config.storage,
         phash_index=phash_index,
     )
-    worker = AnalysisWorker(db)
-    app = create_app(db, storage_cfg=config.storage, phash_index=phash_index)
+    worker = AnalysisWorker(
+        db,
+        vlm=vlm_client,
+        gate=gate,
+        cfg=config.worker,
+        storage_cfg=config.storage,
+    )
+    app = create_app(
+        db,
+        storage_cfg=config.storage,
+        phash_index=phash_index,
+        vlm_client=vlm_client,
+    )
     app.state.api_host = config.api_host
     app.state.api_port = config.api_port
 
@@ -63,14 +89,25 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
             await asyncio.sleep(_STALE_TASK_RECLAIM_INTERVAL_S)
             await db.reclaim_stale_tasks()
 
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(capture_svc.run(), name="capture")
-        tg.create_task(worker.run(), name="worker")
-        tg.create_task(server.serve(), name="api")
-        tg.create_task(_watch_quit(), name="quit_watcher")
-        tg.create_task(_reclaim_loop(), name="reclaim")
-
-    await db.close()
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(capture_svc.run(), name="capture")
+            tg.create_task(worker.run(), name="worker")
+            tg.create_task(server.serve(), name="api")
+            tg.create_task(_watch_quit(), name="quit_watcher")
+            tg.create_task(_reclaim_loop(), name="reclaim")
+    finally:
+        # Best-effort cleanup even when the TaskGroup raises (httpx pool from
+        # vlm_client must be closed or aiohttp will warn at exit).
+        if vlm_client is not None:
+            try:
+                await vlm_client.aclose()
+            except Exception:  # noqa: BLE001
+                logger.warning("vlm.aclose_failed", exc_info=True)
+        try:
+            await db.close()
+        except Exception:  # noqa: BLE001
+            logger.warning("db.close_failed", exc_info=True)
     logger.info("main.shutdown_complete")
 
 
