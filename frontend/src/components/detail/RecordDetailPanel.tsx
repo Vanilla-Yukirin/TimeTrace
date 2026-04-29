@@ -9,9 +9,10 @@ import { FeedbackControls } from './FeedbackControls'
 interface RecordDetailPanelProps {
   recordId: string | null
   onClose: () => void
+  onZoom?: (recordId: string) => void
 }
 
-export function RecordDetailPanel({ recordId, onClose }: RecordDetailPanelProps) {
+export function RecordDetailPanel({ recordId, onClose, onZoom }: RecordDetailPanelProps) {
   const { data: record, isLoading, error } = useRecord(recordId)
   const feedback = useFeedback()
   const { reset: resetFeedback } = feedback
@@ -126,6 +127,7 @@ export function RecordDetailPanel({ recordId, onClose }: RecordDetailPanelProps)
         thumbPath={record.thumb_path}
         screenshots={record.screenshots}
         screenshotCount={record.screenshot_count}
+        onZoom={onZoom ? () => onZoom(record.id) : undefined}
       />
 
       {/* Meta info */}
@@ -146,7 +148,23 @@ export function RecordDetailPanel({ recordId, onClose }: RecordDetailPanelProps)
           category={record.category_final}
           confidence={record.confidence}
         />
-        {record.vlm_desc == null && (
+        {record.vlm_desc != null ? (
+          <pre style={{
+            margin: '8px 0 0 0',
+            fontSize: 12,
+            lineHeight: 1.5,
+            color: 'var(--text-secondary)',
+            padding: '8px 10px',
+            background: 'var(--bg-raised)',
+            borderRadius: 4,
+            border: '1px solid var(--bg-border)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontFamily: 'inherit',
+          }}>
+            {record.vlm_desc}
+          </pre>
+        ) : (
           <div style={{
             marginTop: 8,
             fontSize: 11,
@@ -156,7 +174,7 @@ export function RecordDetailPanel({ recordId, onClose }: RecordDetailPanelProps)
             borderRadius: 4,
             border: '1px solid var(--bg-border)',
           }}>
-            画面描述（Phase 1.5 启用后自动生成）
+            画面描述（VLM 分析中或未启用）
           </div>
         )}
       </div>

@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Search as SearchIcon } from 'lucide-react'
 import { ImageDropzone } from '@/components/search/ImageDropzone'
 import { FilterPanel } from '@/components/search/FilterPanel'
 import { ResultRow } from '@/components/search/ResultRow'
+import { ImageLightbox, type LightboxItem } from '@/components/lightbox/ImageLightbox'
 import { useSearchQuery, type SearchParams } from '@/hooks/useSearchQuery'
 import { fromDateParam } from '@/lib/dateUtils'
 
@@ -21,6 +22,36 @@ export function SearchPage() {
   const [submitted, setSubmitted] = useState<SearchParams | null>(null)
 
   const { data, isFetching, error } = useSearchQuery(submitted)
+
+  const [lightboxIndex, setLightboxIndex] = useState<number>(-1)
+
+  const lightboxItems = useMemo<LightboxItem[]>(
+    () =>
+      (data?.items ?? []).map((it) => ({
+        id: it.screenshot_id,
+        thumbPath: it.thumb_path,
+        tsStart: it.ts_start,
+        tsEnd: it.ts_end,
+        appName: it.app_name,
+        windowTitle: it.window_title,
+        url: it.url,
+        categoryFinal: it.category_final,
+        categoryConfidence: null,
+        vlmDesc: it.vlm_desc,
+      })),
+    [data],
+  )
+
+  const handleZoom = useCallback((idx: number) => setLightboxIndex(idx), [])
+  const handleLightboxOpenChange = useCallback((open: boolean) => {
+    if (!open) setLightboxIndex(-1)
+  }, [])
+
+  // Close lightbox when a new search is submitted — old indices may collide
+  // with the new result set, and the user's frame of reference has shifted.
+  useEffect(() => {
+    setLightboxIndex(-1)
+  }, [submitted])
 
   const hasAnyInput = useMemo(
     () =>
@@ -197,13 +228,21 @@ export function SearchPage() {
                   </>
                 )}
               </div>
-              {data.items.map((it) => (
-                <ResultRow key={it.screenshot_id} item={it} />
+              {data.items.map((it, idx) => (
+                <ResultRow key={it.screenshot_id} item={it} onZoom={() => handleZoom(idx)} />
               ))}
             </>
           )}
         </div>
       </div>
+
+      <ImageLightbox
+        items={lightboxItems}
+        index={lightboxIndex >= 0 ? Math.min(lightboxIndex, lightboxItems.length - 1) : 0}
+        onIndexChange={setLightboxIndex}
+        open={lightboxIndex >= 0 && lightboxItems.length > 0}
+        onOpenChange={handleLightboxOpenChange}
+      />
     </div>
   )
 }

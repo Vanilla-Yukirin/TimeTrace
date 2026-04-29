@@ -1,8 +1,9 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useRecords } from '@/hooks/useRecords'
 import { TimelineCanvas } from '@/components/timeline/TimelineCanvas'
 import { RecordDetailPanel } from '@/components/detail/RecordDetailPanel'
 import { DatePicker } from '@/components/calendar/DatePicker'
+import { ImageLightbox, type LightboxItem } from '@/components/lightbox/ImageLightbox'
 import { toDateParam, fromDateParam } from '@/lib/dateUtils'
 
 export function TimelinePage() {
@@ -19,9 +20,29 @@ export function TimelinePage() {
 
   const { data: records } = useRecords(selectedDate)
 
+  const [lightboxIndex, setLightboxIndex] = useState<number>(-1)
+
+  const lightboxItems = useMemo<LightboxItem[]>(
+    () =>
+      (records ?? []).map((r) => ({
+        id: r.id,
+        thumbPath: r.thumb_path,
+        tsStart: r.ts_start,
+        tsEnd: r.ts_end,
+        appName: r.app_name,
+        windowTitle: r.window_title,
+        url: r.url,
+        categoryFinal: r.category_final,
+        categoryConfidence: r.confidence,
+        vlmDesc: r.vlm_desc,
+      })),
+    [records],
+  )
+
   const handleDateChange = useCallback((date: Date) => {
     setSelectedDate(date)
     setSelectedRecordId(null)
+    setLightboxIndex(-1)
     const params = new URLSearchParams(window.location.search)
     params.set('date', toDateParam(date))
     window.history.pushState({}, '', `${window.location.pathname}?${params.toString()}`)
@@ -29,6 +50,27 @@ export function TimelinePage() {
 
   const handleSelectRecord = useCallback((id: string | null) => {
     setSelectedRecordId(id)
+  }, [])
+
+  const handleZoom = useCallback(
+    (recordId: string) => {
+      const idx = lightboxItems.findIndex((it) => it.id === recordId)
+      if (idx >= 0) setLightboxIndex(idx)
+    },
+    [lightboxItems],
+  )
+
+  const handleLightboxIndexChange = useCallback(
+    (next: number) => {
+      setLightboxIndex(next)
+      const item = lightboxItems[next]
+      if (item) setSelectedRecordId(item.id)
+    },
+    [lightboxItems],
+  )
+
+  const handleLightboxOpenChange = useCallback((open: boolean) => {
+    if (!open) setLightboxIndex(-1)
   }, [])
 
   const handleGoToday = useCallback(() => {
@@ -74,6 +116,15 @@ export function TimelinePage() {
       <RecordDetailPanel
         recordId={selectedRecordId}
         onClose={() => setSelectedRecordId(null)}
+        onZoom={handleZoom}
+      />
+
+      <ImageLightbox
+        items={lightboxItems}
+        index={lightboxIndex >= 0 ? Math.min(lightboxIndex, lightboxItems.length - 1) : 0}
+        onIndexChange={handleLightboxIndexChange}
+        open={lightboxIndex >= 0 && lightboxItems.length > 0}
+        onOpenChange={handleLightboxOpenChange}
       />
     </div>
   )
