@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-04-18
+**最后更新：** 2026-04-30
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -29,7 +29,9 @@ devlogs/
 
 ## frontend/
 
-_暂无归档_
+| 文件 | 摘要 |
+|------|------|
+| [archive-202604300228-image-lightbox.md](frontend/archive-202604300228-image-lightbox.md) | 基于 Radix Dialog 实装截图放大 Lightbox：弹层放大 + 左右键切换 + 底部信息条 + 动画；处理索引越界、按钮嵌套语义、margin 覆盖等 review 反馈，并同步 `infra/architecture/web-ui.md` |
 
 ---
 
