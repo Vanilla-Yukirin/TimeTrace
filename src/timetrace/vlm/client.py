@@ -32,8 +32,8 @@ _DESCRIBE_PROMPT = (
     "请仔细观察这张桌面截图，**只输出 JSON 对象**（不要前缀、不要解释、不要 markdown 围栏）：\n\n"
     "{\n"
     '  "keywords":    ["..."],   // 截图中显著可见的文字、人名、产品名、文件名等关键词；按重要性排列；最多 8 项；可空数组\n'  # noqa: E501
-    '  "summary":     "...",     // 30 字以内的画面要点\n'
-    '  "description": "..."      // 100 字以内对画面的完整描述（用户在做什么、应用、内容大致主题）\n'  # noqa: E501
+    '  "summary":     "...",     // 30 字以内的画面要点；直接陈述内容，不要以"该截图/这张图/图中/画面中/此图/此截图"等元叙述开头\n'  # noqa: E501
+    '  "description": "..."      // 100 字以内对画面的完整描述（用户在做什么、应用、内容大致主题）；直接陈述内容，不要以"该截图/这张图/图中/画面中/此图/此截图"等元叙述开头\n'  # noqa: E501
     "}\n"
 )
 # fmt: on
@@ -165,7 +165,7 @@ class VLMClient:
         data_url = _encode_image_data_url(image)
         text = _DESCRIBE_PROMPT
         if window_title:
-            text = f"{text}\n窗口标题（仅供辅助参考，可能不准确）：{window_title}"
+            text = f"{text}\n窗口标题（仅供辅助参考）：{window_title}"
 
         try:
             resp = await self._client.chat.completions.create(

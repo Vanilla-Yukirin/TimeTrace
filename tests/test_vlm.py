@@ -117,6 +117,33 @@ async def test_vlm_client_describe_parses_response():
     assert "extra_body" not in kwargs
 
 
+async def test_vlm_client_describe_prompt_forbids_meta_narration_and_softens_title_caveat():
+    """The prompt must (a) tell the model not to start with '该截图/这张图/图中/画面中…',
+    (b) still mark window_title as auxiliary, but no longer call it 'inaccurate'.
+    """
+    mock = AsyncMock(
+        return_value=_fake_completion('{"keywords": [], "summary": "s", "description": "d"}')
+    )
+    client = _make_client_with_mock(mock)
+    img = Image.new("RGB", (8, 8), (0, 0, 0))
+    await client.describe(img, window_title="微信")
+
+    messages = mock.call_args.kwargs["messages"]
+    text_parts = [
+        part["text"] for part in messages[0]["content"] if part.get("type") == "text"
+    ]
+    full_prompt = "\n".join(text_parts)
+
+    # Meta-narration ban — both summary and description fields must mention it.
+    assert full_prompt.count("该截图") >= 2
+    assert "图中" in full_prompt and "画面中" in full_prompt
+
+    # Window-title caveat softened.
+    assert "仅供辅助参考" in full_prompt
+    assert "可能不准确" not in full_prompt
+    assert "微信" in full_prompt  # window_title was actually injected
+
+
 async def test_vlm_client_describe_sends_extra_body_when_thinking_disabled():
     mock = AsyncMock(
         return_value=_fake_completion('{"keywords": [], "summary": "s", "description": "d"}')
