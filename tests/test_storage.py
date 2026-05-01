@@ -257,3 +257,159 @@ async def test_mark_pending_records_status_guard(db):
         row = await cur.fetchone()
 
     assert row["status"] == "vlm_done"  # not downgraded
+
+
+# --------------------------------------------------------------------- #
+# Orphan ts_end IS NULL healing                                          #
+# --------------------------------------------------------------------- #
+
+
+async def test_insert_closes_prior_orphan_to_next_ts_start(db):
+    """Layer 1: insert_record collapses a prior orphan to the new record's ts_start."""
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    rid_a = await db.insert_record(ctx, reason="heartbeat")
+
+    # Force A back to a known-earlier ts_start AND null out ts_end (= simulates
+    # a previous-session crash before close_record fired).
+    await db.conn.execute(
+        "UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,)
+    )
+    await db.conn.commit()
+
+    rid_b = await db.insert_record(ctx, reason="heartbeat")
+
+    async with db.conn.execute(
+        "SELECT ts_end FROM records WHERE id=?", (rid_a,)
+    ) as cur:
+        a_end = (await cur.fetchone())["ts_end"]
+    async with db.conn.execute(
+        "SELECT ts_start FROM records WHERE id=?", (rid_b,)
+    ) as cur:
+        b_start = (await cur.fetchone())["ts_start"]
+
+    assert a_end is not None
+    assert a_end == b_start
+
+
+async def test_insert_closes_multiple_orphans_each_to_correct_boundary(db):
+    """Layer 1, multi-orphan: MIN(next.ts_start) gives each row its own boundary,
+    not a shared timestamp."""
+    ctx = CaptureContext(app_name="X", process_name="x", window_title="x")
+    rid_a = await db.insert_record(ctx, reason="heartbeat")
+    rid_b = await db.insert_record(ctx, reason="heartbeat")
+    rid_c = await db.insert_record(ctx, reason="heartbeat")
+
+    # Stamp deterministic timestamps and null out ts_end on all three.
+    await db.conn.execute(
+        "UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,)
+    )
+    await db.conn.execute(
+        "UPDATE records SET ts_start=2000, ts_end=NULL WHERE id=?", (rid_b,)
+    )
+    await db.conn.execute(
+        "UPDATE records SET ts_start=3000, ts_end=NULL WHERE id=?", (rid_c,)
+    )
+    await db.conn.commit()
+
+    rid_d = await db.insert_record(ctx, reason="heartbeat")
+
+    async with db.conn.execute(
+        "SELECT id, ts_start, ts_end FROM records ORDER BY ts_start"
+    ) as cur:
+        rows = list(await cur.fetchall())
+    by_id = {r["id"]: r for r in rows}
+    a, b, c, d = by_id[rid_a], by_id[rid_b], by_id[rid_c], by_id[rid_d]
+
+    # Each orphan closes to its own next, not to D's ts_start.
+    assert a["ts_end"] == b["ts_start"]
+    assert b["ts_end"] == c["ts_start"]
+    assert c["ts_end"] == d["ts_start"]
+
+
+async def test_init_heals_orphan_with_successor_to_next_ts_start(tmp_path):
+    """Layer 2: db.init() repairs historical orphans whose successor exists."""
+    cfg = StorageConfig(data_dir=tmp_path)
+    db1 = Database(cfg)
+    await db1.init()
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    rid_a = await db1.insert_record(ctx, reason="heartbeat")
+    rid_b = await db1.insert_record(ctx, reason="heartbeat")
+    # Re-create the bug: A's ts_end never closed, B sits after it.
+    await db1.conn.execute(
+        "UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,)
+    )
+    await db1.conn.execute(
+        "UPDATE records SET ts_start=2000 WHERE id=?", (rid_b,)
+    )
+    await db1.conn.commit()
+    await db1.close()
+
+    # Re-open: init() heals A.
+    db2 = Database(cfg)
+    await db2.init()
+    try:
+        async with db2.conn.execute(
+            "SELECT ts_end FROM records WHERE id=?", (rid_a,)
+        ) as cur:
+            a_end = (await cur.fetchone())["ts_end"]
+        async with db2.conn.execute(
+            "SELECT ts_start FROM records WHERE id=?", (rid_b,)
+        ) as cur:
+            b_start = (await cur.fetchone())["ts_start"]
+        assert a_end == b_start
+    finally:
+        await db2.close()
+
+
+async def test_init_heals_latest_orphan_with_no_successor_to_zero_duration(tmp_path):
+    """Layer 2: orphan with no successor gets ts_end == ts_start (zero-duration),
+    NOT updated_at — that would point at when VLM completed days later."""
+    cfg = StorageConfig(data_dir=tmp_path)
+    db1 = Database(cfg)
+    await db1.init()
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    rid_a = await db1.insert_record(ctx, reason="heartbeat")
+    # Simulate the worker bumping updated_at long after capture (the exact
+    # contamination we want the fix to be immune to).
+    await db1.conn.execute(
+        "UPDATE records SET ts_start=1000, ts_end=NULL, updated_at=99999999 WHERE id=?",
+        (rid_a,),
+    )
+    await db1.conn.commit()
+    await db1.close()
+
+    db2 = Database(cfg)
+    await db2.init()
+    try:
+        async with db2.conn.execute(
+            "SELECT ts_start, ts_end FROM records WHERE id=?", (rid_a,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["ts_end"] is not None
+        assert row["ts_end"] == row["ts_start"]  # zero-duration, NOT updated_at
+    finally:
+        await db2.close()
+
+
+async def test_close_open_records_before_returns_zero_when_clean(db):
+    """Strict `ts_start < cutoff` keeps the helper from accidentally closing
+    the about-to-be-active record (i.e. the legitimate in-flight one)."""
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    rid = await db.insert_record(ctx, reason="heartbeat")
+
+    async with db.conn.execute(
+        "SELECT ts_start FROM records WHERE id=?", (rid,)
+    ) as cur:
+        ts_start = (await cur.fetchone())["ts_start"]
+
+    # Calling with cutoff == this record's own ts_start must NOT close it.
+    async with db.lock:
+        healed = await db._close_open_records_before(ts_start, tail_ts=ts_start)
+        await db.conn.commit()
+
+    assert healed == 0
+
+    async with db.conn.execute(
+        "SELECT ts_end FROM records WHERE id=?", (rid,)
+    ) as cur:
+        assert (await cur.fetchone())["ts_end"] is None

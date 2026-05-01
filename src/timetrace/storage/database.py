@@ -187,6 +187,10 @@ class Database:
             await self._conn.executescript(_SCHEMA)
             await self._conn.commit()
             await self._migrate()
+            healed = await self._close_open_records_before(_now_ms(), tail_ts=None)
+            if healed:
+                logger.info("database.heal_open_records_on_start", count=healed)
+            # _seed_categories' commit also flushes the heal UPDATE above.
             await self._seed_categories()
             logger.info("database.init", path=str(self._cfg.db_path))
 
@@ -244,6 +248,9 @@ class Database:
         record_id = _new_id()
         now = _now_ms()
         async with self._lock:
+            healed = await self._close_open_records_before(now, tail_ts=now)
+            if healed:
+                logger.info("database.heal_open_records_on_insert", count=healed)
             await self.conn.execute(
                 """INSERT INTO records
                    (id, ts_start, event_type, app_name, process_name,
@@ -263,6 +270,7 @@ class Database:
                     now,
                 ),
             )
+            # Single commit flushes both the heal UPDATE (if any) and the INSERT.
             await self.conn.commit()
         return record_id
 
@@ -275,6 +283,59 @@ class Database:
                 (now, now, record_id),
             )
             await self.conn.commit()
+
+    async def _close_open_records_before(
+        self,
+        ts_cutoff: int,
+        *,
+        tail_ts: int | None,
+    ) -> int:
+        """Close any orphaned `records.ts_end IS NULL` rows older than `ts_cutoff`.
+
+        For each open row, ts_end is set to:
+          1. MIN(next.ts_start) — if the row has any successor in `records`.
+          2. Otherwise the `tail_ts` fallback:
+             - ``tail_ts`` is an int (e.g. the new record's ts_start passed by
+               ``insert_record``) → ts_end = tail_ts, so the prior open row
+               continues into the about-to-be-inserted record.
+             - ``tail_ts is None`` (used at startup) → ts_end = the row's own
+               ts_start, giving zero-duration. Old crash-orphans then render as
+               points rather than day-spanning bars.
+
+        Deliberately does NOT use ``records.updated_at`` as a fallback: the
+        worker bumps it on transition / save_description, so an old orphan
+        whose VLM completes long after the original capture would get an
+        incorrectly-late ts_end — exactly the cross-day-bar bug we're fixing.
+
+        Caller must hold ``self._lock`` AND is responsible for committing.
+        Returns the number of rows updated.
+        """
+        now = _now_ms()
+        if tail_ts is None:
+            sql = """UPDATE records
+                     SET ts_end = COALESCE(
+                             (SELECT MIN(n.ts_start) FROM records n
+                              WHERE n.ts_start > records.ts_start),
+                             records.ts_start
+                         ),
+                         updated_at = ?
+                     WHERE ts_end IS NULL AND ts_start < ?"""
+            params: tuple = (now, ts_cutoff)
+        else:
+            sql = """UPDATE records
+                     SET ts_end = COALESCE(
+                             (SELECT MIN(n.ts_start) FROM records n
+                              WHERE n.ts_start > records.ts_start),
+                             ?
+                         ),
+                         updated_at = ?
+                     WHERE ts_end IS NULL AND ts_start < ?"""
+            params = (tail_ts, now, ts_cutoff)
+
+        cur = await self.conn.execute(sql, params)
+        rowcount = cur.rowcount
+        await cur.close()
+        return rowcount
 
     async def mark_pending(self, record_id: str) -> None:
         now = _now_ms()
