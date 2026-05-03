@@ -117,9 +117,10 @@ async def test_vlm_client_describe_parses_response():
     assert "extra_body" not in kwargs
 
 
-async def test_vlm_client_describe_prompt_forbids_meta_narration_and_softens_title_caveat():
-    """The prompt must (a) tell the model not to start with '该截图/这张图/图中/画面中…',
-    (b) still mark window_title as auxiliary, but no longer call it 'inaccurate'.
+async def test_vlm_client_describe_prompt_enforces_noun_phrase_and_softens_title_caveat():
+    """The prompt must enforce a noun-phrase opening (no declarative meta-narration),
+    list explicit forbidden patterns and a positive example, and still mark
+    window_title as auxiliary but not call it 'inaccurate'.
     """
     mock = AsyncMock(
         return_value=_fake_completion('{"keywords": [], "summary": "s", "description": "d"}')
@@ -134,9 +135,16 @@ async def test_vlm_client_describe_prompt_forbids_meta_narration_and_softens_tit
     ]
     full_prompt = "\n".join(text_parts)
 
-    # Meta-narration ban — both summary and description fields must mention it.
-    assert full_prompt.count("该截图") >= 2
-    assert "图中" in full_prompt and "画面中" in full_prompt
+    # Grammar-level constraint: noun-phrase opening, declarative ban.
+    assert "名词性短语" in full_prompt
+    assert "陈述句" in full_prompt
+
+    # Forbidden patterns must be enumerated explicitly (covers user-reported regressions).
+    for forbidden in ("该截图", "画面显示", "这是", "展示了", "正在"):
+        assert forbidden in full_prompt, f"prompt missing forbidden pattern: {forbidden}"
+
+    # Positive example present.
+    assert "正例" in full_prompt
 
     # Window-title caveat softened.
     assert "仅供辅助参考" in full_prompt
