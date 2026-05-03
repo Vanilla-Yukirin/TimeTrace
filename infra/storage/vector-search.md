@@ -58,24 +58,47 @@ TimeTrace 把相似检索拆成两条正交通道：
 
 ---
 
-## 语义通道：BM25 over VLM 描述（Phase 1.5 到位）
+## 语义通道：VLM 描述 + LIKE（已实装） / FTS5 BM25（待做）
 
-### 索引形态
+### 已实装：VLM 描述写入 `analysis_results.vlm_desc`
 
-- VLM 为每帧生成**结构化描述**（活动 / 场景 / 内容摘要 / 关键文字四字段），写入 `analysis_results.vlm_desc`
-- 用 SQLite **FTS5 虚表**承载倒排索引 + BM25 打分：
+VLM 为每帧产出**三字段**结构化描述（[src/timetrace/vlm/client.py](../../src/timetrace/vlm/client.py)）：
+
+```python
+{
+    "keywords":    list[str],   # 截图中显著可见的文字、应用、产品、人名（≤8）
+    "summary":     str,         # ≤30 字画面要点
+    "description": str,         # ≤100 字完整描述
+}
+```
+
+落库前由 `format_description()` 拼成 LIKE-friendly 多行文本：
+
+```
+{description}
+
+摘要：{summary}
+关键词：{kw1}、{kw2}、…
+```
+
+写作规范在 prompt 中由硬约束保证 summary / description **以名词性短语开头**，禁止"该截图…"、"画面显示…"、"这是…" 等元叙述句式——一旦每条描述都含这些高频词，FTS5 的 IDF 会被稀释、LIKE 通道也会出现假命中。
+
+### 当前查询路径：LIKE
+
+[src/timetrace/api/routes/search.py](../../src/timetrace/api/routes/search.py) 的 `_bm25_search` 目前走 LIKE 兜底（`vlm_desc LIKE '%token%' ESCAPE '\'`），按 `vlm_desc` 命中数粗排。多字段 / per-column 权重在 LIKE 路径上无法表达，但 `format_description` 拼接形态已经把三段拼成一段、LIKE 天然贯穿。
+
+### 计划：FTS5 BM25
+
+- 用 SQLite **FTS5 虚表**承载倒排索引 + BM25：
   ```sql
   CREATE VIRTUAL TABLE frames_fts USING fts5(
-      activity, scene, summary, keywords,
+      keywords, summary, description,
       content='analysis_results', content_rowid='rowid'
   );
   ```
-- 查询时对每列指定独立权重（`keywords` 最高、`summary` 最低），充分利用 per-column IDF
+- 查询时对每列指定独立权重（`keywords` 最高、`description` 最低）
 - 中文分词用 jieba `cut_for_search`（写入与查询双方一致），避免 `unicode61` 对中文不切词的问题
-
-### 当前占位实现
-
-`src/timetrace/api/routes/search.py` 里的 `_bm25_search` 目前走 LIKE 兜底（`vlm_desc` 全为 NULL，返回空列表），FTS5 到位后替换该函数为 `MATCH` 查询即可，调用点不变。
+- 切换时只替换 `_bm25_search` 实现，调用点不变
 
 ---
 
