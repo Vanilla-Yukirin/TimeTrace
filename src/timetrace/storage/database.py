@@ -25,6 +25,8 @@ from timetrace.storage.models import CaptureContext
 
 logger = structlog.get_logger(__name__)
 
+_MAX_ORPHAN_BRIDGE_MS = 5 * 60 * 1000
+
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -190,6 +192,9 @@ class Database:
             healed = await self._close_open_records_before(_now_ms(), tail_ts=None)
             if healed:
                 logger.info("database.heal_open_records_on_start", count=healed)
+            capped = await self._cap_implausible_record_durations(_now_ms())
+            if capped:
+                logger.info("database.cap_implausible_record_durations", count=capped)
             # _seed_categories' commit also flushes the heal UPDATE above.
             await self._seed_categories()
             logger.info("database.init", path=str(self._cfg.db_path))
@@ -292,15 +297,12 @@ class Database:
     ) -> int:
         """Close any orphaned `records.ts_end IS NULL` rows older than `ts_cutoff`.
 
-        For each open row, ts_end is set to:
-          1. MIN(next.ts_start) — if the row has any successor in `records`.
-          2. Otherwise the `tail_ts` fallback:
-             - ``tail_ts`` is an int (e.g. the new record's ts_start passed by
-               ``insert_record``) → ts_end = tail_ts, so the prior open row
-               continues into the about-to-be-inserted record.
-             - ``tail_ts is None`` (used at startup) → ts_end = the row's own
-               ts_start, giving zero-duration. Old crash-orphans then render as
-               points rather than day-spanning bars.
+        For each open row, ts_end is set to the next plausible boundary:
+          1. MIN(next.ts_start), if it is within `_MAX_ORPHAN_BRIDGE_MS`.
+          2. Otherwise the `tail_ts` fallback, if it is within that same
+             threshold.
+          3. Otherwise the row's own ts_start, giving zero-duration. Old
+             crash-orphans then render as points rather than day-spanning bars.
 
         Deliberately does NOT use ``records.updated_at`` as a fallback: the
         worker bumps it on transition / save_description, so an old orphan
@@ -315,24 +317,59 @@ class Database:
             sql = """UPDATE records
                      SET ts_end = COALESCE(
                              (SELECT MIN(n.ts_start) FROM records n
-                              WHERE n.ts_start > records.ts_start),
+                              WHERE n.ts_start > records.ts_start
+                                AND n.ts_start - records.ts_start <= ?),
                              records.ts_start
                          ),
                          updated_at = ?
                      WHERE ts_end IS NULL AND ts_start < ?"""
-            params: tuple = (now, ts_cutoff)
+            params: tuple = (_MAX_ORPHAN_BRIDGE_MS, now, ts_cutoff)
         else:
             sql = """UPDATE records
                      SET ts_end = COALESCE(
                              (SELECT MIN(n.ts_start) FROM records n
-                              WHERE n.ts_start > records.ts_start),
-                             ?
+                              WHERE n.ts_start > records.ts_start
+                                AND n.ts_start - records.ts_start <= ?),
+                             CASE
+                                 WHEN ? - records.ts_start <= ? THEN ?
+                                 ELSE records.ts_start
+                             END
                          ),
                          updated_at = ?
                      WHERE ts_end IS NULL AND ts_start < ?"""
-            params = (tail_ts, now, ts_cutoff)
+            params = (
+                _MAX_ORPHAN_BRIDGE_MS,
+                tail_ts,
+                _MAX_ORPHAN_BRIDGE_MS,
+                tail_ts,
+                now,
+                ts_cutoff,
+            )
 
         cur = await self.conn.execute(sql, params)
+        rowcount = cur.rowcount
+        await cur.close()
+        return rowcount
+
+    async def _cap_implausible_record_durations(self, now: int) -> int:
+        """Collapse impossible record spans left by older orphan-heal logic.
+
+        Capture normally emits at least one heartbeat every 30 seconds while
+        active, and idle transitions close the current record after 180 seconds.
+        A single record spanning more than `_MAX_ORPHAN_BRIDGE_MS` is therefore
+        a stale boundary artifact, not a trustworthy activity duration.
+
+        Caller must hold ``self._lock`` AND is responsible for committing.
+        Returns the number of rows updated.
+        """
+        cur = await self.conn.execute(
+            """UPDATE records
+               SET ts_end = ts_start,
+                   updated_at = ?
+               WHERE ts_end IS NOT NULL
+                 AND ts_end - ts_start > ?""",
+            (now, _MAX_ORPHAN_BRIDGE_MS),
+        )
         rowcount = cur.rowcount
         await cur.close()
         return rowcount

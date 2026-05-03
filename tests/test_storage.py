@@ -1,9 +1,11 @@
 """Tests for the Storage/Database layer."""
 
+import time
+
 import pytest
 
 from timetrace.config import StorageConfig
-from timetrace.storage.database import Database
+from timetrace.storage.database import _MAX_ORPHAN_BRIDGE_MS, Database
 from timetrace.storage.models import CaptureContext
 
 
@@ -269,10 +271,12 @@ async def test_insert_closes_prior_orphan_to_next_ts_start(db):
     ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
     rid_a = await db.insert_record(ctx, reason="heartbeat")
 
-    # Force A back to a known-earlier ts_start AND null out ts_end (= simulates
-    # a previous-session crash before close_record fired).
+    # Force A to a recent ts_start AND null out ts_end (= simulates a short
+    # interruption before close_record fired).
+    recent_start = int(time.time() * 1000) - 1000
     await db.conn.execute(
-        "UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,)
+        "UPDATE records SET ts_start=?, ts_end=NULL WHERE id=?",
+        (recent_start, rid_a),
     )
     await db.conn.commit()
 
@@ -291,6 +295,27 @@ async def test_insert_closes_prior_orphan_to_next_ts_start(db):
     assert a_end == b_start
 
 
+async def test_insert_zeroes_prior_orphan_when_new_record_is_too_late(db):
+    """A stale orphan from a previous run must not span into today's first record."""
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    rid_a = await db.insert_record(ctx, reason="heartbeat")
+
+    old_start = 1000
+    await db.conn.execute(
+        "UPDATE records SET ts_start=?, ts_end=NULL WHERE id=?", (old_start, rid_a)
+    )
+    await db.conn.commit()
+
+    await db.insert_record(ctx, reason="heartbeat")
+
+    async with db.conn.execute(
+        "SELECT ts_start, ts_end FROM records WHERE id=?", (rid_a,)
+    ) as cur:
+        row = await cur.fetchone()
+
+    assert row["ts_end"] == row["ts_start"]
+
+
 async def test_insert_closes_multiple_orphans_each_to_correct_boundary(db):
     """Layer 1, multi-orphan: MIN(next.ts_start) gives each row its own boundary,
     not a shared timestamp."""
@@ -299,15 +324,16 @@ async def test_insert_closes_multiple_orphans_each_to_correct_boundary(db):
     rid_b = await db.insert_record(ctx, reason="heartbeat")
     rid_c = await db.insert_record(ctx, reason="heartbeat")
 
-    # Stamp deterministic timestamps and null out ts_end on all three.
+    # Stamp recent deterministic timestamps and null out ts_end on all three.
+    base = int(time.time() * 1000) - 3000
     await db.conn.execute(
-        "UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,)
+        "UPDATE records SET ts_start=?, ts_end=NULL WHERE id=?", (base, rid_a)
     )
     await db.conn.execute(
-        "UPDATE records SET ts_start=2000, ts_end=NULL WHERE id=?", (rid_b,)
+        "UPDATE records SET ts_start=?, ts_end=NULL WHERE id=?", (base + 1000, rid_b)
     )
     await db.conn.execute(
-        "UPDATE records SET ts_start=3000, ts_end=NULL WHERE id=?", (rid_c,)
+        "UPDATE records SET ts_start=?, ts_end=NULL WHERE id=?", (base + 2000, rid_c)
     )
     await db.conn.commit()
 
@@ -357,6 +383,63 @@ async def test_init_heals_orphan_with_successor_to_next_ts_start(tmp_path):
         ) as cur:
             b_start = (await cur.fetchone())["ts_start"]
         assert a_end == b_start
+    finally:
+        await db2.close()
+
+
+async def test_init_zeroes_orphan_when_successor_gap_is_too_large(tmp_path):
+    """Historical orphans with day-sized gaps should render as points, not bars."""
+    cfg = StorageConfig(data_dir=tmp_path)
+    db1 = Database(cfg)
+    await db1.init()
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    rid_a = await db1.insert_record(ctx, reason="heartbeat")
+    rid_b = await db1.insert_record(ctx, reason="heartbeat")
+
+    await db1.conn.execute(
+        "UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,)
+    )
+    await db1.conn.execute(
+        "UPDATE records SET ts_start=? WHERE id=?",
+        (1000 + _MAX_ORPHAN_BRIDGE_MS + 1, rid_b),
+    )
+    await db1.conn.commit()
+    await db1.close()
+
+    db2 = Database(cfg)
+    await db2.init()
+    try:
+        async with db2.conn.execute(
+            "SELECT ts_start, ts_end FROM records WHERE id=?", (rid_a,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["ts_end"] == row["ts_start"]
+    finally:
+        await db2.close()
+
+
+async def test_init_caps_existing_implausibly_long_closed_record(tmp_path):
+    """Rows already closed by older builds must be cleaned up on startup too."""
+    cfg = StorageConfig(data_dir=tmp_path)
+    db1 = Database(cfg)
+    await db1.init()
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    rid = await db1.insert_record(ctx, reason="heartbeat")
+    await db1.conn.execute(
+        "UPDATE records SET ts_start=1000, ts_end=? WHERE id=?",
+        (1000 + _MAX_ORPHAN_BRIDGE_MS + 1, rid),
+    )
+    await db1.conn.commit()
+    await db1.close()
+
+    db2 = Database(cfg)
+    await db2.init()
+    try:
+        async with db2.conn.execute(
+            "SELECT ts_start, ts_end FROM records WHERE id=?", (rid,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["ts_end"] == row["ts_start"]
     finally:
         await db2.close()
 
