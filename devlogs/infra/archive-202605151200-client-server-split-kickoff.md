@@ -314,15 +314,15 @@ OCR 文字: 仅用于内部判断，不上传也不落盘
 
 **目标**：在改架构之前先把开发流水线搭好。
 
-- [ ] GitHub Actions workflow：`ruff check` + `ruff format --check` + `pytest`
-- [ ] `pre-commit-config.yaml`：ruff format hook
-- [ ] `LICENSE` 文件（MIT）
-- [ ] `Dockerfile.server`（暂时还是单进程，先把镜像流程跑通）
-- [ ] `docker-compose.yml`（先只起 server，postgres/redis 注释掉）
-- [ ] README 加 "Status: under refactor, see devlogs/infra/202605151200" banner
+- [x] GitHub Actions workflow：`ruff check` + `ruff format --check` + `pytest`（已存在，本次扩展触发分支到 `feature/refactor-split`）
+- [x] `pre-commit-config.yaml`：ruff format hook（已存在）
+- [x] `LICENSE` 文件（MIT）
+- [x] README 加 "Status: under refactor" banner
 - [ ] 开 `feature/refactor-split` 分支
 
-**Exit criteria**：CI 跑过、镜像能 build、分支拉好。
+**Dockerfile / docker-compose 推迟到 P1 之后**（原 P0 列表里的两项）：当前代码依赖 `pywin32` 等 Windows-only 包，Linux 容器 `uv sync` 会失败。要让镜像真能 build，必须先有 P1 的依赖按平台拆开 + P2 的接口抽离。具体规划在 P5（"Server 可替换组件"）里一并落地。
+
+**Exit criteria**：CI 在新分支触发、LICENSE 在仓库根、README banner 已上、`feature/refactor-split` 分支拉好。
 
 ### P1 — 目录重组（零行为变化）
 
@@ -392,17 +392,19 @@ OCR 文字: 仅用于内部判断，不上传也不落盘
 
 **Exit criteria**：截图本地不留原图；模糊后图人眼可读非敏感内容；测试集（含信用卡号、邮箱、密码框）覆盖。
 
-### P5 — Server 可替换组件
+### P5 — Server 可替换组件 + 容器化
 
-**目标**：让"我想用 Postgres / Redis / S3"是 5 分钟配置事。
+**目标**：让"我想用 Postgres / Redis / S3"是 5 分钟配置事，同时把镜像流程立起来。
 
 - [ ] `PostgresDatabase` 实现（asyncpg）+ schema 迁移脚本
 - [ ] `RedisQueue` 实现
 - [ ] `S3BlobStorage` + `DualBlobStorage`（本地 + S3）
 - [ ] 配置驱动选择
-- [ ] docker-compose.yml 启用 postgres/redis profile
+- [ ] `Dockerfile.server`（依赖 P1 的依赖按平台拆开）
+- [ ] `docker-compose.yml`（默认起 server；postgres/redis 在 profile 里）
+- [ ] CI 增加 server 镜像 build 步骤
 
-**Exit criteria**：在 docker-compose 切换 profile 重启就能换实现，数据语义一致。
+**Exit criteria**：在 docker-compose 切换 profile 重启就能换实现，数据语义一致；镜像在 CI 上能 build。
 
 ### P6 — Headless TUI 客户端
 

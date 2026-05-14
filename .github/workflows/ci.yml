@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feature/refactor-split"]
   pull_request:
-    branches: [main]
+    branches: [main, "feature/refactor-split"]
 
 jobs:
   lint-and-test:
