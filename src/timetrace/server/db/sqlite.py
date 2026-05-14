@@ -32,24 +32,29 @@ PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 
 CREATE TABLE IF NOT EXISTS records (
-    id          TEXT PRIMARY KEY,
-    ts_start    INTEGER NOT NULL,
-    ts_end      INTEGER,
-    event_type  TEXT NOT NULL DEFAULT 'heartbeat',
-    app_name    TEXT NOT NULL DEFAULT '',
-    process_name TEXT NOT NULL DEFAULT '',
-    window_title TEXT NOT NULL DEFAULT '',
-    url         TEXT,
-    capture_reason TEXT,
-    status      TEXT NOT NULL DEFAULT 'captured',
-    created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
+    id               TEXT PRIMARY KEY,
+    client_record_id TEXT,
+    ts_start         INTEGER NOT NULL,
+    ts_end           INTEGER,
+    event_type       TEXT NOT NULL DEFAULT 'heartbeat',
+    app_name         TEXT NOT NULL DEFAULT '',
+    process_name     TEXT NOT NULL DEFAULT '',
+    window_title     TEXT NOT NULL DEFAULT '',
+    url              TEXT,
+    capture_reason   TEXT,
+    status           TEXT NOT NULL DEFAULT 'captured',
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_records_ts_start  ON records(ts_start);
 CREATE INDEX IF NOT EXISTS idx_records_app_ts    ON records(app_name, ts_start);
 CREATE INDEX IF NOT EXISTS idx_records_status    ON records(status)
     WHERE status LIKE 'pending_%';
+-- Partial unique index: enforces idempotency when client_record_id is supplied
+-- but lets pre-P3a rows (NULL) coexist without conflicting with each other.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_records_client_record_id
+    ON records(client_record_id) WHERE client_record_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS screenshots (
     id          TEXT PRIMARY KEY,
@@ -216,6 +221,17 @@ class SqliteDatabase:
             await self._conn.commit()
             logger.info("database.migrate", added_column="screenshots.phash")
 
+        async with self._conn.execute("PRAGMA table_info(records)") as cur:
+            record_cols = {row["name"] for row in await cur.fetchall()}
+        if "client_record_id" not in record_cols:
+            await self._conn.execute("ALTER TABLE records ADD COLUMN client_record_id TEXT")
+            await self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_records_client_record_id "
+                "ON records(client_record_id) WHERE client_record_id IS NOT NULL"
+            )
+            await self._conn.commit()
+            logger.info("database.migrate", added_column="records.client_record_id")
+
     async def _seed_categories(self) -> None:
         """Insert built-in categories if they don't exist yet.
 
@@ -254,6 +270,8 @@ class SqliteDatabase:
         ctx: CaptureContext,
         reason: str,
         event_type: str = "heartbeat",
+        *,
+        client_record_id: str | None = None,
     ) -> str:
         record_id = _new_id()
         now = _now_ms()
@@ -263,11 +281,13 @@ class SqliteDatabase:
                 logger.info("database.heal_open_records_on_insert", count=healed)
             await self.conn.execute(
                 """INSERT INTO records
-                   (id, ts_start, event_type, app_name, process_name,
-                    window_title, url, capture_reason, status, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                   (id, client_record_id, ts_start, event_type, app_name,
+                    process_name, window_title, url, capture_reason,
+                    status, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     record_id,
+                    client_record_id,
                     now,
                     event_type,
                     ctx.app_name,
@@ -283,6 +303,46 @@ class SqliteDatabase:
             # Single commit flushes both the heal UPDATE (if any) and the INSERT.
             await self.conn.commit()
         return record_id
+
+    async def find_record_by_client_id(self, client_record_id: str) -> dict | None:
+        """Return the record carrying the given client-generated id, if any."""
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT * FROM records WHERE client_record_id = ?",
+                (client_record_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def ingest_or_get_record(
+        self,
+        ctx: CaptureContext,
+        reason: str,
+        event_type: str,
+        client_record_id: str,
+    ) -> tuple[str, bool]:
+        """Insert a record with the given client_record_id, or return the
+        existing one if a row already carries this id.
+
+        Returns ``(record_id, was_new)``. Uses the ``client_record_id``
+        UNIQUE INDEX as the atomic check — a parallel ingest losing the race
+        catches the IntegrityError and re-reads the winner.
+        """
+        try:
+            rid = await self.insert_record(
+                ctx,
+                reason=reason,
+                event_type=event_type,
+                client_record_id=client_record_id,
+            )
+            return rid, True
+        except aiosqlite.IntegrityError:
+            existing = await self.find_record_by_client_id(client_record_id)
+            if existing is None:
+                # Should be impossible: UNIQUE violation but row missing on re-read.
+                # Re-raise so the caller doesn't silently corrupt state.
+                raise
+            return existing["id"], False
 
     async def close_record(self, record_id: str) -> None:
         """Set ts_end on a record (e.g. when window switches away)."""

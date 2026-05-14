@@ -455,6 +455,64 @@ async def test_init_heals_latest_orphan_with_no_successor_to_zero_duration(tmp_p
         await db2.close()
 
 
+async def test_ingest_or_get_record_inserts_when_new(db):
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="t")
+    rid, was_new = await db.ingest_or_get_record(
+        ctx,
+        reason="switch",
+        event_type="window_switch",
+        client_record_id="client-uuid-1",
+    )
+    assert was_new is True
+    assert rid
+
+    found = await db.find_record_by_client_id("client-uuid-1")
+    assert found is not None
+    assert found["id"] == rid
+    assert found["client_record_id"] == "client-uuid-1"
+
+
+async def test_ingest_or_get_record_returns_existing_on_replay(db):
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="t")
+    rid_first, _ = await db.ingest_or_get_record(
+        ctx, reason="heartbeat", event_type="heartbeat", client_record_id="dup"
+    )
+    rid_second, was_new = await db.ingest_or_get_record(
+        ctx, reason="heartbeat", event_type="heartbeat", client_record_id="dup"
+    )
+    assert rid_second == rid_first
+    assert was_new is False
+
+
+async def test_find_record_by_client_id_returns_none_for_missing(db):
+    assert await db.find_record_by_client_id("never-set") is None
+
+
+async def test_insert_record_without_client_id_leaves_column_null(db):
+    """Pre-P3a callers that don't pass client_record_id keep working."""
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="t")
+    rid = await db.insert_record(ctx, reason="heartbeat")
+    async with db.conn.execute("SELECT client_record_id FROM records WHERE id=?", (rid,)) as cur:
+        row = await cur.fetchone()
+    assert row["client_record_id"] is None
+
+
+async def test_multiple_null_client_record_ids_do_not_collide(db):
+    """The partial unique index must not constrain rows where the column is NULL."""
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="t")
+    rid_a = await db.insert_record(ctx, reason="heartbeat")
+    rid_b = await db.insert_record(ctx, reason="heartbeat")
+    assert rid_a != rid_b
+
+
+async def test_records_client_record_id_index_exists(db):
+    """Smoke check: the partial unique index lives on a freshly-init'd DB."""
+    async with db.conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_records_client_record_id'"
+    ) as cur:
+        assert await cur.fetchone() is not None
+
+
 async def test_get_category_final_returns_none_for_missing(db):
     assert await db.get_category_final("does-not-exist") is None
 
