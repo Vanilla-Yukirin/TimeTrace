@@ -19,6 +19,7 @@ from timetrace.common.config import AppConfig  # noqa: E402
 from timetrace.server.api.app import create_app  # noqa: E402
 from timetrace.server.db import Database  # noqa: E402
 from timetrace.server.phash_index.index import PHashIndex  # noqa: E402
+from timetrace.server.storage.blob import LocalBlobStorage  # noqa: E402
 from timetrace.server.vlm.client import VLMClient  # noqa: E402
 from timetrace.server.vlm.health import VLMHealthGate  # noqa: E402
 from timetrace.server.worker.loop import AnalysisWorker  # noqa: E402
@@ -57,11 +58,13 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
         cfg=config.worker,
         storage_cfg=config.storage,
     )
+    blob_storage = LocalBlobStorage(config.storage.data_dir)
     app = create_app(
         db,
         storage_cfg=config.storage,
         phash_index=phash_index,
         vlm_client=vlm_client,
+        blob_storage=blob_storage,
     )
     app.state.api_host = config.api_host
     app.state.api_port = config.api_port

@@ -7,12 +7,13 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from timetrace.server.api.routes import feedback, records, search
+from timetrace.server.api.routes import feedback, ingest, records, search
 
 if TYPE_CHECKING:
     from timetrace.common.config import StorageConfig
     from timetrace.server.db import Database
     from timetrace.server.phash_index.index import PHashIndex
+    from timetrace.server.storage.blob import BlobStorage
     from timetrace.server.vlm.client import VLMClient
 
 
@@ -21,6 +22,7 @@ def create_app(
     storage_cfg: StorageConfig | None = None,
     phash_index: PHashIndex | None = None,
     vlm_client: VLMClient | None = None,
+    blob_storage: BlobStorage | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="TimeTrace Local API",
@@ -31,6 +33,7 @@ def create_app(
     app.state.db = db
     app.state.phash_index = phash_index
     app.state.vlm_client = vlm_client
+    app.state.blob_storage = blob_storage
     if storage_cfg is not None:
         app.state.data_dir = str(storage_cfg.data_dir)
         # Ensure thumbs dir exists before mounting (first-run has no screenshots yet)
@@ -50,6 +53,7 @@ def create_app(
     app.include_router(records.router, prefix="/v1")
     app.include_router(search.router, prefix="/v1")
     app.include_router(feedback.router, prefix="/v1")
+    app.include_router(ingest.router, prefix="/v1")
 
     @app.get("/healthz")
     async def healthz() -> dict:
