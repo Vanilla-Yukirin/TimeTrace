@@ -36,6 +36,39 @@ dependencies = [
 [project.scripts]
 timetrace = "timetrace.main:main"
 
+# Optional-dependencies are forward-looking buckets — none of them are pulled
+# in by `uv sync` today. Each maps to a phase in the kickoff devlog
+# (devlogs/infra/archive-202605151200-client-server-split-kickoff.md) and is
+# wired into the runtime when that phase lands.
+#
+# At P3a we will additionally split the current `dependencies` list into
+# `client` / `server` / common buckets so you can install just one half, but
+# while main.py still runs both halves in one process the union form here is
+# what users actually need.
+[project.optional-dependencies]
+# P4 — client-side privacy pipeline (OCR + classifier + blur)
+client-priv = [
+    # "paddleocr>=2.7.0",
+    # "onnxruntime>=1.17.0",
+]
+# P5 — server adapters
+server-pg = [
+    # "asyncpg>=0.29.0",
+]
+server-redis = [
+    # "redis>=5.0.0",
+]
+server-s3 = [
+    # "boto3>=1.34.0",
+]
+# P6 — headless TUI client (Linux small box)
+headless = [
+    # "psutil>=5.9.0",
+]
+# Convenience: install every optional bucket for single-machine setups.
+# Empty until any of the above buckets is actually populated.
+all = []
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
