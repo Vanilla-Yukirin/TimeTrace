@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from timetrace.common.config import StorageConfig
 from timetrace.common.models import CaptureContext
 from timetrace.server.api.app import create_app
-from timetrace.server.storage.database import Database
+from timetrace.server.db import Database
 
 
 @pytest.fixture

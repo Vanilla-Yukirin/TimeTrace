@@ -15,7 +15,7 @@ from timetrace.server.vlm.health import VLMHealthGate
 
 if TYPE_CHECKING:
     from timetrace.common.config import StorageConfig, WorkerConfig
-    from timetrace.server.storage.database import Database
+    from timetrace.server.db import Database
 
 logger = structlog.get_logger(__name__)
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from timetrace.server.storage.database import Database
+    from timetrace.server.db import Database
 
 
 async def list_categories(db: Database) -> dict:

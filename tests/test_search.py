@@ -12,8 +12,8 @@ from timetrace.common.config import StorageConfig
 from timetrace.common.models import CaptureContext
 from timetrace.common.phash_hash import compute_phash, phash_to_blob
 from timetrace.server.api.app import create_app
+from timetrace.server.db import Database
 from timetrace.server.phash_index.index import PHashIndex
-from timetrace.server.storage.database import Database
 
 
 @pytest.fixture

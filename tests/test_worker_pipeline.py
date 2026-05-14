@@ -12,7 +12,7 @@ from PIL import Image
 
 from timetrace.common.config import StorageConfig, WorkerConfig
 from timetrace.common.models import CaptureContext
-from timetrace.server.storage.database import Database
+from timetrace.server.db import Database
 from timetrace.server.vlm.client import VLMError
 from timetrace.server.vlm.health import VLMHealthGate
 from timetrace.server.worker.loop import AnalysisWorker

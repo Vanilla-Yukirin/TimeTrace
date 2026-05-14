@@ -6,7 +6,8 @@ import pytest
 
 from timetrace.common.config import StorageConfig
 from timetrace.common.models import CaptureContext
-from timetrace.server.storage.database import _MAX_ORPHAN_BRIDGE_MS, Database
+from timetrace.server.db import Database
+from timetrace.server.db.sqlite import _MAX_ORPHAN_BRIDGE_MS
 
 
 @pytest.fixture

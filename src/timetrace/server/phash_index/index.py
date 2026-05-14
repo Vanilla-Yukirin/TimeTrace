@@ -10,7 +10,7 @@ from timetrace.common.phash_hash import phash_from_blob
 from timetrace.server.phash_index.bk_tree import BKTree
 
 if TYPE_CHECKING:
-    from timetrace.server.storage.database import Database
+    from timetrace.server.db import Database
 
 logger = structlog.get_logger(__name__)
 

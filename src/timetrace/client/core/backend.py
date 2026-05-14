@@ -16,8 +16,8 @@ from timetrace.common.phash_hash import phash_to_blob
 if TYPE_CHECKING:
     from timetrace.common.models import CaptureContext
     from timetrace.common.protocol import ScreenshotSubmission
+    from timetrace.server.db import Database
     from timetrace.server.phash_index.index import PHashIndex
-    from timetrace.server.storage.database import Database
 
 
 class BackendClient(Protocol):

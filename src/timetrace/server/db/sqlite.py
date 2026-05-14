@@ -171,8 +171,13 @@ def _processing_to_pending(status: str) -> str:
     return status
 
 
-class Database:
-    """Thin async wrapper around aiosqlite for TimeTrace data access."""
+class SqliteDatabase:
+    """SQLite-backed implementation of the Database surface.
+
+    Today this is the only Database implementation; PostgresDatabase lands at P5.
+    Until then `timetrace.server.db.Database` is exported as an alias for this
+    class so type annotations and construction can continue to share a name.
+    """
 
     def __init__(self, storage_cfg: Any) -> None:
         self._cfg = storage_cfg

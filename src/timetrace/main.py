@@ -17,8 +17,8 @@ from timetrace.client.core.backend import InProcessBackend  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
 from timetrace.common.config import AppConfig  # noqa: E402
 from timetrace.server.api.app import create_app  # noqa: E402
+from timetrace.server.db import Database  # noqa: E402
 from timetrace.server.phash_index.index import PHashIndex  # noqa: E402
-from timetrace.server.storage.database import Database  # noqa: E402
 from timetrace.server.vlm.client import VLMClient  # noqa: E402
 from timetrace.server.vlm.health import VLMHealthGate  # noqa: E402
 from timetrace.server.worker.loop import AnalysisWorker  # noqa: E402
