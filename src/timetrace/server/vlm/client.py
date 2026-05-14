@@ -15,13 +15,13 @@ from __future__ import annotations
 import base64
 import io
 import json
-import os
-from dataclasses import dataclass
 from typing import Any
 
 import structlog
 from openai import AsyncOpenAI
 from PIL import Image
+
+from timetrace.common.config import VLMConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -56,35 +56,6 @@ _MAX_DESCRIBE_EDGE = 1280  # cap longest edge before sending; cuts payload + cos
 
 class VLMError(Exception):
     """Raised when a VLM call fails (network, parse, validation)."""
-
-
-def _env_truthy(value: str | None) -> bool:
-    return (value or "").strip().lower() in ("1", "true", "yes", "on")
-
-
-@dataclass
-class VLMConfig:
-    base_url: str
-    api_key: str
-    model: str
-    # Some OpenAI-compatible providers (DashScope qwen, SiliconFlow Qwen, etc.)
-    # default thinking ON and accept ``extra_body={"enable_thinking": False}``
-    # to disable it. Vanilla OpenAI rejects unknown body fields with HTTP 400,
-    # so we only opt into this defensive override when the user asks for it.
-    disable_thinking: bool = False
-
-    @classmethod
-    def from_env(cls) -> VLMConfig | None:
-        """Build config from environment; return None if API key is missing/blank."""
-        api_key = os.getenv("TIMETRACE_VLM_API_KEY", "").strip()
-        if not api_key:
-            return None
-        return cls(
-            base_url=os.getenv("TIMETRACE_VLM_BASE_URL", "https://api.openai.com/v1").strip(),
-            api_key=api_key,
-            model=os.getenv("TIMETRACE_VLM_MODEL", "gpt-4o-mini").strip(),
-            disable_thinking=_env_truthy(os.getenv("TIMETRACE_VLM_DISABLE_THINKING")),
-        )
 
 
 def format_description(d: dict) -> str:

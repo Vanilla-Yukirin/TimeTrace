@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image
 
+from timetrace.common.config import VLMConfig
 from timetrace.server.vlm.client import (
     VLMClient,
-    VLMConfig,
     VLMError,
     format_description,
 )

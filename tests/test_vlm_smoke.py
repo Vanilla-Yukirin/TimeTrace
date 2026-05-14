@@ -29,7 +29,8 @@ pytestmark = pytest.mark.skipif(
 
 def _make_client():
     # Imported lazily so module collection doesn't require openai when skipped.
-    from timetrace.server.vlm.client import VLMClient, VLMConfig  # noqa: PLC0415
+    from timetrace.common.config import VLMConfig  # noqa: PLC0415
+    from timetrace.server.vlm.client import VLMClient  # noqa: PLC0415
 
     cfg = VLMConfig.from_env()
     assert cfg is not None
@@ -93,7 +94,8 @@ async def test_smoke_heartbeat_returns_true():
 
 async def test_smoke_invalid_key_raises():
     """A clearly bogus API key must surface as VLMError, not pass silently."""
-    from timetrace.server.vlm.client import VLMClient, VLMConfig, VLMError  # noqa: PLC0415
+    from timetrace.common.config import VLMConfig  # noqa: PLC0415
+    from timetrace.server.vlm.client import VLMClient, VLMError  # noqa: PLC0415
 
     real = VLMConfig.from_env()
     assert real is not None
