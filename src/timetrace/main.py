@@ -17,6 +17,7 @@ from timetrace.client.core.backend import InProcessBackend  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
 from timetrace.common.config import AppConfig  # noqa: E402
 from timetrace.server.api.app import create_app  # noqa: E402
+from timetrace.server.auth import ServerAuth  # noqa: E402
 from timetrace.server.db import Database  # noqa: E402
 from timetrace.server.phash_index.index import PHashIndex  # noqa: E402
 from timetrace.server.storage.blob import LocalBlobStorage  # noqa: E402
@@ -59,12 +60,21 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
         storage_cfg=config.storage,
     )
     blob_storage = LocalBlobStorage(config.storage.data_dir)
+    auth, was_generated, generated = ServerAuth.load_or_generate()
+    if was_generated and generated is not None:
+        # First-start banner — user copies this into `timetrace-client init`.
+        logger.info(
+            "auth.token_generated",
+            label=generated.label,
+            value=generated.value,
+        )
     app = create_app(
         db,
         storage_cfg=config.storage,
         phash_index=phash_index,
         vlm_client=vlm_client,
         blob_storage=blob_storage,
+        auth=auth,
     )
     app.state.api_host = config.api_host
     app.state.api_port = config.api_port
