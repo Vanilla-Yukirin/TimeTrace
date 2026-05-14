@@ -147,16 +147,28 @@ class HttpBackend:
         *,
         client: httpx.AsyncClient | None = None,
         auth_token: str | None = None,
+        device_id: str | None = None,
         timeout_s: float = 30.0,
     ) -> None:
+        # Hold device_id so callers can inject it on a borrowed client too,
+        # via a single "extra headers" dict on each request.
+        self._device_id = device_id or None
         if client is not None:
             self._client = client
             self._owns_client = False
         else:
             if base_url is None:
                 raise ValueError("HttpBackend needs either base_url or an AsyncClient")
-            headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else None
-            self._client = httpx.AsyncClient(base_url=base_url, headers=headers, timeout=timeout_s)
+            headers: dict[str, str] = {}
+            if auth_token:
+                headers["Authorization"] = f"Bearer {auth_token}"
+            if self._device_id:
+                headers["X-Device-Id"] = self._device_id
+            self._client = httpx.AsyncClient(
+                base_url=base_url,
+                headers=headers or None,
+                timeout=timeout_s,
+            )
             self._owns_client = True
         # client_record_id -> server-assigned record_id, populated on submit_record
         self._record_id_for: dict[str, str] = {}
@@ -202,6 +214,7 @@ class HttpBackend:
         resp = await self._client.post(
             f"/v1/ingest/record/{server_id}/close",
             json={"ts_end": ts_end},
+            headers=self._extra_headers(),
         )
         if resp.status_code >= 400:
             raise BackendError(f"close_record failed: HTTP {resp.status_code} {resp.text!r}")
@@ -263,6 +276,17 @@ class HttpBackend:
 
     # ---- internal -----------------------------------------------------------
 
+    def _extra_headers(self) -> dict[str, str] | None:
+        """Per-request headers that need to be added even when the AsyncClient
+        was supplied externally (test path with ASGITransport-bound clients).
+
+        For self-owned clients these headers are also pre-set on the client,
+        so passing them again per-request is harmless duplication, not a bug.
+        """
+        if self._device_id:
+            return {"X-Device-Id": self._device_id}
+        return None
+
     async def _post_ingest(
         self,
         payload: dict,
@@ -284,6 +308,7 @@ class HttpBackend:
                 "/v1/ingest/record",
                 data=data,
                 files=files or None,
+                headers=self._extra_headers(),
             )
         except httpx.HTTPError as exc:
             raise BackendError(f"ingest POST failed: {exc}") from exc

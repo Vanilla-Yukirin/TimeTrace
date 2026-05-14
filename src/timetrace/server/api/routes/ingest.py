@@ -139,6 +139,7 @@ async def ingest_record(
         was_new=was_new,
         has_image=image_bytes is not None,
         has_thumb=thumb_bytes is not None,
+        device_id=request.headers.get("X-Device-Id") or "",
     )
 
     return IngestRecordResponse(

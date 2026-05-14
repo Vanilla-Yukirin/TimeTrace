@@ -200,6 +200,42 @@ async def test_owned_client_aclose_is_safe(tmp_path):
     await backend.aclose()
 
 
+async def test_device_id_header_added_when_set(db, blob_storage):
+    """HttpBackend(device_id=...) must include X-Device-Id on every request, even
+    when the AsyncClient was supplied externally (test path)."""
+    captured: list[str | None] = []
+    base_app = create_app(db, blob_storage=blob_storage)
+
+    @base_app.middleware("http")
+    async def _capture_device_header(request, call_next):  # noqa: ANN001
+        captured.append(request.headers.get("x-device-id"))
+        return await call_next(request)
+
+    transport = httpx.ASGITransport(app=base_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw:
+        backend = HttpBackend(client=raw, device_id="dev-uuid-xyz")
+        await backend.submit_record(_CTX, reason="heartbeat")
+
+    assert any(h == "dev-uuid-xyz" for h in captured)
+
+
+async def test_no_device_id_header_when_unset(db, blob_storage):
+    captured: list[str | None] = []
+    base_app = create_app(db, blob_storage=blob_storage)
+
+    @base_app.middleware("http")
+    async def _capture_device_header(request, call_next):  # noqa: ANN001
+        captured.append(request.headers.get("x-device-id"))
+        return await call_next(request)
+
+    transport = httpx.ASGITransport(app=base_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw:
+        backend = HttpBackend(client=raw)
+        await backend.submit_record(_CTX, reason="heartbeat")
+
+    assert all(h is None for h in captured)
+
+
 async def test_borrowed_client_aclose_is_noop(backend):
     """When the AsyncClient comes from outside (test harness, app composer)
     HttpBackend must not close it on aclose() — that's the caller's job."""
