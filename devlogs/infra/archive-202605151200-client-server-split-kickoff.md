@@ -385,10 +385,11 @@ OCR 文字: 仅用于内部判断，不上传也不落盘
 - [x] `common/protocol.py` 加 pydantic `IngestRecordPayload` / `IngestRecordResponse` 作为 wire schema
 - [x] `client/core/backend.py::HttpBackend` 实现：`submit_record` 本地生成 `client_record_id` POST record-only；`submit_screenshot` 复用同一 id POST record+image（server 看到 was_new=False 后挂截图）；`close_record` POST `.../close` 带客户端时钟；`mark_pending` no-op（ingest 路由本身已 mark_pending）（commit `77b1ec4`）
 - [x] `client/core/outbox.py`：append-only `log.jsonl` + `blobs/` + `state.json`（acked offset，atomic rename）；严格 FIFO；崩溃恢复（commit `8477488`）
-- [ ] 限速 token bucket —— 推迟到 P3a-5（与 sender loop 一起做才有意义）
-- [ ] **P3a-5（待做）**：把 Outbox 接到 HttpBackend + capture，写 `OutboxSender` 后台任务做带 backoff 的 replay；client.toml `[server]` 配置；端到端 `timetrace-client` + `timetrace-server` 双终端 smoke
-- [ ] 客户端配置：`client.toml` 的 `[server] url` 必填 —— P3a-5
-- [ ] 端到端测试：起 server fixture + client driver，跑一条记录上传链路 —— P3a-5
+- [x] 限速 token bucket：`OutboxSender(max_kbps=N)`，N=0 zero-overhead；pre-emptive consume + 1s 初始 burst budget（commit `600df57`）
+- [x] `OutboxSender`：drain 循环 + 指数 backoff + 严格 FIFO + asyncio.Event 关停（commit `b4e62bf`）
+- [x] 客户端配置：`ClientConfig` + `client.toml` 5 段 schema + `tomllib` 读 + 手写 TOML 输出 + `ensure_device_id()` 注入 UUID（commit `13734ed`）
+- [ ] **P3a-5b（剩余）**：拼装 `timetrace-client` 入口（读 client.toml → 起 Outbox → 起 HttpBackend → 起 `OutboxBackend` (BackendClient → outbox.append) → 起 OutboxSender → 起 CaptureService），同时 `timetrace-server` 入口（仅 api + worker，去掉 capture）
+- [ ] 端到端测试：起 server fixture + client driver 跑完整一条上传链路 —— P3a-5b
 
 **关键设计决定（实施期固化下来的）**：
 
@@ -403,14 +404,15 @@ OCR 文字: 仅用于内部判断，不上传也不落盘
 
 **目标**：把鉴权和初始化补齐，达到"开源可用"门槛。
 
-- [ ] Server 首启自动生成 token → `tokens.toml`
-- [ ] Server 全部上行端点加 bearer 校验
-- [ ] `timetrace-client init` 交互式命令
-- [ ] device_id 自动生成 + 每条上传带 `X-Device-Id`
-- [ ] `tokens.toml` 支持多 token + label
-- [ ] README 写清楚 "git clone → docker-compose up → 看日志 token → client init"
+- [x] Server 首启自动生成 token → `tokens.json`（用 JSON 不用 TOML：stdlib 同时支持读写省去 tomli-w 依赖；schema forward-compat 加字段不破坏老格式；commit `67276a2`）
+- [x] Server 上行端点加 bearer 校验（仅 `/v1/ingest/*`；frontend-facing 的 records / search / feedback 维持开放，loopback only；commit `67276a2`）
+- [x] `tokens.json` 支持多 token + label（schema 已就位，CRUD 流程留 P3b-2）
+- [x] device_id 字段 + 自动生成（在 `ClientConfig.ensure_device_id()`；commit `13734ed`）
+- [ ] `timetrace-client init` 交互式命令 —— P3b-3：与 P3a-5b 双入口拆分一起做
+- [ ] 每条上传带 `X-Device-Id` —— P3b-2：HttpBackend 加 device_id 参数 + middleware 在 server 端记录
+- [ ] README 写清楚 "git clone → docker-compose up → 看日志 token → client init" —— P3b-3 入口落地后写
 
-**Exit criteria**：他人按 README 一字不差能装起来。
+**Exit criteria（部分达成）**：✅ 192 tests passed；✅ 命令行 `uv run timetrace` 首启即生成 token + 落盘；❌ 双入口 + init 命令 + README 端到端待 P3b-3。
 
 ### P4 — 客户端隐私管线
 
