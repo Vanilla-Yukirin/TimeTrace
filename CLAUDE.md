@@ -57,10 +57,13 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 
 ## 项目约定
 
-- **入口**：`src/timetrace/main.py:main` → pystray 主线程 + asyncio loop
-- **配置**：`src/timetrace/config.py` — dataclass，**仅 VLM 走 `.env`**（其余编辑代码默认值）
+- **入口**：`src/timetrace/main.py:main` → pystray 主线程 + asyncio loop。重构期还是单进程（含两侧），P3a-5 接 Outbox 后才会拆 `timetrace-client` / `timetrace-server` 双入口。
+- **三层目录**：`src/timetrace/{common,client,server}/`。配置在 `common/config.py`；wire schema 在 `common/protocol.py`；capture / 托盘 / outbox / backend 在 `client/`；api / db / queue / blob / worker / vlm / phash / mcp 在 `server/`。
+- **DB 路径**：`server/db/sqlite.py::SqliteDatabase`，`server/db/__init__.py` 导出 `Database = SqliteDatabase` 别名 —— 现在所有调用方都还是用 `from timetrace.server.db import Database`，PostgresDatabase 在 P5 进来时这条别名升级为 typing.Protocol。
+- **BackendClient Protocol** in `client/core/backend.py`：capture 不再直接用 db，全走 `BackendClient`；本地用 `InProcessBackend`（直调 SqliteDatabase + PHashIndex），P3a 起多了个 `HttpBackend`（POST `/v1/ingest/record` + `.../close`，bearer 可选）。
+- **Outbox**：`client/core/outbox.py`，append-only `log.jsonl` + `blobs/` + `state.json`（atomic rename）。**当前还没接进 capture / HttpBackend 的运行路径** —— 是 P3a-5 的事。
+- **Auth**：`server/auth.py::ServerAuth`，`load_or_generate()` 读 `~/.config/timetrace-server/tokens.json` 或首启自动生成 `tt_live_<32urlbytes>` 并 logger.info；`create_app(..., auth=...)` 给 `/v1/ingest/*` 套 `Depends(bearer)`，`/healthz` 与 frontend-facing 的 records / search / feedback 不要 token。
 - **数据目录**：`%USERPROFILE%/TimeTraceData/`（不在仓库内）
-- **DB**：所有访问通过 `aiosqlite`，保持 async/await
 - **日志**：`structlog.get_logger(__name__)`，禁用 `print`
 - **前端代码风格**：以 inline style + Tailwind 工具类混用为主，已装 `@radix-ui/react-dialog/select/separator/slot/tooltip`、`@tanstack/react-query`、`lucide-react`，新增 UI 优先复用
 
@@ -68,13 +71,13 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 
 | 文件 | 方法 | 状态 |
 |------|------|------|
-| `mcp_layer/tools.py` | `get_category_stats()`、`search_activity()` | Phase 1.5+ stub（其余 MCP 工具已实装） |
+| `server/mcp_layer/tools.py` | `get_category_stats()`、`search_activity()` | Phase 1.5+ stub（其余 MCP 工具已实装） |
 
 ## 测试
 
-- `tests/`：`test_storage / test_api / test_privacy / test_rules / test_phash_index / test_search / test_vlm / test_vlm_smoke / test_worker_pipeline`
+- `tests/` 当前 176 passed：`test_api / test_auth / test_backend_inprocess / test_blob_local / test_http_backend / test_ingest / test_outbox / test_phash_index / test_privacy / test_queue_inmemory / test_rules / test_search / test_storage / test_vlm / test_vlm_smoke / test_worker_pipeline`
 - `pytest-asyncio` `asyncio_mode = "auto"`（pyproject.toml）
-- 不使用 mock DB，全部用内存 SQLite (`:memory:`)
+- 不 mock DB，全部用 `tmp_path` 下的真实 SQLite 文件；HttpBackend E2E 用 `httpx.ASGITransport(app=...)` 直接打 in-process FastAPI，零 socket 零线程
 - VLM 测试分两层：`test_vlm.py` 单元（mock httpx），`test_vlm_smoke.py` 真实端点（需 `.env`，无 key 自动 skip）
 
 ## 开发日志与文档入口
