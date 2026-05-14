@@ -344,13 +344,20 @@ class SqliteDatabase:
                 raise
             return existing["id"], False
 
-    async def close_record(self, record_id: str) -> None:
-        """Set ts_end on a record (e.g. when window switches away)."""
+    async def close_record(self, record_id: str, ts_end: int | None = None) -> None:
+        """Set ts_end on a record (e.g. when window switches away).
+
+        When `ts_end` is None the server clock is used; HttpBackend passes the
+        client's clock so the time the user actually stopped using the window
+        is honoured rather than the time the server happened to receive the
+        close call.
+        """
         now = _now_ms()
+        ts_end_value = ts_end if ts_end is not None else now
         async with self._lock:
             await self.conn.execute(
                 "UPDATE records SET ts_end=?, updated_at=? WHERE id=?",
-                (now, now, record_id),
+                (ts_end_value, now, record_id),
             )
             await self.conn.commit()
 

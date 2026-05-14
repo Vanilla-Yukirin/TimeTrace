@@ -9,10 +9,12 @@ Response: IngestRecordResponse. `was_new=False` means a row with the same
 `client_record_id` already existed and we returned its id idempotently —
 the client treats both 200s the same way and clears the outbox entry.
 
-The route refuses to attach a screenshot to a replay (was_new=False) so the
-second submission can't accidentally double-write the same blob; if the first
-submission lost the screenshot mid-upload the client should regenerate the
-client_record_id rather than retry.
+The route allows attaching a screenshot to an existing record (was_new=False
++ image bytes) so that HttpBackend can drive the capture pipeline as two
+separate calls (record-then-screenshot) without losing the screenshot when
+the second call fires after the first has already created the record.
+At-most-once delivery of the same payload is the outbox's responsibility,
+not the route's.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from datetime import datetime, timezone
 
 import structlog
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from timetrace.common.models import CaptureContext
 from timetrace.common.phash_hash import phash_to_blob
@@ -98,7 +100,7 @@ async def ingest_record(
     )
 
     screenshot_id: str | None = None
-    if was_new and image_bytes is not None:
+    if image_bytes is not None:
         if blob_storage is None:
             raise HTTPException(
                 status_code=503,
@@ -127,8 +129,9 @@ async def ingest_record(
         if payload.image_phash is not None and phash_index is not None:
             phash_index.insert(screenshot_id, payload.image_phash, payload.ts_start)
 
-    if was_new:
-        await db.mark_pending(record_id)
+    # mark_pending is idempotent (INSERT OR IGNORE under the hood) so it's safe
+    # to call on every ingest, including replays where was_new=False.
+    await db.mark_pending(record_id)
 
     logger.info(
         "ingest.record",
@@ -144,3 +147,25 @@ async def ingest_record(
         was_new=was_new,
         server_received_at=_now_ms(),
     )
+
+
+class CloseRecordRequest(BaseModel):
+    ts_end: int | None = None
+
+
+@router.post("/ingest/record/{record_id}/close")
+async def close_record(
+    record_id: str,
+    request: Request,
+    body: CloseRecordRequest | None = None,
+) -> dict:
+    """Stamp ts_end on an existing record.
+
+    The body is optional; when present `ts_end` is the client's epoch ms
+    (so the boundary reflects the user's actual window-switch moment rather
+    than network arrival time). When absent, server clock is used.
+    """
+    db = request.app.state.db
+    ts_end = body.ts_end if body is not None else None
+    await db.close_record(record_id, ts_end=ts_end)
+    return {"record_id": record_id, "ts_end": ts_end or _now_ms()}

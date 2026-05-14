@@ -194,34 +194,39 @@ async def test_ingest_replay_returns_was_new_false_with_same_record_id(db, blob_
     assert second["screenshot_id"] is None
 
 
-async def test_ingest_replay_with_image_does_not_double_write(db, blob_storage, tmp_path):
-    """Second submission must not create a second screenshot row for the same
-    client_record_id, even when image bytes are re-sent."""
+async def test_ingest_screenshot_attach_after_record_only(db, blob_storage):
+    """HttpBackend pattern: first POST is record-only, second POST adds the image
+    against the same client_record_id. The second call must attach the screenshot
+    to the existing record rather than dropping it.
+    """
     app = create_app(db, blob_storage=blob_storage)
     image_data = _png_bytes()
-    payload = _record_payload(
-        "client-replay-img",
+
+    record_only = _record_payload("client-two-stage")
+    record_with_image = _record_payload(
+        "client-two-stage",
         image_md5=_md5(image_data),
         image_width=16,
         image_height=16,
     )
+
     with TestClient(app) as client:
-        first = client.post(
-            "/v1/ingest/record",
-            data={"record": payload},
-            files={"image": ("a.png", image_data, "image/png")},
-        ).json()
+        first = client.post("/v1/ingest/record", data={"record": record_only}).json()
         second = client.post(
             "/v1/ingest/record",
-            data={"record": payload},
+            data={"record": record_with_image},
             files={"image": ("a.png", image_data, "image/png")},
         ).json()
-    assert first["was_new"] is True and first["screenshot_id"]
+
+    assert first["was_new"] is True
+    assert first["screenshot_id"] is None
     assert second["was_new"] is False
-    assert second["screenshot_id"] is None  # second response advertises no new shot
+    assert second["record_id"] == first["record_id"]
+    assert second["screenshot_id"]  # attached on the second call
 
     shots = await db.get_screenshots_for_record(first["record_id"])
     assert len(shots) == 1
+    assert shots[0]["id"] == second["screenshot_id"]
 
 
 # --------------------------------------------------------------------------- #
