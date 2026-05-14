@@ -808,6 +808,16 @@ class Database:
                 logger.info("database.reclaim_stale_tasks", count=count)
         return count
 
+    async def get_category_final(self, record_id: str) -> str | None:
+        """Return analysis_results.category_final for a record, or None."""
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT category_final FROM analysis_results WHERE record_id=?",
+                (record_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return row["category_final"] if row else None
+
     async def get_record_by_id(self, record_id: str) -> dict | None:
         """Return a single record with analysis results and screenshots list."""
         async with self._lock:

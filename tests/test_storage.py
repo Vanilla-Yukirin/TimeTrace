@@ -454,6 +454,23 @@ async def test_init_heals_latest_orphan_with_no_successor_to_zero_duration(tmp_p
         await db2.close()
 
 
+async def test_get_category_final_returns_none_for_missing(db):
+    assert await db.get_category_final("does-not-exist") is None
+
+
+async def test_get_category_final_returns_value_after_classification(db):
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    rid = await db.insert_record(ctx, reason="heartbeat")
+    await db.mark_pending(rid)
+    await db.conn.execute(
+        "UPDATE analysis_results SET category_final=? WHERE record_id=?",
+        ("work/coding", rid),
+    )
+    await db.conn.commit()
+
+    assert await db.get_category_final(rid) == "work/coding"
+
+
 async def test_close_open_records_before_returns_zero_when_clean(db):
     """Strict `ts_start < cutoff` keeps the helper from accidentally closing
     the about-to-be-active record (i.e. the legitimate in-flight one)."""
