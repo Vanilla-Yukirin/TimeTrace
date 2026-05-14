@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from timetrace.client.capture.service import CaptureService  # noqa: E402
+from timetrace.client.core.backend import InProcessBackend  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
 from timetrace.common.config import AppConfig  # noqa: E402
 from timetrace.server.api.app import create_app  # noqa: E402
@@ -42,12 +43,12 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
         gate = None
         logger.info("vlm.disabled", reason="no_api_key")
 
+    backend = InProcessBackend(db, phash_index=phash_index)
     capture_svc = CaptureService(
         config.capture,
         config.privacy,
-        db,
+        backend,
         storage_cfg=config.storage,
-        phash_index=phash_index,
     )
     worker = AnalysisWorker(
         db,

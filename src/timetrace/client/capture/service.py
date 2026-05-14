@@ -14,12 +14,11 @@ from timetrace.client.capture.privacy import should_capture
 from timetrace.client.capture.screenshot import capture_active_window
 from timetrace.client.capture.window import get_active_window
 from timetrace.common.models import CaptureContext
-from timetrace.common.phash_hash import phash_to_blob
+from timetrace.common.protocol import ScreenshotSubmission
 
 if TYPE_CHECKING:
+    from timetrace.client.core.backend import BackendClient
     from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig
-    from timetrace.server.phash_index.index import PHashIndex
-    from timetrace.server.storage.database import Database
 
 logger = structlog.get_logger(__name__)
 
@@ -31,15 +30,13 @@ class CaptureService:
         self,
         capture_cfg: CaptureConfig,
         privacy_cfg: PrivacyConfig,
-        db: Database,
+        backend: BackendClient,
         storage_cfg: StorageConfig | None = None,
-        phash_index: PHashIndex | None = None,
     ) -> None:
         self._cfg = capture_cfg
         self._privacy = privacy_cfg
-        self._db = db
+        self._backend = backend
         self._storage_cfg = storage_cfg
-        self._phash_index = phash_index
 
         self._idle = IdleDetector()
 
@@ -64,7 +61,7 @@ class CaptureService:
         finally:
             if self._last_record_id:
                 try:
-                    await self._db.close_record(self._last_record_id)
+                    await self._backend.close_record(self._last_record_id)
                 except Exception:
                     logger.warning("capture.close_record_on_shutdown_failed", exc_info=True)
             # Use a daemon thread so that a hung pynput stop() cannot prevent
@@ -82,7 +79,7 @@ class CaptureService:
             if not self._is_idle:
                 self._is_idle = True
                 if self._last_record_id:
-                    await self._db.close_record(self._last_record_id)
+                    await self._backend.close_record(self._last_record_id)
                     self._last_record_id = None
                 logger.info("capture.idle_start", idle_s=idle_s)
             return  # Don't capture while idle
@@ -111,14 +108,14 @@ class CaptureService:
         if window_switched:
             if self._last_record_id:
                 try:
-                    await self._db.close_record(self._last_record_id)
+                    await self._backend.close_record(self._last_record_id)
                 except Exception:
                     logger.warning(
                         "capture.close_record_failed",
                         record_id=self._last_record_id,
                         exc_info=True,
                     )
-            record_id = await self._db.insert_record(
+            record_id = await self._backend.submit_record(
                 ctx, reason="switch", event_type="window_switch"
             )
 
@@ -143,10 +140,10 @@ class CaptureService:
         if elapsed >= self._cfg.max_capture_interval_s:
             if self._last_record_id:
                 try:
-                    await self._db.close_record(self._last_record_id)
+                    await self._backend.close_record(self._last_record_id)
                 except Exception:
                     logger.warning("capture.heartbeat_close_record_failed", exc_info=True)
-            record_id = await self._db.insert_record(
+            record_id = await self._backend.submit_record(
                 ctx, reason="heartbeat", event_type="heartbeat"
             )
             await self._save_screenshot(record_id, win.hwnd, now)
@@ -212,11 +209,11 @@ class CaptureService:
                 self._pending_screenshot_task = None
 
     async def _save_screenshot(self, record_id: str, hwnd: int, now: float) -> None:
-        """Capture screenshot + thumbnail and persist to DB."""
+        """Capture screenshot + thumbnail and persist via the backend."""
         self._last_capture_ts = now
 
         if self._storage_cfg is None or not self._privacy.store_images:
-            await self._db.mark_pending(record_id)
+            await self._backend.mark_pending(record_id)
             return
 
         loop = asyncio.get_running_loop()
@@ -230,19 +227,16 @@ class CaptureService:
 
         if result is not None:
             rel_img, rel_thumb, sha256, width, height, phash = result
-            phash_blob = phash_to_blob(phash) if phash is not None else None
-            screenshot_id = await self._db.insert_screenshot(
-                record_id=record_id,
-                path=str(rel_img),
-                thumb_path=str(rel_thumb),
-                width=width,
-                height=height,
-                hash_sha256=sha256,
-                phash=phash_blob,
+            await self._backend.submit_screenshot(
+                ScreenshotSubmission(
+                    record_id=record_id,
+                    path=str(rel_img),
+                    thumb_path=str(rel_thumb),
+                    width=width,
+                    height=height,
+                    hash_sha256=sha256,
+                    phash=phash,
+                )
             )
-            if phash is not None and self._phash_index is not None:
-                ts_start = await self._db.get_record_ts_start(record_id)
-                if ts_start is not None:
-                    self._phash_index.insert(screenshot_id, phash, ts_start)
 
-        await self._db.mark_pending(record_id)
+        await self._backend.mark_pending(record_id)

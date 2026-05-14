@@ -350,14 +350,20 @@ OCR 文字: 仅用于内部判断，不上传也不落盘
 
 **目标**：把"组件间的调用"从直接引用改成走 Protocol，为 P3 切 HTTP 边界做准备。
 
-- [ ] 定义 `common/protocol.py`：`Record`、`UploadRequest` / `UploadResponse` 等 wire schema（pydantic）
-- [ ] 定义 `client/core/backend.py::BackendClient` Protocol
-- [ ] 定义 `server/db/__init__.py::Database` Protocol（现有 `database.py` 改名为 `server/db/sqlite.py` 实现）
-- [ ] 定义 `server/queue/__init__.py::Queue` Protocol、`server/storage/__init__.py::BlobStorage` Protocol
-- [ ] capture 调用从直接 `database.insert_record(...)` 改成 `backend.submit_record(...)`；此时 BackendClient 还是 in-process 直调
-- [ ] 给 BackendClient 写一个 fake 测试 double
+- [x] 定义 `common/protocol.py`：`ScreenshotSubmission` dataclass（capture→backend 唯一非 CaptureContext 的传值类型；pydantic 留 P3a 上 HTTP 时一并加）
+- [x] 定义 `client/core/backend.py::BackendClient` Protocol + `InProcessBackend` 直调实现
+- [ ] 定义 `server/db/__init__.py::Database` Protocol（现有 `database.py` 改名为 `server/db/sqlite.py` 实现）—— **推迟到 P2.5**：本期 capture 已经只看 BackendClient，server 端 Database 暴露面收口可与 worker / api 改造一并做
+- [ ] 定义 `server/queue/__init__.py::Queue` Protocol、`server/storage/__init__.py::BlobStorage` Protocol —— **推迟到 P2.5**：同上，与 ingest API 一起设计
+- [x] capture 调用从直接 `database.insert_record(...)` 改成 `backend.submit_record(...)`；此时 BackendClient 还是 in-process 直调
+- [x] 给 BackendClient 写一个 fake 测试 double（`tests/test_backend_inprocess.py` 7 个测试，覆盖 5 个 Protocol 方法 + phash 双写一致性）
 
-**Exit criteria**：单进程行为完全一致；测试用 fake backend 能 drive 整套客户端逻辑。
+**Exit criteria**：✅ pytest 108 passed（101 → 108），✅ ruff check + format --check 全绿，✅ capture/service.py 不再 import 任何 `timetrace.server.*`（client→server 跨层耦合的运行时路径已切除；剩余只有 main.py 装配处的 `InProcessBackend(db, phash_index)` 一行 — 这是单进程模式不可避免的胶水点，HttpBackend 上线后自动消失）。
+
+**P2 已知债务（待 P2.5 / P3a 收）**：
+
+1. `client/core/backend.py:InProcessBackend` 在 TYPE_CHECKING 块中仍 import `server/storage/database.Database` 与 `server/phash_index/index.PHashIndex`（仅类型注解）。这是 in-process 适配器的本质 — 它就是 client 端拿到的"server 直引用"。HttpBackend 上线后 InProcessBackend 仅用于测试或单进程模式
+2. `server/api/routes/feedback.py` 仍直接用 `db.lock` / `db.conn.execute(...)`（绕过 Database 方法）—— 与 P2.5 的 Database Protocol 一并收
+3. `server/worker/loop.py` 仍直接持有 `Database` 引用（不走 BackendClient，因为 worker 在 server 进程内跑，本来就不需要走客户端 backend）—— 不算债务，是 server tier 内部的合理直调
 
 ### P3a — HTTP 边界 + Outbox
 
