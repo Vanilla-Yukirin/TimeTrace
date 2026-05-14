@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 if TYPE_CHECKING:
-    from timetrace.config import PrivacyConfig
+    from timetrace.common.config import PrivacyConfig
 
 logger = structlog.get_logger(__name__)
 

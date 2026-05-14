@@ -12,15 +12,15 @@ from dotenv import load_dotenv
 # Load .env before AppConfig() so VLMConfig.from_env() sees the values.
 load_dotenv()
 
-from timetrace.api.app import create_app  # noqa: E402
-from timetrace.capture.service import CaptureService  # noqa: E402
-from timetrace.config import AppConfig  # noqa: E402
-from timetrace.phash_index.index import PHashIndex  # noqa: E402
-from timetrace.storage.database import Database  # noqa: E402
-from timetrace.tray import start_tray_thread  # noqa: E402
-from timetrace.vlm.client import VLMClient  # noqa: E402
-from timetrace.vlm.health import VLMHealthGate  # noqa: E402
-from timetrace.worker.loop import AnalysisWorker  # noqa: E402
+from timetrace.client.capture.service import CaptureService  # noqa: E402
+from timetrace.client.tray import start_tray_thread  # noqa: E402
+from timetrace.common.config import AppConfig  # noqa: E402
+from timetrace.server.api.app import create_app  # noqa: E402
+from timetrace.server.phash_index.index import PHashIndex  # noqa: E402
+from timetrace.server.storage.database import Database  # noqa: E402
+from timetrace.server.vlm.client import VLMClient  # noqa: E402
+from timetrace.server.vlm.health import VLMHealthGate  # noqa: E402
+from timetrace.server.worker.loop import AnalysisWorker  # noqa: E402
 
 logger = structlog.get_logger(__name__)
 

@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING
 import structlog
 from PIL import Image
 
-from timetrace.vlm.client import VLMClient, VLMError, format_description
-from timetrace.vlm.health import VLMHealthGate
+from timetrace.server.vlm.client import VLMClient, VLMError, format_description
+from timetrace.server.vlm.health import VLMHealthGate
 
 if TYPE_CHECKING:
-    from timetrace.config import StorageConfig, WorkerConfig
-    from timetrace.storage.database import Database
+    from timetrace.common.config import StorageConfig, WorkerConfig
+    from timetrace.server.storage.database import Database
 
 logger = structlog.get_logger(__name__)
 
@@ -47,7 +47,7 @@ class AnalysisWorker:
         self._db = db
         self._vlm = vlm
         self._gate = gate
-        from timetrace.config import WorkerConfig as _WorkerConfig  # noqa: PLC0415
+        from timetrace.common.config import WorkerConfig as _WorkerConfig  # noqa: PLC0415
 
         self._cfg = cfg or _WorkerConfig()
         self._storage_cfg = storage_cfg

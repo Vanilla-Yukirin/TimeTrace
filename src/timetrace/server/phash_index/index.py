@@ -6,11 +6,11 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from timetrace.phash_index.bk_tree import BKTree
-from timetrace.phash_index.hash import phash_from_blob
+from timetrace.common.phash_hash import phash_from_blob
+from timetrace.server.phash_index.bk_tree import BKTree
 
 if TYPE_CHECKING:
-    from timetrace.storage.database import Database
+    from timetrace.server.storage.database import Database
 
 logger = structlog.get_logger(__name__)
 

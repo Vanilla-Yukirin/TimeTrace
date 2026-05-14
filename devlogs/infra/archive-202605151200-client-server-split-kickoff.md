@@ -328,17 +328,23 @@ OCR 文字: 仅用于内部判断，不上传也不落盘
 
 **目标**：把现有 `src/timetrace/` 按目标骨架重新分布到 `client/` / `server/` / `common/`，**不改任何业务逻辑**。
 
-- [ ] 新建子包目录
-- [ ] 按归属移动模块：
-  - `capture/` → `client/capture/`
-  - `worker/`, `api/`, `vlm/`, `database.py`, `phash/` → `server/...`
-  - `config.py` 拆成 `common/config.py` + `client/config.py` + `server/config.py`
-  - `models.py` / 数据类 → `common/`
-- [ ] 修 import 路径
-- [ ] `pyproject.toml` 的 `[project.scripts]` 加 `timetrace-client` / `timetrace-server`，原 `timetrace` 暂时指向 server entry（兼容）
-- [ ] 所有测试照常跑过
+- [x] 新建子包目录（`common/` `client/` `server/` + 各自 `__init__.py`）
+- [x] 按归属移动模块（用 `git mv` 保留 history）：
+  - `capture/` → `client/capture/`，`tray.py` → `client/tray.py`
+  - `api/`、`worker/`、`vlm/`、`storage/database.py`、`phash_index/{index,bk_tree}.py`、`mcp_layer/`、`rules/` → `server/...`
+  - `config.py`、`storage/models.py`（CaptureContext）、`phash_index/hash.py`（pHash 纯算法） → `common/`
+- [x] 修 import 路径（src + tests 共 ~67 处；脚本一次性 regex 重写后人工 grep 复核零残留）
+- [x] 所有测试照常跑过（`uv run pytest` 101 passed）
+- [ ] ~~`pyproject.toml` 的 `[project.scripts]` 加 `timetrace-client` / `timetrace-server`，原 `timetrace` 暂时指向 server entry（兼容）~~ **推迟到 P3a**：P1 没拆 entry，提前加只会得到两个跑 server 单进程的别名，对用户混乱、对调试无用
 
-**Exit criteria**：`uv run pytest` 全绿，`uv run timetrace` 能照常起来（虽然内部是新目录布局）。
+**Exit criteria**：✅ `uv run pytest` 全绿（101 passed in ~6s），✅ `uv run ruff check` + `ruff format --check` 全绿，✅ `git status` 全部 `renamed:` 无 `deleted: + new file:` 丢史
+
+**P1 已知债务（待 Phase 2/P2 主体清理）**：
+
+1. `common/config.py:8` 仍 `from timetrace.server.vlm.client import VLMConfig`，构成 **common → server** 反向依赖。**紧接着下一个 commit（refactor(config)）抽 VLMConfig 到 common.config**，让 common tier 干净
+2. `client/capture/service.py` 仍直接 import `server/storage/database` 与 `server/phash_index/index`，构成 **client → server** 跨层 import。**等 P2 主体的 BackendClient Protocol 落地**才能切，本期接受
+3. `server/api/routes/feedback.py` 仍直接用 `async with db.lock: db.conn.execute(...)`（lock 字段暴露），P2 设计 Database Protocol 时一并封装
+4. `src/timetrace/privacy/__init__.py` 空目录保留原位，归属待 P3 决定
 
 ### P2 — 抽接口
 

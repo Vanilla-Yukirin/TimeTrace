@@ -10,12 +10,12 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from timetrace.config import StorageConfig, WorkerConfig
-from timetrace.storage.database import Database
-from timetrace.storage.models import CaptureContext
-from timetrace.vlm.client import VLMError
-from timetrace.vlm.health import VLMHealthGate
-from timetrace.worker.loop import AnalysisWorker
+from timetrace.common.config import StorageConfig, WorkerConfig
+from timetrace.common.models import CaptureContext
+from timetrace.server.storage.database import Database
+from timetrace.server.vlm.client import VLMError
+from timetrace.server.vlm.health import VLMHealthGate
+from timetrace.server.worker.loop import AnalysisWorker
 
 
 @pytest.fixture

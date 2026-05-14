@@ -9,17 +9,17 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from timetrace.capture.idle import IdleDetector
-from timetrace.capture.privacy import should_capture
-from timetrace.capture.screenshot import capture_active_window
-from timetrace.capture.window import get_active_window
-from timetrace.phash_index.hash import phash_to_blob
-from timetrace.storage.models import CaptureContext
+from timetrace.client.capture.idle import IdleDetector
+from timetrace.client.capture.privacy import should_capture
+from timetrace.client.capture.screenshot import capture_active_window
+from timetrace.client.capture.window import get_active_window
+from timetrace.common.models import CaptureContext
+from timetrace.common.phash_hash import phash_to_blob
 
 if TYPE_CHECKING:
-    from timetrace.config import CaptureConfig, PrivacyConfig, StorageConfig
-    from timetrace.phash_index.index import PHashIndex
-    from timetrace.storage.database import Database
+    from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig
+    from timetrace.server.phash_index.index import PHashIndex
+    from timetrace.server.storage.database import Database
 
 logger = structlog.get_logger(__name__)
 

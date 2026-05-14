@@ -7,17 +7,17 @@ import random
 import pytest
 from PIL import Image
 
-from timetrace.config import StorageConfig
-from timetrace.phash_index.bk_tree import BKTree
-from timetrace.phash_index.hash import (
+from timetrace.common.config import StorageConfig
+from timetrace.common.models import CaptureContext
+from timetrace.common.phash_hash import (
     compute_phash,
     hamming,
     phash_from_blob,
     phash_to_blob,
 )
-from timetrace.phash_index.index import PHashIndex
-from timetrace.storage.database import Database
-from timetrace.storage.models import CaptureContext
+from timetrace.server.phash_index.bk_tree import BKTree
+from timetrace.server.phash_index.index import PHashIndex
+from timetrace.server.storage.database import Database
 
 # --------------------------------------------------------------------------- #
 # Fixtures                                                                      #

@@ -1,8 +1,8 @@
 """Tests for the capture privacy gate."""
 
-from timetrace.capture.privacy import should_capture
-from timetrace.config import PrivacyConfig
-from timetrace.storage.models import CaptureContext
+from timetrace.client.capture.privacy import should_capture
+from timetrace.common.config import PrivacyConfig
+from timetrace.common.models import CaptureContext
 
 
 def _ctx(app: str = "VSCode", title: str = "main.py") -> CaptureContext:

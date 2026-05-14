@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 if TYPE_CHECKING:
-    from timetrace.vlm.client import VLMClient
+    from timetrace.server.vlm.client import VLMClient
 
 logger = structlog.get_logger(__name__)
 

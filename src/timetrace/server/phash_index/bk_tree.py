@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from timetrace.phash_index.hash import hamming
+from timetrace.common.phash_hash import hamming
 
 
 class _BKNode:

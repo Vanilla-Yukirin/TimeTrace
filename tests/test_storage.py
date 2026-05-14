@@ -4,9 +4,9 @@ import time
 
 import pytest
 
-from timetrace.config import StorageConfig
-from timetrace.storage.database import _MAX_ORPHAN_BRIDGE_MS, Database
-from timetrace.storage.models import CaptureContext
+from timetrace.common.config import StorageConfig
+from timetrace.common.models import CaptureContext
+from timetrace.server.storage.database import _MAX_ORPHAN_BRIDGE_MS, Database
 
 
 @pytest.fixture
@@ -282,13 +282,9 @@ async def test_insert_closes_prior_orphan_to_next_ts_start(db):
 
     rid_b = await db.insert_record(ctx, reason="heartbeat")
 
-    async with db.conn.execute(
-        "SELECT ts_end FROM records WHERE id=?", (rid_a,)
-    ) as cur:
+    async with db.conn.execute("SELECT ts_end FROM records WHERE id=?", (rid_a,)) as cur:
         a_end = (await cur.fetchone())["ts_end"]
-    async with db.conn.execute(
-        "SELECT ts_start FROM records WHERE id=?", (rid_b,)
-    ) as cur:
+    async with db.conn.execute("SELECT ts_start FROM records WHERE id=?", (rid_b,)) as cur:
         b_start = (await cur.fetchone())["ts_start"]
 
     assert a_end is not None
@@ -308,9 +304,7 @@ async def test_insert_zeroes_prior_orphan_when_new_record_is_too_late(db):
 
     await db.insert_record(ctx, reason="heartbeat")
 
-    async with db.conn.execute(
-        "SELECT ts_start, ts_end FROM records WHERE id=?", (rid_a,)
-    ) as cur:
+    async with db.conn.execute("SELECT ts_start, ts_end FROM records WHERE id=?", (rid_a,)) as cur:
         row = await cur.fetchone()
 
     assert row["ts_end"] == row["ts_start"]
@@ -326,9 +320,7 @@ async def test_insert_closes_multiple_orphans_each_to_correct_boundary(db):
 
     # Stamp recent deterministic timestamps and null out ts_end on all three.
     base = int(time.time() * 1000) - 3000
-    await db.conn.execute(
-        "UPDATE records SET ts_start=?, ts_end=NULL WHERE id=?", (base, rid_a)
-    )
+    await db.conn.execute("UPDATE records SET ts_start=?, ts_end=NULL WHERE id=?", (base, rid_a))
     await db.conn.execute(
         "UPDATE records SET ts_start=?, ts_end=NULL WHERE id=?", (base + 1000, rid_b)
     )
@@ -339,9 +331,7 @@ async def test_insert_closes_multiple_orphans_each_to_correct_boundary(db):
 
     rid_d = await db.insert_record(ctx, reason="heartbeat")
 
-    async with db.conn.execute(
-        "SELECT id, ts_start, ts_end FROM records ORDER BY ts_start"
-    ) as cur:
+    async with db.conn.execute("SELECT id, ts_start, ts_end FROM records ORDER BY ts_start") as cur:
         rows = list(await cur.fetchall())
     by_id = {r["id"]: r for r in rows}
     a, b, c, d = by_id[rid_a], by_id[rid_b], by_id[rid_c], by_id[rid_d]
@@ -361,12 +351,8 @@ async def test_init_heals_orphan_with_successor_to_next_ts_start(tmp_path):
     rid_a = await db1.insert_record(ctx, reason="heartbeat")
     rid_b = await db1.insert_record(ctx, reason="heartbeat")
     # Re-create the bug: A's ts_end never closed, B sits after it.
-    await db1.conn.execute(
-        "UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,)
-    )
-    await db1.conn.execute(
-        "UPDATE records SET ts_start=2000 WHERE id=?", (rid_b,)
-    )
+    await db1.conn.execute("UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,))
+    await db1.conn.execute("UPDATE records SET ts_start=2000 WHERE id=?", (rid_b,))
     await db1.conn.commit()
     await db1.close()
 
@@ -374,13 +360,9 @@ async def test_init_heals_orphan_with_successor_to_next_ts_start(tmp_path):
     db2 = Database(cfg)
     await db2.init()
     try:
-        async with db2.conn.execute(
-            "SELECT ts_end FROM records WHERE id=?", (rid_a,)
-        ) as cur:
+        async with db2.conn.execute("SELECT ts_end FROM records WHERE id=?", (rid_a,)) as cur:
             a_end = (await cur.fetchone())["ts_end"]
-        async with db2.conn.execute(
-            "SELECT ts_start FROM records WHERE id=?", (rid_b,)
-        ) as cur:
+        async with db2.conn.execute("SELECT ts_start FROM records WHERE id=?", (rid_b,)) as cur:
             b_start = (await cur.fetchone())["ts_start"]
         assert a_end == b_start
     finally:
@@ -396,9 +378,7 @@ async def test_init_zeroes_orphan_when_successor_gap_is_too_large(tmp_path):
     rid_a = await db1.insert_record(ctx, reason="heartbeat")
     rid_b = await db1.insert_record(ctx, reason="heartbeat")
 
-    await db1.conn.execute(
-        "UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,)
-    )
+    await db1.conn.execute("UPDATE records SET ts_start=1000, ts_end=NULL WHERE id=?", (rid_a,))
     await db1.conn.execute(
         "UPDATE records SET ts_start=? WHERE id=?",
         (1000 + _MAX_ORPHAN_BRIDGE_MS + 1, rid_b),
@@ -480,9 +460,7 @@ async def test_close_open_records_before_returns_zero_when_clean(db):
     ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
     rid = await db.insert_record(ctx, reason="heartbeat")
 
-    async with db.conn.execute(
-        "SELECT ts_start FROM records WHERE id=?", (rid,)
-    ) as cur:
+    async with db.conn.execute("SELECT ts_start FROM records WHERE id=?", (rid,)) as cur:
         ts_start = (await cur.fetchone())["ts_start"]
 
     # Calling with cutoff == this record's own ts_start must NOT close it.
@@ -492,7 +470,5 @@ async def test_close_open_records_before_returns_zero_when_clean(db):
 
     assert healed == 0
 
-    async with db.conn.execute(
-        "SELECT ts_end FROM records WHERE id=?", (rid,)
-    ) as cur:
+    async with db.conn.execute("SELECT ts_end FROM records WHERE id=?", (rid,)) as cur:
         assert (await cur.fetchone())["ts_end"] is None

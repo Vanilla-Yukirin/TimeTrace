@@ -31,8 +31,8 @@ import structlog
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from PIL import Image
 
-from timetrace.phash_index.hash import compute_phash
-from timetrace.vlm.client import VLMError, format_description
+from timetrace.common.phash_hash import compute_phash
+from timetrace.server.vlm.client import VLMError, format_description
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["search"])

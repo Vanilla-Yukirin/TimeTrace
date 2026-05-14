@@ -12,10 +12,10 @@ import mss.tools
 import structlog
 from PIL import Image
 
-from timetrace.phash_index.hash import compute_phash
+from timetrace.common.phash_hash import compute_phash
 
 if TYPE_CHECKING:
-    from timetrace.config import StorageConfig
+    from timetrace.common.config import StorageConfig
 
 logger = structlog.get_logger(__name__)
 

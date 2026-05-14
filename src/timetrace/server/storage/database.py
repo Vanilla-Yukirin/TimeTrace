@@ -21,7 +21,7 @@ from typing import Any
 import aiosqlite
 import structlog
 
-from timetrace.storage.models import CaptureContext
+from timetrace.common.models import CaptureContext
 
 logger = structlog.get_logger(__name__)
 

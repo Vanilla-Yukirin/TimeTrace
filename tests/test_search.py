@@ -8,12 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from timetrace.api.app import create_app
-from timetrace.config import StorageConfig
-from timetrace.phash_index.hash import compute_phash, phash_to_blob
-from timetrace.phash_index.index import PHashIndex
-from timetrace.storage.database import Database
-from timetrace.storage.models import CaptureContext
+from timetrace.common.config import StorageConfig
+from timetrace.common.models import CaptureContext
+from timetrace.common.phash_hash import compute_phash, phash_to_blob
+from timetrace.server.api.app import create_app
+from timetrace.server.phash_index.index import PHashIndex
+from timetrace.server.storage.database import Database
 
 
 @pytest.fixture

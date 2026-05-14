@@ -1,6 +1,6 @@
 """Tests for the Rule/Feedback Engine."""
 
-from timetrace.rules.engine import KnnNeighbor, RuleSet, VlmPrediction, decide_category
+from timetrace.server.rules.engine import KnnNeighbor, RuleSet, VlmPrediction, decide_category
 
 
 def _rules() -> RuleSet:

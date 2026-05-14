@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image
 
-from timetrace.vlm.client import (
+from timetrace.server.vlm.client import (
     VLMClient,
     VLMConfig,
     VLMError,
     format_description,
 )
-from timetrace.vlm.health import GateState, VLMHealthGate
+from timetrace.server.vlm.health import GateState, VLMHealthGate
 
 # --------------------------------------------------------------------------- #
 # VLMConfig.from_env                                                            #
@@ -130,9 +130,7 @@ async def test_vlm_client_describe_prompt_enforces_noun_phrase_and_softens_title
     await client.describe(img, window_title="微信")
 
     messages = mock.call_args.kwargs["messages"]
-    text_parts = [
-        part["text"] for part in messages[0]["content"] if part.get("type") == "text"
-    ]
+    text_parts = [part["text"] for part in messages[0]["content"] if part.get("type") == "text"]
     full_prompt = "\n".join(text_parts)
 
     # Grammar-level constraint: noun-phrase opening, declarative ban.

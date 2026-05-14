@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from timetrace.api.routes import feedback, records, search
+from timetrace.server.api.routes import feedback, records, search
 
 if TYPE_CHECKING:
-    from timetrace.config import StorageConfig
-    from timetrace.phash_index.index import PHashIndex
-    from timetrace.storage.database import Database
-    from timetrace.vlm.client import VLMClient
+    from timetrace.common.config import StorageConfig
+    from timetrace.server.phash_index.index import PHashIndex
+    from timetrace.server.storage.database import Database
+    from timetrace.server.vlm.client import VLMClient
 
 
 def create_app(

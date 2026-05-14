@@ -3,10 +3,10 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from timetrace.api.app import create_app
-from timetrace.config import StorageConfig
-from timetrace.storage.database import Database
-from timetrace.storage.models import CaptureContext
+from timetrace.common.config import StorageConfig
+from timetrace.common.models import CaptureContext
+from timetrace.server.api.app import create_app
+from timetrace.server.storage.database import Database
 
 
 @pytest.fixture

@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from timetrace.config import PrivacyConfig
-    from timetrace.storage.models import CaptureContext
+    from timetrace.common.config import PrivacyConfig
+    from timetrace.common.models import CaptureContext
 
 
 def should_capture(ctx: CaptureContext, privacy_cfg: PrivacyConfig) -> bool:
