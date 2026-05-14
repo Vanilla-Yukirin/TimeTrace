@@ -365,18 +365,39 @@ OCR 文字: 仅用于内部判断，不上传也不落盘
 2. `server/api/routes/feedback.py` 仍直接用 `db.lock` / `db.conn.execute(...)`（绕过 Database 方法）—— 与 P2.5 的 Database Protocol 一并收
 3. `server/worker/loop.py` 仍直接持有 `Database` 引用（不走 BackendClient，因为 worker 在 server 进程内跑，本来就不需要走客户端 backend）—— 不算债务，是 server tier 内部的合理直调
 
-### P3a — HTTP 边界 + Outbox
+### P2.5 — Server-side Protocol 抽离 + feedback 债务收口
+
+**目标**：把 P2 推迟的 server 端 Protocol 落地，腾出 `server/storage/` 给 BlobStorage 用，顺手收掉 feedback 路由直访 `db.lock` 的债务。
+
+- [x] `Database.get_category_final(record_id)` + feedback 路由改用此方法（commit `349dff1`）
+- [x] `server/storage/database.py` → `server/db/sqlite.py`；类 `Database` 改名 `SqliteDatabase`；`server/db/__init__.py` 导出 `Database = SqliteDatabase` 别名（commit `3aee2a4`）—— 别名在 PostgresDatabase 进 P5 时升级为 typing.Protocol
+- [x] `server/queue/__init__.py::Queue` Protocol + `InMemoryQueue` 实现；`server/storage/blob.py::BlobStorage` Protocol + `LocalBlobStorage` 实现（commit `653efba`）—— 骨架先到位，本期不接 wire（worker 仍走 SqliteDatabase 的 analysis_results 表，capture 仍直接写文件）
+- [x] `pyproject.toml` 加 `[project.optional-dependencies]` 占位桶（commit `dbf3d62`）—— P4/P5/P6 真接入时解开注释
+
+**Exit criteria**：✅ pytest 128 passed（108 → 128），✅ ruff check + format --check 全绿，✅ `feedback.py` 不再触达 `db.lock` / `db.conn.execute`（路由层只剩"调有名字的方法"）。
+
+### P3a — HTTP 边界 + Outbox（基础设施层完成；与 capture 的接线留给 P3a-5）
 
 **目标**：把 BackendClient 的实现切到 HTTP，能真正两进程跑。
 
-- [ ] `server/api/ingest.py`：`POST /v1/ingest/record` 实现（multipart 解析 → 验 MD5 → 写 BlobStorage → 写 Database → enqueue 分析任务）
-- [ ] `client/core/backend.py::HttpBackend` 实现
-- [ ] `client/core/outbox.py`：append-only jsonl + blobs/ + state.db
-- [ ] 限速 token bucket
-- [ ] 配置切换：`client.toml` 的 `[server] url` 必填
-- [ ] 端到端测试：起 server fixture + client driver，跑一条记录上传链路
+- [x] `server/api/routes/ingest.py`：`POST /v1/ingest/record`（multipart `record` JSON + 可选 `image` + `thumb`，MD5 校验，幂等 by `client_record_id`）+ `POST /v1/ingest/record/{id}/close`（commit `1d3532b` + `77b1ec4`）
+- [x] `records.client_record_id` 列 + 部分唯一索引 + `Database.ingest_or_get_record` 幂等 upsert（commit `48048e2`）
+- [x] `common/protocol.py` 加 pydantic `IngestRecordPayload` / `IngestRecordResponse` 作为 wire schema
+- [x] `client/core/backend.py::HttpBackend` 实现：`submit_record` 本地生成 `client_record_id` POST record-only；`submit_screenshot` 复用同一 id POST record+image（server 看到 was_new=False 后挂截图）；`close_record` POST `.../close` 带客户端时钟；`mark_pending` no-op（ingest 路由本身已 mark_pending）（commit `77b1ec4`）
+- [x] `client/core/outbox.py`：append-only `log.jsonl` + `blobs/` + `state.json`（acked offset，atomic rename）；严格 FIFO；崩溃恢复（commit `8477488`）
+- [ ] 限速 token bucket —— 推迟到 P3a-5（与 sender loop 一起做才有意义）
+- [ ] **P3a-5（待做）**：把 Outbox 接到 HttpBackend + capture，写 `OutboxSender` 后台任务做带 backoff 的 replay；client.toml `[server]` 配置；端到端 `timetrace-client` + `timetrace-server` 双终端 smoke
+- [ ] 客户端配置：`client.toml` 的 `[server] url` 必填 —— P3a-5
+- [ ] 端到端测试：起 server fixture + client driver，跑一条记录上传链路 —— P3a-5
 
-**Exit criteria**：开两个终端，`timetrace-server` + `timetrace-client` 能跑通；timeline 能看到新记录；wifi 拔掉 5 分钟再插回来，记录不丢。
+**关键设计决定（实施期固化下来的）**：
+
+- **HttpBackend 不接 Outbox 之前直发**：现有 9 个 E2E 测试 `tests/test_http_backend.py` 通过 `httpx.ASGITransport` 直接打 in-process FastAPI app，零 socket 零线程。Outbox 接入是 P3a-5 的事
+- **截图重复挂载防护推迟**：ingest 路由抹掉 was_new 守卫后，replay+image 也会插一张新 screenshot 行；at-most-once 投递的兜底由 outbox 单 sender FIFO 保证（不是 server 端 dedup-by-hash）。如果将来需要 server 兜底，最低成本是给 `screenshots` 加 `(record_id, hash_sha256)` 唯一索引
+- **HttpBackend.mark_pending no-op**：ingest 路由每次都 `mark_pending`（INSERT OR IGNORE 幂等），所以 capture 在 submit_screenshot 之后那一发 mark_pending 在 HTTP 模式下被吞掉。InProcessBackend 仍照常 mark_pending（capture 行为不变）
+- **client_record_id 用 UUID 不是 hash**：纯客户端生成 + UNIQUE 索引兜底，避免"同一 ts_start 同一窗口"被误判幂等
+
+**Exit criteria（部分达成）**：✅ ingest API + HttpBackend + Outbox 三件套都有测试覆盖，pytest 164 passed；❌ 双终端跑通待 P3a-5；❌ 离线 5 分钟再恢复待 OutboxSender 实装。
 
 ### P3b — Auth + Init
 
