@@ -1,0 +1,190 @@
+"""Tests for OutboxSender — the drain-with-backoff background loop."""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from timetrace.client.core.outbox import Outbox, OutboxEntry
+from timetrace.client.core.outbox_sender import OutboxSender
+
+
+@pytest.fixture
+def outbox(tmp_path) -> Outbox:
+    return Outbox(tmp_path / "outbox")
+
+
+class _StubSender:
+    """Records every send + can be programmed to fail N times before succeeding."""
+
+    def __init__(self, fail_first_n: int = 0) -> None:
+        self._fail_remaining = fail_first_n
+        self.calls: list[OutboxEntry] = []
+
+    async def __call__(self, entry: OutboxEntry) -> None:
+        self.calls.append(entry)
+        if self._fail_remaining > 0:
+            self._fail_remaining -= 1
+            raise RuntimeError("transient")
+
+
+# --------------------------------------------------------------------------- #
+# Happy path                                                                    #
+# --------------------------------------------------------------------------- #
+
+
+async def test_sender_drains_in_submission_order(outbox):
+    eid_a = await outbox.append({"i": 0})
+    eid_b = await outbox.append({"i": 1})
+    eid_c = await outbox.append({"i": 2})
+
+    stub = _StubSender()
+    sender = OutboxSender(outbox, stub, idle_poll_interval_s=0.05)
+    stop = asyncio.Event()
+
+    task = asyncio.create_task(sender.run(stop))
+    # Wait for queue to empty
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+
+    assert [e.entry_id for e in stub.calls] == [eid_a, eid_b, eid_c]
+    assert await outbox.pending_count() == 0
+
+
+async def test_sender_picks_up_entries_appended_after_start(outbox):
+    """Sender's idle wait must let new appends drain the next iteration."""
+    stub = _StubSender()
+    sender = OutboxSender(outbox, stub, idle_poll_interval_s=0.05)
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+
+    await asyncio.sleep(0.1)  # let it spin in idle once
+    eid = await outbox.append({"late": True})
+
+    # Wait for the new entry to be drained
+    for _ in range(50):
+        if await outbox.pending_count() == 0:
+            break
+        await asyncio.sleep(0.02)
+
+    stop.set()
+    await task
+    assert any(e.entry_id == eid for e in stub.calls)
+
+
+# --------------------------------------------------------------------------- #
+# Backoff / retry                                                               #
+# --------------------------------------------------------------------------- #
+
+
+async def test_sender_retries_failing_entry_until_success(outbox):
+    eid = await outbox.append({"x": 1})
+
+    stub = _StubSender(fail_first_n=3)
+    sender = OutboxSender(
+        outbox,
+        stub,
+        backoff_initial_s=0.01,
+        backoff_max_s=0.05,
+        idle_poll_interval_s=0.05,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.02)
+    stop.set()
+    await task
+
+    # 3 failures + 1 success = 4 calls, all on the same entry
+    assert len(stub.calls) == 4
+    assert all(c.entry_id == eid for c in stub.calls)
+
+
+async def test_sender_strict_fifo_under_failure(outbox):
+    """A failing head entry must NOT cause the sender to skip ahead to entry 2."""
+    eid_head = await outbox.append({"i": 0})
+    eid_next = await outbox.append({"i": 1})
+
+    stub = _StubSender(fail_first_n=2)
+    sender = OutboxSender(
+        outbox,
+        stub,
+        backoff_initial_s=0.01,
+        backoff_max_s=0.02,
+        idle_poll_interval_s=0.05,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.02)
+    stop.set()
+    await task
+
+    # First three calls all on eid_head (2 failures + 1 success); only then eid_next
+    head_calls = [c for c in stub.calls if c.entry_id == eid_head]
+    next_calls = [c for c in stub.calls if c.entry_id == eid_next]
+    assert len(head_calls) == 3
+    assert len(next_calls) == 1
+    # Order check: head's last call must come before next's only call
+    assert stub.calls.index(head_calls[-1]) < stub.calls.index(next_calls[0])
+
+
+# --------------------------------------------------------------------------- #
+# Stop semantics                                                                #
+# --------------------------------------------------------------------------- #
+
+
+async def test_stop_event_during_backoff_returns_promptly(outbox):
+    """Setting stop_event while sender is sleeping in backoff must wake it
+    within roughly the backoff window, not multiple seconds later."""
+    await outbox.append({"x": 1})
+
+    class _AlwaysFail:
+        async def __call__(self, entry):  # noqa: ANN001
+            raise RuntimeError("never")
+
+    sender = OutboxSender(
+        outbox,
+        _AlwaysFail(),
+        backoff_initial_s=10.0,  # long enough that without wake we'd hang
+        backoff_max_s=10.0,
+        idle_poll_interval_s=10.0,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+
+    await asyncio.sleep(0.05)  # let it enter backoff
+    stop.set()
+    await asyncio.wait_for(task, timeout=1.0)  # must finish well under backoff
+
+
+async def test_pending_entry_stays_pending_when_stop_fires_before_success(outbox):
+    eid = await outbox.append({"x": 1})
+
+    class _AlwaysFail:
+        async def __call__(self, entry):  # noqa: ANN001
+            raise RuntimeError("never")
+
+    sender = OutboxSender(
+        outbox,
+        _AlwaysFail(),
+        backoff_initial_s=0.05,
+        backoff_max_s=0.05,
+        idle_poll_interval_s=0.05,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+
+    await asyncio.sleep(0.1)
+    stop.set()
+    await task
+
+    assert await outbox.pending_count() == 1
+    # And the entry id is still the one we put in
+    pending = [e async for e in outbox.iter_pending()]
+    assert pending[0].entry_id == eid
