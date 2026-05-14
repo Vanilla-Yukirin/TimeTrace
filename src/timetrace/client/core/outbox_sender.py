@@ -24,6 +24,7 @@ Loop semantics:
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 
 import structlog
@@ -37,8 +38,63 @@ logger = structlog.get_logger(__name__)
 SendCallable = Callable[[OutboxEntry], Awaitable[None]]
 
 
+class _TokenBucket:
+    """Pre-emptive rate limiter: ``await consume(n)`` blocks until n bytes of
+    budget are available. ``rate_kbps == 0`` means unlimited (the consume call
+    is a no-op so the limiter has zero overhead when disabled)."""
+
+    def __init__(self, rate_kbps: int, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._rate_bytes_per_sec = max(0, rate_kbps) * 1024
+        self._tokens: float = float(self._rate_bytes_per_sec)  # initial 1-second burst budget
+        self._clock = clock
+        self._last_refill = clock()
+
+    @property
+    def enabled(self) -> bool:
+        return self._rate_bytes_per_sec > 0
+
+    async def consume(self, byte_count: int) -> None:
+        if not self.enabled or byte_count <= 0:
+            return
+        now = self._clock()
+        elapsed = now - self._last_refill
+        self._tokens = min(
+            self._tokens + elapsed * self._rate_bytes_per_sec,
+            float(self._rate_bytes_per_sec),
+        )
+        self._last_refill = now
+        if self._tokens >= byte_count:
+            self._tokens -= byte_count
+            return
+        deficit = byte_count - self._tokens
+        wait_s = deficit / self._rate_bytes_per_sec
+        await asyncio.sleep(wait_s)
+        self._tokens = 0.0
+        self._last_refill = self._clock()
+
+
+def _entry_size_bytes(entry: OutboxEntry) -> int:
+    """Best-effort bytes-on-the-wire estimate for the rate limiter.
+
+    Uses raw image + thumb byte lengths and a small fixed overhead for the
+    JSON record envelope. Doesn't account for HTTP framing, but the limiter's
+    job is approximate fairness, not precise wire accounting.
+    """
+    size = 256  # heuristic for JSON envelope + multipart boundaries
+    if entry.image_bytes is not None:
+        size += len(entry.image_bytes)
+    if entry.thumb_bytes is not None:
+        size += len(entry.thumb_bytes)
+    return size
+
+
 class OutboxSender:
-    """Drain an Outbox in submission order, retrying with backoff on failure."""
+    """Drain an Outbox in submission order, retrying with backoff on failure.
+
+    With ``max_kbps`` set above 0, each successful send first waits on a
+    token bucket so the per-second upload doesn't exceed the cap. ``0`` keeps
+    the limiter dormant.
+    """
 
     def __init__(
         self,
@@ -48,12 +104,14 @@ class OutboxSender:
         backoff_initial_s: float = 1.0,
         backoff_max_s: float = 60.0,
         idle_poll_interval_s: float = 5.0,
+        max_kbps: int = 0,
     ) -> None:
         self._outbox = outbox
         self._send = send
         self._backoff_initial = backoff_initial_s
         self._backoff_max = backoff_max_s
         self._idle_interval = idle_poll_interval_s
+        self._bucket = _TokenBucket(max_kbps)
 
     async def run(self, stop_event: asyncio.Event | None = None) -> None:
         """Main drain loop. Returns when `stop_event` is set or task is cancelled."""
@@ -76,6 +134,12 @@ class OutboxSender:
         """Drain everything currently in the outbox; return count successfully sent."""
         sent = 0
         async for entry in self._outbox.iter_pending():
+            if stop_event.is_set():
+                return sent
+            # Pre-emptive bandwidth gate: wait BEFORE the network attempt so the
+            # bytes we're about to send fit inside the cap. No-op when the
+            # bucket is disabled (max_kbps=0).
+            await self._bucket.consume(_entry_size_bytes(entry))
             if stop_event.is_set():
                 return sent
             await self._send_with_backoff(entry, stop_event)

@@ -163,6 +163,56 @@ async def test_stop_event_during_backoff_returns_promptly(outbox):
     await asyncio.wait_for(task, timeout=1.0)  # must finish well under backoff
 
 
+async def test_max_kbps_zero_does_not_throttle(outbox):
+    """Default `max_kbps=0` must impose zero overhead — pure pass-through."""
+    for _ in range(5):
+        await outbox.append({"x": 1}, image_bytes=b"X" * 10240)
+
+    stub = _StubSender()
+    sender = OutboxSender(outbox, stub, idle_poll_interval_s=0.05)
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+    assert len(stub.calls) == 5
+
+
+async def test_max_kbps_caps_throughput(outbox, monkeypatch):
+    """With max_kbps=10 and 30KB of pending data, sender should sleep ~3s.
+
+    We swap asyncio.sleep with a fake that records waits without actually
+    sleeping, then assert the recorded total exceeds the cap-derived floor.
+    """
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        await real_sleep(0)  # yield once so the loop can progress
+
+    monkeypatch.setattr("timetrace.client.core.outbox_sender.asyncio.sleep", _fake_sleep)
+
+    # 3 entries of 10KB each = 30KB total
+    await outbox.append({"i": 0}, image_bytes=b"X" * 10240)
+    await outbox.append({"i": 1}, image_bytes=b"X" * 10240)
+    await outbox.append({"i": 2}, image_bytes=b"X" * 10240)
+
+    stub = _StubSender()
+    sender = OutboxSender(outbox, stub, max_kbps=10, idle_poll_interval_s=0.05)
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+    while await outbox.pending_count() > 0:
+        await real_sleep(0.01)
+    stop.set()
+    await task
+
+    # 30KB at 10KB/s = 3s of cap-imposed wait; we burn the initial 1-second
+    # bucket "for free" so the recorded wait must exceed (30 - 10) / 10 = 2s.
+    assert sum(sleeps) >= 2.0
+
+
 async def test_pending_entry_stays_pending_when_stop_fires_before_success(outbox):
     eid = await outbox.append({"x": 1})
 
