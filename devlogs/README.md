@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-05-04
+**最后更新：** 2026-05-15
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -40,7 +40,9 @@ devlogs/
 
 ## infra/
 
-_暂无归档_
+| 文件 | 摘要 |
+|------|------|
+| [archive-202605151200-client-server-split-kickoff.md](infra/archive-202605151200-client-server-split-kickoff.md) | 客户端 / 服务端架构分离重构的"宪法"：决策汇总、目标架构、wire 协议、鉴权 / outbox / 隐私管线设计、P0–P8 分阶段路线图。所有后续重构 PR 应能追溯到其中某个阶段 |
 
 ---
 

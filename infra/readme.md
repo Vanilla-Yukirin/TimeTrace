@@ -4,6 +4,28 @@
 
 ---
 
+## ⚠️ 重构期间状态说明（2026-05-15 起）
+
+项目正在进行 **客户端 / 服务端分离** 的架构级重构。本 wiki 当前各页**仍描述 v1 单进程架构**（即 commit `dd1969b` 时的状态），与即将到来的目标架构存在差距。
+
+- **目标架构与分阶段方案**：见 [devlogs/infra/archive-202605151200-client-server-split-kickoff.md](../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)（重构宪法，所有 PR 应能追溯到其中某个 P）
+- **重构分支**：`feature/refactor-split`（main 在合并前不动）
+- **文档迁移节奏**：每个阶段（P0–P8）完成时同步更新对应 wiki 子页；本索引页在所有阶段完成后整体重写
+
+### 目标架构一句话
+
+- **客户端**（Windows 桌面 + headless TUI，共享 `client/core/`）：采集 → 本地隐私管线（OCR + 检测 + 模糊，原图绝不落盘）→ 落盘 outbox → HTTP multipart 上行
+- **服务端**（默认 SQLite + 内存队列 + 本地文件；Postgres / Redis / S3 可选）：接收 → 入库 → Worker 调 VLM → 提供搜索 / MCP / Frontend
+- **通信**：HTTP + Bearer token；客户端 `init` 命令交互式配置；服务端首启自动生成 token
+
+### 重构期间使用 wiki 时
+
+- 看到与目标架构冲突的描述，**以 devlog 为准**
+- 子文档（architecture/、storage/、privacy/）会按阶段陆续重写；时间戳过期的优先核对 git log
+- 隐私策略页（privacy/strategy.md）变动最大：v1 主要靠规则黑名单 + 服务端过滤；v2 改为客户端 OCR + 模糊，**原图不离开本机**
+
+---
+
 ## 快速导航
 
 ### 三条入口路径
