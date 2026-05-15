@@ -54,23 +54,37 @@ def get_active_window() -> WindowInfo | None:
 
 
 def _get_process_info(pid: int) -> tuple[str, str]:
-    """Return (process_name, app_name) for the given PID."""
+    """Return (process_name, app_name) for the given PID.
+
+    Uses ``QueryFullProcessImageName`` (Vista+) which is the only modern API
+    that pairs cleanly with ``PROCESS_QUERY_LIMITED_INFORMATION`` — the
+    minimum-privilege handle a normal-user process can obtain on most other
+    processes (including elevated ones in the same session). The legacy
+    ``GetModuleFileNameEx`` requires ``PROCESS_QUERY_INFORMATION + VM_READ``
+    which usually fails, leaving every window logged as Unknown.
+    """
     try:
-        import win32api
-        import win32con
+        import win32api  # noqa: PLC0415
+        import win32con  # noqa: PLC0415
+        import win32process  # noqa: PLC0415
 
         handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         try:
-            exe_path: str = win32api.GetModuleFileNameEx(handle, 0)
+            exe_path: str = win32process.GetModuleFileNameEx(handle, 0)
+        except Exception:
+            # GetModuleFileNameEx wants more privilege; try the modern API
+            # that's spec'd to work with the LIMITED handle we already have.
+            exe_path = win32process.QueryFullProcessImageName(handle, 0)
         finally:
             win32api.CloseHandle(handle)
 
-        import os
+        import os  # noqa: PLC0415
 
         process_name = os.path.basename(exe_path)
         app_name = _friendly_name(process_name, exe_path)
         return process_name, app_name
     except Exception:
+        logger.debug("capture.process_info_failed", pid=pid, exc_info=True)
         return "unknown.exe", "Unknown"
 
 
