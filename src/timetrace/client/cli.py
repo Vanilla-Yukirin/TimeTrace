@@ -24,9 +24,9 @@ For the legacy single-process all-in-one mode, see
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
-import threading
 
 import structlog
 from dotenv import load_dotenv
@@ -45,6 +45,34 @@ from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig 
 logger = structlog.get_logger(__name__)
 
 
+def _warn_if_shares_data_dir_with_server(storage_cfg: StorageConfig) -> None:
+    """Detect single-machine "client + server in two terminals" mode and warn.
+
+    Until P4 moves capture to write directly into outbox/blobs/ (skipping the
+    canonical screenshots/ tree), running both client and server with the
+    default data_dir on the same box stores every screenshot twice — once
+    under ``data_dir/screenshots/.../{ts}_{rid}.png`` (capture's local copy)
+    and once under ``data_dir/screenshots/.../{rid}.png`` (server's blob
+    storage from the upload). Different filenames so no overwrite, but
+    double the disk footprint.
+
+    Heuristic: if the server's DB exists under this data_dir, server has
+    been running here too. Surface a single startup warning so the user
+    can either separate data_dirs or accept the duplication knowingly.
+    """
+    if storage_cfg.db_path.exists():
+        logger.warning(
+            "client.shared_data_dir_with_server",
+            data_dir=str(storage_cfg.data_dir),
+            note=(
+                "server's SQLite DB exists at this data_dir; if you run server here too "
+                "every screenshot will be stored twice until P4 (capture writes to outbox "
+                "blobs only). Consider pointing client.toml's outbox at a separate dir, "
+                "or run server on a different machine."
+            ),
+        )
+
+
 async def _run(
     client_cfg: ClientConfig,
     storage_cfg: StorageConfig,
@@ -52,59 +80,60 @@ async def _run(
     privacy_cfg: PrivacyConfig,
     quit_event: asyncio.Event,
 ) -> None:
-    # 1) Persistence layer
-    outbox = Outbox(client_cfg.outbox.root_dir)
-    logger.info(
-        "client.outbox_loaded",
-        root=str(client_cfg.outbox.root_dir),
-        pending=await outbox.pending_count(),
-    )
+    # AsyncExitStack guarantees HttpBackend (and any future async-cleanup
+    # resource) is closed even if a constructor below it throws — without
+    # the stack, an exception between HttpBackend(...) and the TaskGroup
+    # try/finally would leak the httpx pool.
+    async with contextlib.AsyncExitStack() as stack:
+        # 1) Persistence layer
+        outbox = Outbox(client_cfg.outbox.root_dir)
+        logger.info(
+            "client.outbox_loaded",
+            root=str(client_cfg.outbox.root_dir),
+            pending=await outbox.pending_count(),
+        )
 
-    # 2) Network transport
-    http = HttpBackend(
-        base_url=client_cfg.server.url,
-        auth_token=client_cfg.server.auth_token or None,
-        device_id=client_cfg.device.id or None,
-        data_dir=storage_cfg.data_dir,
-    )
+        # 2) Network transport — registered for aclose() before anything that
+        # could raise during construction.
+        http = HttpBackend(
+            base_url=client_cfg.server.url,
+            auth_token=client_cfg.server.auth_token or None,
+            device_id=client_cfg.device.id or None,
+            data_dir=storage_cfg.data_dir,
+        )
+        stack.push_async_callback(http.aclose)
 
-    # 3) Capture-facing backend (queues into outbox)
-    backend = OutboxBackend(outbox, data_dir=storage_cfg.data_dir)
+        # 3) Capture-facing backend (queues into outbox)
+        backend = OutboxBackend(outbox, data_dir=storage_cfg.data_dir)
 
-    # 4) Capture service feeds the outbox
-    capture_svc = CaptureService(
-        capture_cfg,
-        privacy_cfg,
-        backend,
-        storage_cfg=storage_cfg,
-    )
+        # 4) Capture service feeds the outbox
+        capture_svc = CaptureService(
+            capture_cfg,
+            privacy_cfg,
+            backend,
+            storage_cfg=storage_cfg,
+        )
 
-    # 5) Sender drains outbox → HTTP
-    sender = OutboxSender(
-        outbox,
-        make_http_sender(http),
-        max_kbps=client_cfg.upload.max_kbps,
-    )
-    sender_stop = asyncio.Event()
+        # 5) Sender drains outbox → HTTP
+        sender = OutboxSender(
+            outbox,
+            make_http_sender(http),
+            max_kbps=client_cfg.upload.max_kbps,
+        )
+        sender_stop = asyncio.Event()
 
-    async def _watch_quit() -> None:
-        await quit_event.wait()
-        logger.info("client.stop_requested")
-        sender_stop.set()
-        for task in asyncio.all_tasks():
-            if task.get_name() == "capture":
-                task.cancel()
+        async def _watch_quit() -> None:
+            await quit_event.wait()
+            logger.info("client.stop_requested")
+            sender_stop.set()
+            for task in asyncio.all_tasks():
+                if task.get_name() == "capture":
+                    task.cancel()
 
-    try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(capture_svc.run(), name="capture")
             tg.create_task(sender.run(sender_stop), name="sender")
             tg.create_task(_watch_quit(), name="quit_watcher")
-    finally:
-        try:
-            await http.aclose()
-        except Exception:  # noqa: BLE001
-            logger.warning("http.aclose_failed", exc_info=True)
     logger.info("client.shutdown_complete")
 
 
@@ -128,6 +157,8 @@ def main() -> None:
     capture_cfg = CaptureConfig()
     privacy_cfg = PrivacyConfig()
 
+    _warn_if_shares_data_dir_with_server(storage_cfg)
+
     loop = asyncio.new_event_loop()
     quit_event = asyncio.Event()
 
@@ -146,12 +177,10 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("client.tray_start_failed", exc_info=True)
 
-    # Drop a hint about where the user should be looking for config.
     logger.info(
         "client.starting",
         server=client_cfg.server.url,
         device_id=client_cfg.device.id,
-        outbox_pending_hint="see logs after start",
     )
 
     try:
@@ -168,11 +197,6 @@ def main() -> None:
             except (KeyboardInterrupt, SystemExit, Exception):
                 pass
         loop.close()
-
-
-# Silence unused-import warnings for `threading` that some linters whine about
-# in heavily-conditional CLI entry points; tray uses it internally.
-_ = threading  # noqa: B018
 
 
 if __name__ == "__main__":

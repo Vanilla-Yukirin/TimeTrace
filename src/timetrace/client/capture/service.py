@@ -41,6 +41,14 @@ class CaptureService:
         self._idle = IdleDetector()
 
         self._last_capture_ts: float = 0.0
+        # NB: type is `str` regardless of backend, but the *semantics* differ:
+        #   - InProcessBackend → server-assigned record UUID (live in DB)
+        #   - OutboxBackend / HttpBackend → client_record_id UUID (no server
+        #     row exists yet when this is set; the row materialises after
+        #     OutboxSender drains the corresponding ingest entry)
+        # The /v1/ingest/record/{id}/close route accepts either form (the
+        # 1168971 by-client-id fallback), so capture doesn't need to branch
+        # on backend type when calling close_record.
         self._last_record_id: str | None = None
         self._is_idle: bool = False
         self._pending_screenshot_task: asyncio.Task | None = None
