@@ -10,6 +10,7 @@ the database round-trip in one shot.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import httpx
 import pytest
@@ -136,7 +137,9 @@ async def test_submit_screenshot_uploads_thumb_when_present(backend, db, tmp_pat
     assert shots[0]["thumb_path"].startswith("thumbs/")
 
 
-async def test_submit_screenshot_rejects_relative_path(backend):
+async def test_submit_screenshot_rejects_relative_path_when_no_data_dir(backend):
+    """Without a data_dir context HttpBackend cannot resolve a relative path,
+    so it must refuse the call rather than silently misread bytes from CWD."""
     with pytest.raises(BackendError, match="absolute"):
         await backend.submit_screenshot(
             ScreenshotSubmission(
@@ -148,6 +151,73 @@ async def test_submit_screenshot_rejects_relative_path(backend):
                 hash_sha256="x",
             )
         )
+
+
+async def test_submit_screenshot_resolves_relative_path_against_data_dir(
+    db, blob_storage, tmp_path
+):
+    """capture_active_window emits paths *relative* to storage_cfg.data_dir.
+    HttpBackend constructed with data_dir must resolve them and upload the
+    bytes — otherwise the production capture→http chain breaks at the first
+    screenshot.
+    """
+    # 1) Place a real screenshot under data_dir so capture's output shape is mirrored.
+    data_dir = tmp_path / "data"
+    rel_path = Path("screenshots/2026/05/15/test.png")
+    (data_dir / rel_path).parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (16, 16), color=(33, 66, 99)).save(data_dir / rel_path)
+
+    app = create_app(db, blob_storage=blob_storage)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        backend = HttpBackend(client=client, data_dir=data_dir)
+        rid = await backend.submit_record(_CTX, reason="heartbeat")
+
+        sid = await backend.submit_screenshot(
+            ScreenshotSubmission(
+                record_id=rid,
+                path=str(rel_path),  # relative — exactly what capture emits
+                thumb_path=None,
+                width=16,
+                height=16,
+                hash_sha256="ignored",
+            )
+        )
+    assert sid
+
+    server_record_id = (await db.find_record_by_client_id(rid))["id"]
+    shots = await db.get_screenshots_for_record(server_record_id)
+    assert len(shots) == 1
+
+
+async def test_submit_screenshot_rejects_path_traversal_outside_data_dir(
+    db, blob_storage, tmp_path
+):
+    """A relative path containing .. that resolves outside data_dir must be
+    refused — otherwise an attacker-controlled record could exfiltrate
+    arbitrary files from the host."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    # Create a sensitive file outside data_dir
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"OWNED")
+
+    app = create_app(db, blob_storage=blob_storage)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        backend = HttpBackend(client=client, data_dir=data_dir)
+        with pytest.raises(BackendError, match="data_dir"):
+            await backend.submit_screenshot(
+                ScreenshotSubmission(
+                    record_id="any",
+                    path="../secret.txt",  # escapes data_dir
+                    thumb_path=None,
+                    width=1,
+                    height=1,
+                    hash_sha256="x",
+                )
+            )
 
 
 # --------------------------------------------------------------------------- #

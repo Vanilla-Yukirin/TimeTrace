@@ -25,6 +25,7 @@ import hashlib
 import json
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import httpx
@@ -148,11 +149,16 @@ class HttpBackend:
         client: httpx.AsyncClient | None = None,
         auth_token: str | None = None,
         device_id: str | None = None,
+        data_dir: Path | str | None = None,
         timeout_s: float = 30.0,
     ) -> None:
         # Hold device_id so callers can inject it on a borrowed client too,
         # via a single "extra headers" dict on each request.
         self._device_id = device_id or None
+        # data_dir lets submit_screenshot resolve paths relative to the client's
+        # storage root (capture_active_window emits relative paths). Without it,
+        # only absolute paths are accepted.
+        self._data_dir: Path | None = Path(data_dir).resolve() if data_dir is not None else None
         if client is not None:
             self._client = client
             self._owns_client = False
@@ -226,25 +232,22 @@ class HttpBackend:
         The screenshot bytes are read from `payload.path` (which the in-process
         screenshot writer placed on disk); HttpBackend reads, MD5s, and POSTs
         them as the multipart `image` part. Same for `thumb_path`.
+
+        Paths may be either absolute or relative. Relative paths are resolved
+        against ``self._data_dir`` (the storage root the capture loop writes
+        into); without a configured ``data_dir`` only absolute paths are
+        accepted.
         """
-        # Read bytes off disk — capture's screenshot module wrote them there.
         # Bridges between "in-process file write" and "HTTP upload" without
         # changing the screenshot writer; P4 will fold the upload into the
         # privacy pipeline directly.
-        from pathlib import Path  # noqa: PLC0415
-
-        image_path = Path(payload.path)
-        if not image_path.is_absolute():
-            raise BackendError(f"HttpBackend needs absolute screenshot path; got {payload.path!r}")
+        image_path = self._resolve_path(payload.path, kind="screenshot")
         image_bytes = image_path.read_bytes()
 
         thumb_bytes: bytes | None = None
+        thumb_path: Path | None = None
         if payload.thumb_path:
-            thumb_path = Path(payload.thumb_path)
-            if not thumb_path.is_absolute():
-                raise BackendError(
-                    f"HttpBackend needs absolute thumb path; got {payload.thumb_path!r}"
-                )
+            thumb_path = self._resolve_path(payload.thumb_path, kind="thumb")
             thumb_bytes = thumb_path.read_bytes()
 
         client_record_id = payload.record_id
@@ -275,6 +278,32 @@ class HttpBackend:
         return
 
     # ---- internal -----------------------------------------------------------
+
+    def _resolve_path(self, raw: str, *, kind: str) -> Path:
+        """Normalise a screenshot/thumb path against ``self._data_dir``.
+
+        Absolute paths are returned as-is. Relative paths are joined to
+        ``data_dir`` (capture's storage root). Without a configured
+        ``data_dir`` only absolute paths are accepted — refusing to silently
+        read from CWD avoids accidental log/config exfiltration.
+
+        Also rejects relative paths that, after resolution, escape data_dir
+        (e.g. ``../../../etc/passwd``) so a malicious payload cannot read
+        arbitrary files on the host.
+        """
+        path = Path(raw)
+        if path.is_absolute():
+            return path
+        if self._data_dir is None:
+            raise BackendError(f"HttpBackend needs absolute {kind} path or a data_dir; got {raw!r}")
+        resolved = (self._data_dir / path).resolve()
+        try:
+            resolved.relative_to(self._data_dir)
+        except ValueError as exc:
+            raise BackendError(
+                f"{kind} path {raw!r} resolves outside data_dir {str(self._data_dir)!r}"
+            ) from exc
+        return resolved
 
     def _extra_headers(self) -> dict[str, str] | None:
         """Per-request headers that need to be added even when the AsyncClient
