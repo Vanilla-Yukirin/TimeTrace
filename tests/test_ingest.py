@@ -368,8 +368,58 @@ async def test_close_record_accepts_client_record_id(db, blob_storage):
     assert row["ts_end"] == 1747300099000
 
 
+# --------------------------------------------------------------------------- #
+# Cross-midnight date-bucket bug                                               #
+# --------------------------------------------------------------------------- #
+
+
+async def test_screenshot_blob_uses_record_ts_start_not_upload_time(db, blob_storage, tmp_path):
+    """When a screenshot is uploaded long after capture (outbox flush after
+    offline period, or late-night activity uploaded past midnight), the blob
+    path must reflect the *record's* date — not the upload date — so adjacent
+    activity stays in the same date bucket on disk.
+    """
+    app = create_app(db, blob_storage=blob_storage)
+
+    # 1) Create record-only via ingest, then backdate it on the server side.
+    record_only = _record_payload("client-cross-midnight")
+    with TestClient(app) as client:
+        first = client.post("/v1/ingest/record", data={"record": record_only}).json()
+        rid = first["record_id"]
+
+        # 2024-03-15 12:00:00 UTC — well in the past so it can't collide with "now".
+        backdate_ms = 1710504000000
+        await db.conn.execute("UPDATE records SET ts_start=? WHERE id=?", (backdate_ms, rid))
+        await db.conn.commit()
+
+        # 2) Upload screenshot bytes; payload.ts_start is "now" (current run time).
+        image_data = _png_bytes((50, 100, 150))
+        upload_payload = _record_payload(
+            "client-cross-midnight",
+            image_md5=_md5(image_data),
+            image_width=16,
+            image_height=16,
+            # ts_start defaults to ~2025 in _record_payload; explicitly use "now" to
+            # match what HttpBackend.submit_screenshot would actually send.
+            ts_start=int(__import__("time").time() * 1000),
+        )
+        client.post(
+            "/v1/ingest/record",
+            data={"record": upload_payload},
+            files={"image": ("a.png", image_data, "image/png")},
+        )
+
+    shots = await db.get_screenshots_for_record(rid)
+    assert len(shots) == 1
+    assert "2024/03/15" in shots[0]["path"], (
+        f"screenshot path {shots[0]['path']!r} does not reflect record's "
+        "backdated ts_start (2024-03-15) — bucketed by upload time instead"
+    )
+
+
 async def test_ingest_replay_with_image_does_not_duplicate_phash_index(db, blob_storage):
-    """Same setup as above, but verifies the phash_index isn't double-inserted."""
+    """Same setup as the screenshot dedup test, but verifies the phash_index
+    isn't double-inserted on outbox at-least-once replay."""
     index = PHashIndex()
     app = create_app(db, blob_storage=blob_storage, phash_index=index)
 

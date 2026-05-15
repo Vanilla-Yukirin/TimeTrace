@@ -107,7 +107,12 @@ async def ingest_record(
                 detail="server is not configured for blob ingestion (no BlobStorage)",
             )
 
-        date = _date_path(payload.ts_start)
+        # Bucket the blob by the *record's* ts_start (the moment the activity
+        # happened), not by payload.ts_start (which HttpBackend.submit_screenshot
+        # sets to upload time). Otherwise an outbox flush past midnight files
+        # late-night activity under the next day's directory.
+        record_ts_start = await db.get_record_ts_start(record_id) or payload.ts_start
+        date = _date_path(record_ts_start)
         image_key = f"screenshots/{date}/{record_id}.{payload.image_format}"
         await blob_storage.put(image_key, image_bytes, expected_md5=payload.image_md5)
 
@@ -129,7 +134,7 @@ async def ingest_record(
         # Skip pHash side-index update on replay so the BK-tree doesn't end up
         # with two entries pointing at the same screenshot.
         if screenshot_was_new and payload.image_phash is not None and phash_index is not None:
-            phash_index.insert(screenshot_id, payload.image_phash, payload.ts_start)
+            phash_index.insert(screenshot_id, payload.image_phash, record_ts_start)
 
     # mark_pending is idempotent (INSERT OR IGNORE under the hood) so it's safe
     # to call on every ingest, including replays where was_new=False.
