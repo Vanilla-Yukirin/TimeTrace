@@ -68,15 +68,31 @@ class CaptureService:
                 await asyncio.sleep(1.0)
         finally:
             if self._last_record_id:
-                try:
-                    await self._backend.close_record(self._last_record_id)
-                except Exception:
-                    logger.warning("capture.close_record_on_shutdown_failed", exc_info=True)
+                await self._safe_close_record(self._last_record_id, where="shutdown")
             # Use a daemon thread so that a hung pynput stop() cannot prevent
             # the process from exiting.  The default executor uses non-daemon
             # threads, which would block process exit if stop() stalls.
             threading.Thread(target=self._idle.stop, name="idle-stop", daemon=True).start()
             await self._cancel_pending_screenshot()
+
+    async def _safe_close_record(self, record_id: str, *, where: str) -> None:
+        """Close a record, logging+swallowing any error.
+
+        The capture loop must survive a single failed close — backend hiccups
+        or a server briefly down shouldn't tear down the whole capture path.
+        ``where`` is a structured log key that pinpoints which call-site
+        triggered the failure (shutdown / idle_start / window_switch /
+        heartbeat) when post-mortem'ing logs.
+        """
+        try:
+            await self._backend.close_record(record_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "capture.close_record_failed",
+                where=where,
+                record_id=record_id,
+                exc_info=True,
+            )
 
     async def _tick(self) -> None:
         now = time.monotonic()
@@ -87,7 +103,7 @@ class CaptureService:
             if not self._is_idle:
                 self._is_idle = True
                 if self._last_record_id:
-                    await self._backend.close_record(self._last_record_id)
+                    await self._safe_close_record(self._last_record_id, where="idle_start")
                     self._last_record_id = None
                 logger.info("capture.idle_start", idle_s=idle_s)
             return  # Don't capture while idle
@@ -115,14 +131,7 @@ class CaptureService:
         window_switched = win.hwnd != self._prev_hwnd and win.hwnd != 0
         if window_switched:
             if self._last_record_id:
-                try:
-                    await self._backend.close_record(self._last_record_id)
-                except Exception:
-                    logger.warning(
-                        "capture.close_record_failed",
-                        record_id=self._last_record_id,
-                        exc_info=True,
-                    )
+                await self._safe_close_record(self._last_record_id, where="window_switch")
             record_id = await self._backend.submit_record(
                 ctx, reason="switch", event_type="window_switch"
             )
@@ -147,10 +156,7 @@ class CaptureService:
         elapsed = now - self._last_capture_ts
         if elapsed >= self._cfg.max_capture_interval_s:
             if self._last_record_id:
-                try:
-                    await self._backend.close_record(self._last_record_id)
-                except Exception:
-                    logger.warning("capture.heartbeat_close_record_failed", exc_info=True)
+                await self._safe_close_record(self._last_record_id, where="heartbeat")
             record_id = await self._backend.submit_record(
                 ctx, reason="heartbeat", event_type="heartbeat"
             )

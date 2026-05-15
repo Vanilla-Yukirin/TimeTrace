@@ -97,13 +97,13 @@ class OutboxBackend:
         ``str | None`` for exactly this deferred case; capture doesn't
         persist the return value either way.
         """
-        image_bytes = self._read_path(payload.path)
+        image_bytes = self._read_path(payload.path, kind="screenshot")
         image_format = Path(payload.path).suffix.lstrip(".") or "png"
 
         thumb_bytes: bytes | None = None
         thumb_format = "jpg"
         if payload.thumb_path:
-            thumb_bytes = self._read_path(payload.thumb_path)
+            thumb_bytes = self._read_path(payload.thumb_path, kind="thumb")
             thumb_format = Path(payload.thumb_path).suffix.lstrip(".") or "jpg"
 
         await self._outbox.append(
@@ -146,12 +146,14 @@ class OutboxBackend:
 
     # ---- internals --------------------------------------------------------- #
 
-    def _read_path(self, raw: str) -> bytes:
+    def _read_path(self, raw: str, *, kind: str) -> bytes:
         # Shares HttpBackend's resolver: same absolute / relative semantics
         # AND the same defence-in-depth traversal guard, so a malicious
         # ScreenshotSubmission with ../etc/passwd can't read host files even
-        # if it never reaches the wire.
-        return resolve_path_under_data_dir(raw, self._data_dir, kind="screenshot").read_bytes()
+        # if it never reaches the wire. ``kind`` ("screenshot" / "thumb") is
+        # threaded through so the BackendError on traversal accurately names
+        # which path tripped the guard, matching HttpBackend's wire-side error.
+        return resolve_path_under_data_dir(raw, self._data_dir, kind=kind).read_bytes()
 
 
 # --------------------------------------------------------------------------- #

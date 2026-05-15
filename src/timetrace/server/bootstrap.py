@@ -19,8 +19,9 @@ same 60 lines in two places. They drifted in the three days between landing.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Coroutine
 from dataclasses import dataclass
+from typing import Any
 
 import structlog
 import uvicorn
@@ -114,7 +115,7 @@ async def serve(
     config: AppConfig,
     quit_event: asyncio.Event,
     *,
-    extra_tasks: dict[str, Awaitable[None]] | None = None,
+    extra_tasks: dict[str, Coroutine[Any, Any, None]] | None = None,
 ) -> None:
     """Run worker + uvicorn + reclaim loop until ``quit_event`` fires.
 

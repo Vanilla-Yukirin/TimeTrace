@@ -29,18 +29,34 @@ _QueryFullProcessImageNameW.argtypes = [
 _QueryFullProcessImageNameW.restype = wintypes.BOOL
 
 
+_ERROR_INSUFFICIENT_BUFFER = 122
+
+
 def _query_full_process_image_name(handle: int) -> str:
     """Wrapper around kernel32!QueryFullProcessImageNameW.
 
     ``handle`` must be a HANDLE int (pywin32 PyHANDLE coerces via __int__).
     Returns the full Win32 path (e.g. ``C:\\Windows\\System32\\notepad.exe``)
     or raises OSError.
+
+    Two-pass buffer sizing: 1024 wchars covers all normal Win32 paths
+    (MAX_PATH is 260, plus headroom). If the kernel returns
+    ``ERROR_INSUFFICIENT_BUFFER`` (extended-path / WSL bridge / deeply nested
+    mount), retry once with a 32k buffer (Windows long-path cap).
     """
-    buf_size = wintypes.DWORD(1024)
-    buf = ctypes.create_unicode_buffer(buf_size.value)
-    if not _QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(buf_size)):
-        raise OSError(ctypes.get_last_error(), "QueryFullProcessImageNameW failed")
-    return buf.value
+    for buf_size_value in (1024, 32 * 1024):
+        buf_size = wintypes.DWORD(buf_size_value)
+        buf = ctypes.create_unicode_buffer(buf_size.value)
+        if _QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(buf_size)):
+            return buf.value
+        err = ctypes.get_last_error()
+        if err != _ERROR_INSUFFICIENT_BUFFER:
+            raise OSError(err, "QueryFullProcessImageNameW failed")
+    # Both 1024 and 32k buffers were too small — should be impossible on Win32.
+    raise OSError(
+        _ERROR_INSUFFICIENT_BUFFER,
+        "QueryFullProcessImageNameW: path exceeds 32k wchars",
+    )
 
 
 # Known browser process names → we'll try to extract URL via UI Automation later.
