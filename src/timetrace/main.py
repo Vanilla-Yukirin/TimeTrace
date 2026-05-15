@@ -1,4 +1,18 @@
-"""TimeTrace application entry point."""
+"""TimeTrace single-process entry point — capture + server in one process.
+
+The server-side composition is delegated to :mod:`timetrace.server.bootstrap`
+so this file shares the exact same DB / VLM / worker / API setup as the
+standalone ``timetrace-server`` entry. The all-in-one form just adds:
+
+- ``InProcessBackend`` over the bootstrap's DB + PHashIndex
+- ``CaptureService`` running on top of that backend
+- system tray
+- a ``capture`` task injected into the bootstrap's TaskGroup via
+  ``serve(extra_tasks=...)``
+
+All other server-side wiring (uvicorn, worker, reclaim loop, signal-driven
+quit, VLM/DB cleanup) lives in bootstrap and is shared.
+"""
 
 from __future__ import annotations
 
@@ -16,113 +30,28 @@ from timetrace.client.capture.service import CaptureService  # noqa: E402
 from timetrace.client.core.backend import InProcessBackend  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
 from timetrace.common.config import AppConfig  # noqa: E402
-from timetrace.server.api.app import create_app  # noqa: E402
-from timetrace.server.auth import ServerAuth  # noqa: E402
-from timetrace.server.db import Database  # noqa: E402
-from timetrace.server.phash_index.index import PHashIndex  # noqa: E402
-from timetrace.server.storage.blob import LocalBlobStorage  # noqa: E402
-from timetrace.server.vlm.client import VLMClient  # noqa: E402
-from timetrace.server.vlm.health import VLMHealthGate  # noqa: E402
-from timetrace.server.worker.loop import AnalysisWorker  # noqa: E402
+from timetrace.server.bootstrap import build_server_components, serve  # noqa: E402
 
 logger = structlog.get_logger(__name__)
 
-_STALE_TASK_RECLAIM_INTERVAL_S = 60
-
 
 async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
-    db = Database(config.storage)
-    await db.init()
+    components = await build_server_components(config)
 
-    phash_index = await PHashIndex.from_db(db)
-
-    if config.vlm is not None:
-        vlm_client = VLMClient(config.vlm)
-        gate = VLMHealthGate(vlm_client)
-        logger.info("vlm.ready", model=config.vlm.model, base_url=config.vlm.base_url)
-    else:
-        vlm_client = None
-        gate = None
-        logger.info("vlm.disabled", reason="no_api_key")
-
-    backend = InProcessBackend(db, phash_index=phash_index)
+    # Bolt the capture half onto the server bootstrap's TaskGroup.
+    backend = InProcessBackend(components.db, phash_index=components.phash_index)
     capture_svc = CaptureService(
         config.capture,
         config.privacy,
         backend,
         storage_cfg=config.storage,
     )
-    worker = AnalysisWorker(
-        db,
-        vlm=vlm_client,
-        gate=gate,
-        cfg=config.worker,
-        storage_cfg=config.storage,
+    await serve(
+        components,
+        config,
+        quit_event,
+        extra_tasks={"capture": capture_svc.run()},
     )
-    blob_storage = LocalBlobStorage(config.storage.data_dir)
-    auth, was_generated, generated = ServerAuth.load_or_generate()
-    if was_generated and generated is not None:
-        # First-start banner — user copies this into `timetrace-client init`.
-        logger.info(
-            "auth.token_generated",
-            label=generated.label,
-            value=generated.value,
-        )
-    app = create_app(
-        db,
-        storage_cfg=config.storage,
-        phash_index=phash_index,
-        vlm_client=vlm_client,
-        blob_storage=blob_storage,
-        auth=auth,
-    )
-    app.state.api_host = config.api_host
-    app.state.api_port = config.api_port
-
-    import uvicorn
-
-    server_config = uvicorn.Config(
-        app,
-        host=config.api_host,
-        port=config.api_port,
-        log_level="warning",
-    )
-    server = uvicorn.Server(server_config)
-
-    async def _watch_quit() -> None:
-        """Wait for the asyncio quit event, then cancel all sibling tasks."""
-        await quit_event.wait()
-        logger.info("main.stop_requested")
-        server.should_exit = True
-        for task in asyncio.all_tasks():
-            if task.get_name() in ("capture", "worker", "reclaim"):
-                task.cancel()
-
-    async def _reclaim_loop() -> None:
-        while True:
-            await asyncio.sleep(_STALE_TASK_RECLAIM_INTERVAL_S)
-            await db.reclaim_stale_tasks()
-
-    try:
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(capture_svc.run(), name="capture")
-            tg.create_task(worker.run(), name="worker")
-            tg.create_task(server.serve(), name="api")
-            tg.create_task(_watch_quit(), name="quit_watcher")
-            tg.create_task(_reclaim_loop(), name="reclaim")
-    finally:
-        # Best-effort cleanup even when the TaskGroup raises (httpx pool from
-        # vlm_client must be closed or aiohttp will warn at exit).
-        if vlm_client is not None:
-            try:
-                await vlm_client.aclose()
-            except Exception:  # noqa: BLE001
-                logger.warning("vlm.aclose_failed", exc_info=True)
-        try:
-            await db.close()
-        except Exception:  # noqa: BLE001
-            logger.warning("db.close_failed", exc_info=True)
-    logger.info("main.shutdown_complete")
 
 
 def main() -> None:
