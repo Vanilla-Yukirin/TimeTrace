@@ -416,55 +416,79 @@ OCR 文字: 仅用于内部判断，不上传也不落盘
 
 **未触动的低风险（接线后再回顾）**：tokens.json chmod 600（Linux 部署再说）、ClientConfig TOML 无注释、Outbox compaction、capture/service.py 三处 close_record helper 抽取、token bucket retry 不重扣。
 
-### P3a-5b — 接线（进行中）
+### P3a-5b — 接线（已完成 2026-05-15 ~ 16）
 
 **目标**：把 OutboxBackend 这一最后一公里写完，加 timetrace-client / timetrace-server 双入口，跑通真实双进程链路。
 
-- [ ] `client/core/outbox_backend.py::OutboxBackend`：实现 BackendClient Protocol，把 submit_record/screenshot/close 写成 outbox.append 条目（payload 直接是 wire-ready JSON）
-- [ ] `HttpBackend.post_ingest` / `HttpBackend.post_close` 提为 public，给 OutboxSender 的 send 回调用
-- [ ] `make_http_sender(http_backend)` 适配函数：根据 entry.payload["kind"] 选择 endpoint
-- [ ] `client/cli.py::main` 入口：load ClientConfig → 起 Outbox → HttpBackend → OutboxBackend → OutboxSender → CaptureService → 托盘
-- [ ] `server/cli.py::main` 入口：仅 Database + PHashIndex + AnalysisWorker + uvicorn(create_app)，去掉 capture / 托盘
-- [ ] `pyproject.toml [project.scripts]` 加 `timetrace-client` / `timetrace-server`，原 `timetrace` 保留指向 main.py（单进程兼容）
-- [ ] E2E smoke 测试：in-process 起两侧，模拟 capture 触发链路，验证 server DB 收到 record + screenshot
+- [x] `client/core/outbox_backend.py::OutboxBackend`：实现 BackendClient Protocol，把 submit_record/screenshot/close 写成 outbox.append 条目（payload 直接是 wire-ready JSON）
+- [x] `HttpBackend.post_ingest` / `HttpBackend.post_close` 提为 public，给 OutboxSender 的 send 回调用
+- [x] `make_http_sender(http_backend)` 适配函数：根据 entry.payload["kind"] 选择 endpoint
+- [x] `client/cli.py::main` 入口：load ClientConfig → 起 Outbox → HttpBackend → OutboxBackend → OutboxSender → CaptureService → 托盘（commit `5d8db1c`）
+- [x] `server/cli.py::main` 入口：仅 Database + PHashIndex + AnalysisWorker + uvicorn(create_app)，去掉 capture / 托盘（abe7d24 抽 server.bootstrap 后两侧共享装配）
+- [x] `pyproject.toml [project.scripts]` 加 `timetrace-client` / `timetrace-server`，原 `timetrace` 保留指向 main.py（单进程兼容）
+- [x] E2E smoke 测试：in-process 起两侧（commit `be54f52`）
 
-### P3b — Auth + Init
+### P3b — Auth + Init（已完成 2026-05-16）
 
 **目标**：把鉴权和初始化补齐，达到"开源可用"门槛。
 
-- [x] Server 首启自动生成 token → `tokens.json`（用 JSON 不用 TOML：stdlib 同时支持读写省去 tomli-w 依赖；schema forward-compat 加字段不破坏老格式；commit `67276a2`）
-- [x] Server 上行端点加 bearer 校验（仅 `/v1/ingest/*`；frontend-facing 的 records / search / feedback 维持开放，loopback only；commit `67276a2`）
-- [x] `tokens.json` 支持多 token + label（schema 已就位，CRUD 流程留 P3b-2）
-- [x] device_id 字段 + 自动生成（在 `ClientConfig.ensure_device_id()`；commit `13734ed`）
-- [ ] `timetrace-client init` 交互式命令 —— P3b-3：与 P3a-5b 双入口拆分一起做
-- [ ] 每条上传带 `X-Device-Id` —— P3b-2：HttpBackend 加 device_id 参数 + middleware 在 server 端记录
-- [ ] README 写清楚 "git clone → docker-compose up → 看日志 token → client init" —— P3b-3 入口落地后写
+- [x] Server 首启自动生成 token → `tokens.json`（commit `67276a2`）
+- [x] Server 上行端点加 bearer 校验（commit `67276a2`）
+- [x] `tokens.json` 支持多 token + label
+- [x] device_id 字段 + 自动生成（commit `13734ed`）
+- [x] `timetrace-client init` 交互式命令 + `--non-interactive` env 驱动（commit `d176829`）
+- [x] `timetrace-server tokens list/add/revoke` + `info` 子命令（commit `d176829`）
+- [x] tokens.json POSIX chmod 600 落盘加固（commit `d176829`）
+- [x] ClientConfig 吃 storage/capture/privacy 三段 + apply_env_overrides() 支持 9 个 TIMETRACE_* env vars（commit `d195202`）
+- [x] README 端到端使用流程重写：单进程 + 双进程 + init 流程 + 部署小主机（commit `7c9f28b`）
 
-**Exit criteria（部分达成）**：✅ 192 tests passed；✅ 命令行 `uv run timetrace` 首启即生成 token + 落盘；❌ 双入口 + init 命令 + README 端到端待 P3b-3。
+**Exit criteria**：✅ 261 tests passed；✅ 双入口 + init/admin CLI + README 全部端到端可用。
 
-### P4 — 客户端隐私管线
+### P3c — 部署设施（新增段，2026-05-16）
 
-**目标**：把"绝不上传原图"做到位。
+**目标**：让 "git push → 30s 后小主机跑上新版本" 成为常规操作；fork 安全。
 
+- [x] `deploy/deploy.sh`：在小主机上跑的部署脚本，8 个 env 变量（TIMETRACE_USER 等）支持 fork 用户 export 覆盖（commit `1ce47eb`）
+- [x] `deploy/timetrace-server.service`：systemd `--user` 单元模板，`%h` 展开 home，sandbox 收紧（PrivateTmp/NoNewPrivileges/ProtectSystem=strict + ReadWritePaths 白名单）
+- [x] `.github/workflows/deploy.yml`：`workflow_dispatch` only；`if: github.repository == 'Vanilla-Yukirin/TimeTrace'` + GH secrets 不被 fork 继承双保险；ProxyJump runner → 公网云 → FRP → 小主机
+- [x] 部署架构 + CI/CD 设计落档（[archive-202605161000-deployment-architecture.md](archive-202605161000-deployment-architecture.md) + [archive-202605161015-cicd-workflow.md](archive-202605161015-cicd-workflow.md)）
+
+**待外部一次性配置**（部署前）：
+- 本机 `ssh-copy-id tt-rb4g` + 生成 CI 专用 ed25519 keypair（不复用本机 key）
+- GH 仓库 settings 配 6 个 deploy secrets
+
+### P4 — 客户端隐私管线（部分完成；OCR 主体待选型）
+
+**已落地**:
+- [x] capture/service.py 三处 close_record 抽 `_safe_close_record(where=...)` 助手 + 修一致性 bug（idle_start 之前裸 await，失败炸 capture loop）（commit `4e5c589`）
+- [x] outbox_backend `_read_path` 接受 kind 参数，traversal guard 报错对称（commit `4e5c589`）
+- [x] window.py ctypes 加 ERROR_INSUFFICIENT_BUFFER 重试（1024 → 32k）（commit `4e5c589`）
+- [x] tokens.json POSIX chmod 600（commit `d176829`）
+- [x] **Outbox compaction**：每 200 acks inline 触发，crash-safe 顺序（state 先于 log，最坏 at-least-once replay）（commit `548b0de`）
+
+**待选型 + 实装**（需用户决策）:
 - [ ] 选型 OCR（PaddleOCR det+rec / RapidOCR / 其他）
 - [ ] 选型隐私分类小模型（OpenAI 开源 / 自训）
 - [ ] `client/privacy/` 实现：OCR → 分类 → 模糊 → 重编码
-- [ ] 配置 `[privacy] mode = full | text_only | off`
-- [ ] 性能 budget：单张截图全管线 ≤ 500ms（GPU 可选）
+- [ ] 配置 `[privacy] mode = full | text_only | off`（schema 已落地在 PrivacyConfig.mode，待 pipeline 接入消费）
+- [ ] 性能 budget：单张截图全管线 ≤ 500ms
 - [ ] 模型文件下载脚本（不进 git）
 
-**Exit criteria**：截图本地不留原图；模糊后图人眼可读非敏感内容；测试集（含信用卡号、邮箱、密码框）覆盖。
+**Exit criteria**：截图本地不留原图；模糊后图人眼可读非敏感内容；测试集（信用卡号 / 邮箱 / 密码框）覆盖。
 
-### P5 — Server 可替换组件 + 容器化
+### P5 — Server 可替换组件 + 容器化（部分完成；Pg/Redis/S3 适配器待真接）
 
-**目标**：让"我想用 Postgres / Redis / S3"是 5 分钟配置事，同时把镜像流程立起来。
+**已落地**:
+- [x] `Dockerfile`：multi-stage builder + slim runtime；非 root 用户 timetrace；/data + /tokens 双 bind-mount；HEALTHCHECK 用 stdlib urllib（commit `44d61b5`）
+- [x] `docker-compose.yml`：单服务 + 127.0.0.1:8765 only loopback bind（公网走 Caddy 反代）+ env_file 可选 + P5 future profile 占位（commit `44d61b5`）
+- [x] `.dockerignore`
+- [x] `pyproject.toml`：Windows-only 依赖（pywin32/mss/pynput/pystray）加 `; sys_platform == 'win32'` 标记，Linux 上 `uv sync` 自动跳过；optional-dependencies 桶重命名 `all` → `all-extras` 以与未来真实 extras 区分（commit `44d61b5`）
 
+**待真接**:
 - [ ] `PostgresDatabase` 实现（asyncpg）+ schema 迁移脚本
 - [ ] `RedisQueue` 实现
 - [ ] `S3BlobStorage` + `DualBlobStorage`（本地 + S3）
 - [ ] 配置驱动选择
-- [ ] `Dockerfile.server`（依赖 P1 的依赖按平台拆开）
-- [ ] `docker-compose.yml`（默认起 server；postgres/redis 在 profile 里）
 - [ ] CI 增加 server 镜像 build 步骤
 
 **Exit criteria**：在 docker-compose 切换 profile 重启就能换实现，数据语义一致；镜像在 CI 上能 build。
