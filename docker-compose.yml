@@ -1,0 +1,76 @@
+# =============================================================================
+# docker-compose.yml — TimeTrace server stack (single service today).
+#
+# Usage:
+#     docker compose up -d                # start
+#     docker compose logs -f timetrace    # tail logs
+#     docker compose down                 # stop + remove
+#     docker compose pull && docker compose up -d --build   # update
+#
+# Volumes:
+#   ./data       persistent SQLite DB + screenshots + thumbs (bind mount so
+#                you can rsync / back up from the host)
+#   ./tokens     ~/.config/timetrace-server contents — tokens.json. Separate
+#                volume so token rotation / inspection doesn't disturb data.
+#
+# Optional .env (in repo root) provides VLM credentials:
+#     TIMETRACE_VLM_BASE_URL=https://api.openai.com/v1
+#     TIMETRACE_VLM_API_KEY=sk-...
+#     TIMETRACE_VLM_MODEL=gpt-4o-mini
+#
+# Future profiles (P5 adapters) live commented below — uncomment + tweak
+# when actually swapping in Postgres / Redis / etc.
+# =============================================================================
+
+services:
+  timetrace-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: timetrace-server:local
+    container_name: timetrace-server
+    restart: unless-stopped
+    ports:
+      # Bind to loopback only by default — never expose 8765 directly to a
+      # public NIC. Front it with Caddy/nginx + TLS + auth if you need WAN.
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ./data:/data
+      - ./tokens:/tokens
+    env_file:
+      # Leading "-" make it optional: if .env doesn't exist, compose still
+      # boots (server falls back to no-VLM mode and logs the fact).
+      - path: .env
+        required: false
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request, sys
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # === P5 future profiles ====================================================
+  # Uncomment + adapt when swapping the default SqliteDatabase for Postgres
+  # or InMemoryQueue for Redis. These are placeholders to keep the file
+  # forward-compatible without forcing the deps now.
+  #
+  # postgres:
+  #   image: postgres:16-alpine
+  #   profiles: ["pg"]
+  #   environment:
+  #     POSTGRES_USER: timetrace
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+  #     POSTGRES_DB: timetrace
+  #   volumes:
+  #     - ./pgdata:/var/lib/postgresql/data
+  #
+  # redis:
+  #   image: redis:7-alpine
+  #   profiles: ["redis"]
+  #   command: redis-server --save 60 1 --loglevel warning

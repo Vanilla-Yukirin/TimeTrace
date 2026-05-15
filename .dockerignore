@@ -1,0 +1,49 @@
+# Don't ship caches / build artifacts / dev-only files into the image build
+# context. Smaller context = faster builds.
+
+# Python
+__pycache__
+*.py[cod]
+*.egg-info
+.venv
+venv
+
+# Test / lint scratch
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Frontend (server image doesn't serve the SPA — Caddy/nginx does)
+frontend
+frontend-dist
+node_modules
+
+# Local data + tokens — these come in as bind mounts, never baked.
+data
+tokens
+TimeTraceData
+TimeTraceData-archive-*
+
+# Repo metadata + dev-only files
+.git
+.github
+.gitignore
+.env
+.env.local
+*.log
+deploy
+devlogs
+docs
+infra
+tests
+README.md
+CLAUDE.md
+LICENSE
