@@ -82,16 +82,24 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 - **日志**：`structlog.get_logger(__name__)`，禁用 `print`
 - **前端代码风格**：以 inline style + Tailwind 工具类混用为主，已装 `@radix-ui/react-dialog/select/separator/slot/tooltip`、`@tanstack/react-query`、`lucide-react`，新增 UI 优先复用
 
+## 部署 / 运行环境
+
+- **GitHub identity**：仓库是 `Vanilla-Yukirin/TimeTrace`。本地 git config 的 `Yuki` 只是临时本地标签，不要混
+- **部署目标**：家里 Ubuntu 小主机（NAT 后），CI 经云服务器 FRP 隧道 SSH 进；详见 [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
+- **Web UI 永不公网**：前端 / OpenAPI 走临时 `ssh -L 5173:localhost:5173 tt-rb4g` 隧道，按需起
+- **CI/CD 触发**：仅 `workflow_dispatch`（GH Web 按钮 / `gh workflow run deploy.yml`）；Fork 安全 = `if: github.repository == 'Vanilla-Yukirin/TimeTrace'` + GH secret 不被 fork 继承双保险
+- **systemd 用户**：`systemctl --user`（不 root）+ `loginctl enable-linger`，service 模板在 `deploy/timetrace-server.service`
+
 ## 仍然存在的桩代码 / 已知 bug
 
 | 文件 | 问题 | 状态 |
 |------|------|------|
 | `server/mcp_layer/tools.py` | `get_category_stats()` / `search_activity()` | Phase 1.5+ stub |
-| `client/capture/window.py::_get_process_info` | `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` 后 `GetModuleFileNameEx` 多数场景 access denied → app_name 全 "Unknown"。改 `QueryFullProcessImageName` 即可 | 历史 bug，老备份 2026-05-04 已存在；待修 |
+| ~~`client/capture/window.py::_get_process_info`~~ | ~~app_name 全 "Unknown"~~ | ✅ 已修：`0ec105e` ctypes 直调 `QueryFullProcessImageNameW`；416 PID 实测 242 (58%) 拿到真名，剩余 174 是系统进程权限不允许 |
 
 ## 测试
 
-- `tests/` 当前 210 passed：`test_api / test_auth / test_backend_inprocess / test_blob_local / test_client_config / test_http_backend / test_ingest / test_outbox / test_outbox_sender / test_phash_index / test_privacy / test_queue_inmemory / test_rules / test_search / test_storage / test_vlm / test_vlm_smoke / test_worker_pipeline`
+- `tests/` 当前 227 passed：`test_api / test_auth / test_backend_inprocess / test_blob_local / test_client_config / test_http_backend / test_ingest / test_outbox / test_outbox_sender / test_phash_index / test_privacy / test_queue_inmemory / test_rules / test_search / test_storage / test_vlm / test_vlm_smoke / test_worker_pipeline`
 - `pytest-asyncio` `asyncio_mode = "auto"`（pyproject.toml）
 - 不 mock DB，全部用 `tmp_path` 下的真实 SQLite 文件；HttpBackend E2E 用 `httpx.ASGITransport(app=...)` 直接打 in-process FastAPI，零 socket 零线程
 - VLM 测试分两层：`test_vlm.py` 单元（mock httpx），`test_vlm_smoke.py` 真实端点（需 `.env`，无 key 自动 skip）
