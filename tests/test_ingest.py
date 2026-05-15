@@ -308,6 +308,66 @@ async def test_ingest_replay_with_image_does_not_duplicate_screenshot(db, blob_s
     assert len(shots) == 1
 
 
+# --------------------------------------------------------------------------- #
+# /v1/ingest/record/{id}/close                                                 #
+# --------------------------------------------------------------------------- #
+
+
+async def test_close_record_unknown_id_returns_404(db, blob_storage):
+    """Closing an id the server has never seen must surface as 404 — silently
+    returning 200 hides the very real possibility that an HttpBackend restart
+    left the client routing closes against ids that have no matching row."""
+    app = create_app(db, blob_storage=blob_storage)
+    with TestClient(app) as client:
+        resp = client.post("/v1/ingest/record/no-such-id/close", json={"ts_end": 1})
+    assert resp.status_code == 404
+
+
+async def test_close_record_known_id_response_echoes_supplied_ts_end(db, blob_storage):
+    """When ts_end is provided the response must echo it exactly — no silent
+    fallback to server clock that would mask client/server drift."""
+    app = create_app(db, blob_storage=blob_storage)
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/ingest/record", data={"record": _record_payload("client-close-echo")}
+        ).json()
+        resp = client.post(
+            f"/v1/ingest/record/{first['record_id']}/close",
+            json={"ts_end": 1747300050000},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ts_end"] == 1747300050000
+
+
+async def test_close_record_accepts_client_record_id(db, blob_storage):
+    """HttpBackend can recover from a process restart only if the close endpoint
+    accepts the client_record_id directly (the only id the client always
+    holds). Without this, a client losing its in-memory server-id map closes
+    nothing on the server even though the route returns 200 — silent failure.
+    """
+    app = create_app(db, blob_storage=blob_storage)
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/ingest/record", data={"record": _record_payload("client-by-crid")}
+        ).json()
+        # Close by client_record_id — not the server id we got back.
+        resp = client.post(
+            "/v1/ingest/record/client-by-crid/close",
+            json={"ts_end": 1747300099000},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["record_id"] == first["record_id"]
+    assert body["ts_end"] == 1747300099000
+
+    async with db.conn.execute(
+        "SELECT ts_end FROM records WHERE id=?", (first["record_id"],)
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["ts_end"] == 1747300099000
+
+
 async def test_ingest_replay_with_image_does_not_duplicate_phash_index(db, blob_storage):
     """Same setup as above, but verifies the phash_index isn't double-inserted."""
     index = PHashIndex()

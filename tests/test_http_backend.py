@@ -168,6 +168,35 @@ async def test_close_record_sets_ts_end(backend, db):
         assert (await cur.fetchone())["ts_end"] is not None
 
 
+async def test_close_record_after_simulated_restart(db, blob_storage):
+    """HttpBackend keeps client_record_id → server_id only in memory. After a
+    process restart the map is empty; close_record must still succeed because
+    the server route accepts client_record_id as fallback. Otherwise stale
+    backends silently no-op closes (server returns 200 with rowcount==0)."""
+    app = create_app(db, blob_storage=blob_storage)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first_backend = HttpBackend(client=client)
+        rid = await first_backend.submit_record(_CTX, reason="heartbeat")
+        server_record_id = (await db.find_record_by_client_id(rid))["id"]
+
+        # Simulate a process restart: brand new HttpBackend with empty map.
+        fresh_backend = HttpBackend(client=client)
+        # The fresh backend has never seen `rid` in its _record_id_for map but
+        # still must close the existing record on the server.
+        await fresh_backend.close_record(rid)
+
+    async with db.conn.execute("SELECT ts_end FROM records WHERE id=?", (server_record_id,)) as cur:
+        assert (await cur.fetchone())["ts_end"] is not None
+
+
+async def test_close_record_unknown_id_raises(backend):
+    """A close against a server id that doesn't exist must propagate as
+    BackendError (the server now returns 404). Silent 200s used to mask bugs."""
+    with pytest.raises(BackendError, match="404"):
+        await backend.close_record("definitely-not-a-real-record-id")
+
+
 # --------------------------------------------------------------------------- #
 # mark_pending — no-op on HttpBackend (server already pends inside ingest)     #
 # --------------------------------------------------------------------------- #

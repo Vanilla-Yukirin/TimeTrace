@@ -368,22 +368,29 @@ class SqliteDatabase:
                 raise
             return existing["id"], False
 
-    async def close_record(self, record_id: str, ts_end: int | None = None) -> None:
+    async def close_record(self, record_id: str, ts_end: int | None = None) -> bool:
         """Set ts_end on a record (e.g. when window switches away).
 
         When `ts_end` is None the server clock is used; HttpBackend passes the
         client's clock so the time the user actually stopped using the window
         is honoured rather than the time the server happened to receive the
         close call.
+
+        Returns True iff a row was updated. Routes that need to surface a 404
+        for an unknown id check this — silently returning False used to let
+        a stale HttpBackend close calls go nowhere with no signal.
         """
         now = _now_ms()
         ts_end_value = ts_end if ts_end is not None else now
         async with self._lock:
-            await self.conn.execute(
+            cur = await self.conn.execute(
                 "UPDATE records SET ts_end=?, updated_at=? WHERE id=?",
                 (ts_end_value, now, record_id),
             )
+            rowcount = cur.rowcount
+            await cur.close()
             await self.conn.commit()
+        return rowcount > 0
 
     async def _close_open_records_before(
         self,

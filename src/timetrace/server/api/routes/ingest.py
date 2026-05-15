@@ -164,11 +164,32 @@ async def close_record(
 ) -> dict:
     """Stamp ts_end on an existing record.
 
-    The body is optional; when present `ts_end` is the client's epoch ms
+    ``record_id`` may be either the server-assigned record id OR the
+    ``client_record_id`` the client supplied at ingest. Accepting both lets a
+    restarted HttpBackend (which has lost its in-memory id mapping) still
+    close records by the only id it always knows, the client one.
+
+    The body is optional; when present ``ts_end`` is the client's epoch ms
     (so the boundary reflects the user's actual window-switch moment rather
     than network arrival time). When absent, server clock is used.
     """
     db = request.app.state.db
     ts_end = body.ts_end if body is not None else None
-    await db.close_record(record_id, ts_end=ts_end)
-    return {"record_id": record_id, "ts_end": ts_end or _now_ms()}
+    effective_ts_end = ts_end if ts_end is not None else _now_ms()
+
+    # Try server id first (the common case).
+    updated = await db.close_record(record_id, ts_end=effective_ts_end)
+    resolved_id = record_id
+
+    # Fall back to client_record_id lookup so a stale HttpBackend can still
+    # close legitimately existing records by the only id it kept.
+    if not updated:
+        existing = await db.find_record_by_client_id(record_id)
+        if existing is not None:
+            resolved_id = existing["id"]
+            updated = await db.close_record(resolved_id, ts_end=effective_ts_end)
+
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"record not found: {record_id!r}")
+
+    return {"record_id": resolved_id, "ts_end": effective_ts_end}
