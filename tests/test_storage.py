@@ -513,6 +513,51 @@ async def test_records_client_record_id_index_exists(db):
         assert await cur.fetchone() is not None
 
 
+async def test_ingest_or_get_record_does_not_leave_open_transaction_on_replay(db):
+    """When ingest_or_get_record hits the IntegrityError path on a replay, the
+    heal UPDATE that ran *before* the failed INSERT must not stay in a pending
+    transaction. Otherwise a subsequent crash loses the heal and a parallel
+    connection reads stale state.
+
+    Verified by opening a *second* aiosqlite connection on the same DB file
+    after the IntegrityError path runs, and asserting the heal is visible
+    there — uncommitted writes on connection A are invisible to connection B.
+    """
+    import aiosqlite
+
+    # Setup: original record, then a duplicate ingest to trigger heal+IntegrityError.
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="t")
+    rid_first, _ = await db.ingest_or_get_record(
+        ctx,
+        reason="heartbeat",
+        event_type="heartbeat",
+        client_record_id="dup-id",
+    )
+
+    # Sleep one ms so the second insert's ts_start is strictly greater than
+    # rid_first's, making rid_first eligible for heal (ts_start < cutoff).
+    time.sleep(0.002)
+
+    rid_again, was_new = await db.ingest_or_get_record(
+        ctx,
+        reason="heartbeat",
+        event_type="heartbeat",
+        client_record_id="dup-id",
+    )
+    assert was_new is False
+    assert rid_again == rid_first
+
+    # Read from a fresh connection — sees only committed data.
+    async with aiosqlite.connect(db._cfg.db_path) as conn2:
+        conn2.row_factory = aiosqlite.Row
+        async with conn2.execute("SELECT ts_end FROM records WHERE id=?", (rid_first,)) as cur:
+            row = await cur.fetchone()
+    # If the heal UPDATE was rolled back / left pending, ts_end is still NULL.
+    assert row["ts_end"] is not None, (
+        "heal UPDATE was not committed before IntegrityError path returned"
+    )
+
+
 async def test_get_category_final_returns_none_for_missing(db):
     assert await db.get_category_final("does-not-exist") is None
 

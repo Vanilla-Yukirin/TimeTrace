@@ -279,29 +279,39 @@ class SqliteDatabase:
             healed = await self._close_open_records_before(now, tail_ts=now)
             if healed:
                 logger.info("database.heal_open_records_on_insert", count=healed)
-            await self.conn.execute(
-                """INSERT INTO records
-                   (id, client_record_id, ts_start, event_type, app_name,
-                    process_name, window_title, url, capture_reason,
-                    status, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    record_id,
-                    client_record_id,
-                    now,
-                    event_type,
-                    ctx.app_name,
-                    ctx.process_name,
-                    ctx.window_title,
-                    ctx.url,
-                    reason,
-                    "captured",
-                    now,
-                    now,
-                ),
-            )
-            # Single commit flushes both the heal UPDATE (if any) and the INSERT.
-            await self.conn.commit()
+                # Commit the heal independently of the INSERT below so that a
+                # client_record_id UNIQUE violation doesn't roll back the heal
+                # work and leave a long-open transaction holding it pending.
+                await self.conn.commit()
+            try:
+                await self.conn.execute(
+                    """INSERT INTO records
+                       (id, client_record_id, ts_start, event_type, app_name,
+                        process_name, window_title, url, capture_reason,
+                        status, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        record_id,
+                        client_record_id,
+                        now,
+                        event_type,
+                        ctx.app_name,
+                        ctx.process_name,
+                        ctx.window_title,
+                        ctx.url,
+                        reason,
+                        "captured",
+                        now,
+                        now,
+                    ),
+                )
+                await self.conn.commit()
+            except aiosqlite.IntegrityError:
+                # Drop the failed INSERT's implicit transaction so the next
+                # caller starts clean. (Without this the lock acquired by the
+                # next method would re-enter an already-open transaction.)
+                await self.conn.rollback()
+                raise
         return record_id
 
     async def find_record_by_client_id(self, client_record_id: str) -> dict | None:
