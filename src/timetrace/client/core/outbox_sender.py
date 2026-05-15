@@ -116,6 +116,7 @@ class OutboxSender:
         backoff_max_s: float = 60.0,
         idle_poll_interval_s: float = 5.0,
         max_kbps: int = 0,
+        compact_every_n_acks: int = 200,
     ) -> None:
         self._outbox = outbox
         self._send = send
@@ -123,6 +124,13 @@ class OutboxSender:
         self._backoff_max = backoff_max_s
         self._idle_interval = idle_poll_interval_s
         self._bucket = _TokenBucket(max_kbps)
+        # Reclaim disk after every N successful acks. 0 disables compaction.
+        # Default 200 is a heuristic: typical capture rate is ~1 entry per
+        # window switch, so 200 acks ≈ a few hours of normal use, well below
+        # any realistic disk-pressure threshold but still amortising rewrite
+        # cost across many sends. Tune up for very high-volume capture.
+        self._compact_every_n_acks = compact_every_n_acks
+        self._acks_since_compact = 0
 
     async def run(self, stop_event: asyncio.Event | None = None) -> None:
         """Main drain loop. Returns when `stop_event` is set or task is cancelled."""
@@ -158,6 +166,17 @@ class OutboxSender:
                 return sent
             await self._outbox.ack_next(entry.entry_id)
             sent += 1
+            self._acks_since_compact += 1
+            if (
+                self._compact_every_n_acks > 0
+                and self._acks_since_compact >= self._compact_every_n_acks
+            ):
+                # Compact inline so the loop stays single-threaded around the
+                # outbox lock — no extra task / no race between ack and rewrite.
+                reclaimed = await self._outbox.compact()
+                if reclaimed:
+                    logger.info("outbox_sender.compacted_inline", reclaimed=reclaimed)
+                self._acks_since_compact = 0
         return sent
 
     async def _send_with_backoff(self, entry: OutboxEntry, stop_event: asyncio.Event) -> None:

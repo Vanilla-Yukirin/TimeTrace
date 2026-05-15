@@ -185,3 +185,114 @@ async def test_partial_last_line_is_tolerated(tmp_path):
     assert await second.pending_count() == 1
     entries = [e async for e in second.iter_pending()]
     assert entries[0].entry_id == eid_good
+
+
+# --------------------------------------------------------------------------- #
+# Compaction                                                                    #
+# --------------------------------------------------------------------------- #
+
+
+async def test_compact_noop_when_nothing_acked(outbox):
+    await outbox.append(_PAYLOAD_A)
+    reclaimed = await outbox.compact()
+    assert reclaimed == 0
+    assert await outbox.pending_count() == 1
+
+
+async def test_compact_below_min_acked_is_noop(outbox):
+    eid_a = await outbox.append(_PAYLOAD_A)
+    await outbox.ack_next(eid_a)
+    # 1 acked but min_acked=10 → skip
+    reclaimed = await outbox.compact(min_acked=10)
+    assert reclaimed == 0
+
+
+async def test_compact_drops_acked_entries_and_keeps_unacked(outbox, tmp_path):
+    eid_a = await outbox.append(_PAYLOAD_A)
+    eid_b = await outbox.append(_PAYLOAD_B)
+    eid_c = await outbox.append({"client_record_id": "rc"})
+
+    await outbox.ack_next(eid_a)
+    await outbox.ack_next(eid_b)
+    assert await outbox.pending_count() == 1
+
+    reclaimed = await outbox.compact(min_acked=1)
+    assert reclaimed == 2
+
+    # State reset to 0; log holds only the unacked entry
+    assert await outbox.pending_count() == 1
+    entries = [e async for e in outbox.iter_pending()]
+    assert [e.entry_id for e in entries] == [eid_c]
+
+
+async def test_compact_unlinks_acked_blobs(outbox, tmp_path):
+    eid_a = await outbox.append(_PAYLOAD_A, image_bytes=b"img-A", thumb_bytes=b"thumb-A")
+    eid_b = await outbox.append(_PAYLOAD_B, image_bytes=b"img-B")
+
+    blobs_dir = tmp_path / "outbox" / "blobs"
+    assert (blobs_dir / f"{eid_a}-image").exists()
+    assert (blobs_dir / f"{eid_a}-thumb").exists()
+    assert (blobs_dir / f"{eid_b}-image").exists()
+
+    await outbox.ack_next(eid_a)
+    await outbox.compact(min_acked=1)
+
+    # eid_a's blobs gone, eid_b's still present
+    assert not (blobs_dir / f"{eid_a}-image").exists()
+    assert not (blobs_dir / f"{eid_a}-thumb").exists()
+    assert (blobs_dir / f"{eid_b}-image").exists()
+
+
+async def test_compact_can_continue_acking_after(outbox):
+    eid_a = await outbox.append(_PAYLOAD_A)
+    eid_b = await outbox.append(_PAYLOAD_B)
+    eid_c = await outbox.append({"client_record_id": "rc"})
+
+    await outbox.ack_next(eid_a)
+    await outbox.ack_next(eid_b)
+    await outbox.compact(min_acked=1)
+
+    # After compaction, eid_c is now the head (acked=0); ack_next must work.
+    await outbox.ack_next(eid_c)
+    assert await outbox.pending_count() == 0
+
+
+async def test_compact_survives_crash_between_state_and_log(tmp_path, monkeypatch):
+    """Crash AFTER state reset but BEFORE log rewrite → at-least-once replay
+    of acked entries on next start. Server's idempotency absorbs the dups."""
+    root = tmp_path / "outbox"
+    first = Outbox(root)
+    eid_a = await first.append(_PAYLOAD_A)
+    eid_b = await first.append(_PAYLOAD_B)
+    await first.ack_next(eid_a)
+
+    # Patch _rewrite_log to raise BEFORE the rename, simulating mid-compact crash.
+    def _crash(self, entries):
+        raise RuntimeError("simulated crash mid-compaction")
+
+    monkeypatch.setattr(Outbox, "_rewrite_log", _crash, raising=True)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        await first.compact(min_acked=1)
+
+    # Re-open: state.acked is 0, log still has [a, b] → both will replay.
+    second = Outbox(root)
+    assert await second.pending_count() == 2  # 2 entries, 0 acked
+    entries = [e async for e in second.iter_pending()]
+    assert [e.entry_id for e in entries] == [eid_a, eid_b]
+
+
+async def test_compact_preserves_strict_fifo_ordering(outbox):
+    """After compaction, iter_pending order matches original submission order."""
+    ids = []
+    for i in range(5):
+        ids.append(await outbox.append({"client_record_id": f"r{i}"}))
+
+    # Ack first 3
+    for i in range(3):
+        await outbox.ack_next(ids[i])
+
+    await outbox.compact(min_acked=1)
+
+    entries = [e async for e in outbox.iter_pending()]
+    assert [e.entry_id for e in entries] == ids[3:]

@@ -238,3 +238,69 @@ async def test_pending_entry_stays_pending_when_stop_fires_before_success(outbox
     # And the entry id is still the one we put in
     pending = [e async for e in outbox.iter_pending()]
     assert pending[0].entry_id == eid
+
+
+# --------------------------------------------------------------------------- #
+# Periodic compaction                                                           #
+# --------------------------------------------------------------------------- #
+
+
+async def test_compact_every_n_acks_triggers_after_threshold(outbox):
+    for i in range(5):
+        await outbox.append({"i": i})
+
+    sender = OutboxSender(
+        outbox,
+        _StubSender(),
+        idle_poll_interval_s=0.01,
+        compact_every_n_acks=3,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+
+    # Let it drain all 5
+    for _ in range(50):
+        if await outbox.pending_count() == 0:
+            break
+        await asyncio.sleep(0.01)
+
+    stop.set()
+    await task
+
+    # After 5 acks with threshold 3: compaction triggered at the 3rd ack,
+    # reclaiming entries 0..2. Subsequent acks (4, 5) accumulate in counter
+    # but don't fire again until counter reaches 3 → so log should now hold
+    # 0 entries (everything sent + at least the first 3 reclaimed).
+    # The strong invariant we can assert: state.acked is < 3 after compaction.
+    log_path = outbox._log_path  # noqa: SLF001
+    if log_path.exists():
+        line_count = sum(1 for _ in log_path.read_text().splitlines() if _.strip())
+        # At most 4 entries left in log (compaction triggered at 3rd ack).
+        assert line_count <= 4
+
+
+async def test_compact_disabled_when_zero(outbox, tmp_path):
+    for i in range(3):
+        await outbox.append({"i": i}, image_bytes=b"x" * 100)
+
+    sender = OutboxSender(
+        outbox,
+        _StubSender(),
+        idle_poll_interval_s=0.01,
+        compact_every_n_acks=0,  # disabled
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+
+    for _ in range(50):
+        if await outbox.pending_count() == 0:
+            break
+        await asyncio.sleep(0.01)
+
+    stop.set()
+    await task
+
+    # All blobs still present (no compaction means no GC).
+    blobs_dir = tmp_path / "outbox" / "blobs"
+    blob_count = len(list(blobs_dir.iterdir())) if blobs_dir.exists() else 0
+    assert blob_count == 3

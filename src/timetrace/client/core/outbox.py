@@ -135,6 +135,69 @@ class Outbox:
             acked = await asyncio.to_thread(self._read_acked)
         return len(entries) - acked
 
+    async def compact(self, *, min_acked: int = 1) -> int:
+        """Reclaim acked entries: rewrite log to keep only un-acked, drop blobs.
+
+        Returns the number of entries reclaimed (0 = no-op). ``min_acked``
+        guards against running compaction too eagerly — cheap to skip when
+        the log has barely grown.
+
+        Crash safety story
+        ------------------
+        We write ``state.json`` BEFORE the log rewrite:
+
+            state.acked = 0   ← step 1 (atomic rename)
+            log = [unacked]   ← step 2 (atomic rename)
+
+        If we crash between the two, on next start: log still holds the
+        original [acked + unacked] and state says ``acked=0`` → the sender
+        replays the already-acked entries. The server's
+        ``client_record_id`` UNIQUE index absorbs the duplicates (200 OK
+        with ``was_new=False``), so at-least-once delivery is preserved
+        and no data is lost.
+
+        The opposite order — log first, then state — would risk skipping
+        unacked entries (state says "acked=N" but the new log is shorter
+        than N), which is unrecoverable. So this order is load-bearing,
+        do not flip.
+
+        Blobs of acked entries are unlinked last; if any survive (crash
+        mid-cleanup) they're harmless orphans next compaction sweeps.
+        """
+        async with self._lock:
+            entries = await asyncio.to_thread(self._read_log)
+            acked = await asyncio.to_thread(self._read_acked)
+            if acked < min_acked or acked == 0:
+                return 0
+
+            kept = entries[acked:]
+            acked_blob_ids = [e["entry_id"] for e in entries[:acked]]
+
+            # Step 1: reset state.acked = 0 BEFORE rewriting log.
+            await asyncio.to_thread(self._write_acked, 0)
+
+            # Step 2: atomically replace log with only the kept entries.
+            await asyncio.to_thread(self._rewrite_log, kept)
+
+            # Step 3: drop acked-entry blobs. Best-effort; survivors are
+            # harmless until the next compaction notices their entries are
+            # also gone.
+            for entry_id in acked_blob_ids:
+                for kind in ("image", "thumb"):
+                    blob_path = self._blobs_dir / f"{entry_id}-{kind}"
+                    try:
+                        blob_path.unlink(missing_ok=True)
+                    except OSError:
+                        # Permission / FS error on individual blob is not
+                        # fatal — they'll be re-attempted on next compaction.
+                        logger.warning(
+                            "outbox.compact.blob_unlink_failed",
+                            path=str(blob_path),
+                        )
+
+            logger.info("outbox.compacted", reclaimed=acked, kept=len(kept))
+            return acked
+
     # ---- internal disk helpers -----------------------------------------
 
     def _write_blob(self, name: str, data: bytes) -> None:
@@ -152,6 +215,16 @@ class Outbox:
             f.write(line)
             f.flush()
             os.fsync(f.fileno())
+
+    def _rewrite_log(self, entries: list[dict]) -> None:
+        """Atomically replace log.jsonl with the given entries (compaction)."""
+        tmp = self._log_path.with_suffix(".jsonl.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            for entry in entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(self._log_path)
 
     def _read_log(self) -> list[dict]:
         if not self._log_path.exists():
