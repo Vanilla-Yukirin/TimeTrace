@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -35,6 +36,23 @@ from fastapi import Header, HTTPException, status
 _DEFAULT_TOKEN_DIR = Path.home() / ".config" / "timetrace-server"
 _TOKEN_FILE_NAME = "tokens.json"
 _TOKEN_PREFIX = "tt_live_"
+
+
+def _harden_token_file_perms(path: Path) -> None:
+    """chmod 600 on POSIX so other Linux users can't read the token file.
+
+    No-op on Windows (NTFS default user-home ACLs are already restrictive
+    enough; chmod via Python wouldn't map to the actual permission model).
+    Best-effort: a chmod failure on POSIX is logged via the OSError-swallow
+    rather than crashing first-start.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        path.chmod(0o600)
+    except OSError:
+        # Filesystem may not support chmod (e.g. mounted FAT); not fatal.
+        pass
 
 
 @dataclass
@@ -77,6 +95,7 @@ class ServerAuth:
         )
         data = {"tokens": [asdict(new_token)]}
         token_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _harden_token_file_perms(token_file)
         return cls([new_token]), True, new_token
 
     @staticmethod

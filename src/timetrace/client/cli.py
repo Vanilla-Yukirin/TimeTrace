@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+import sys
 
 import structlog
 from dotenv import load_dotenv
@@ -43,6 +44,21 @@ from timetrace.client.tray import start_tray_thread  # noqa: E402
 from timetrace.common.config import StorageConfig  # noqa: E402
 
 logger = structlog.get_logger(__name__)
+
+
+_HELP_TEXT = """\
+timetrace-client — capture-only client half of TimeTrace.
+
+Usage:
+  timetrace-client                 Run the capture loop (default).
+  timetrace-client init [opts]     Interactive first-time setup. Use
+                                   --non-interactive for env-driven setup.
+  timetrace-client print-config    Dump the resolved client.toml + env values.
+  timetrace-client -h | --help     Show this help.
+
+Configuration: %USERPROFILE%/TimeTraceData/client.toml (override via env vars
+listed in `timetrace.client.core.config`).
+"""
 
 
 def _warn_if_shares_data_dir_with_server(storage_cfg: StorageConfig) -> None:
@@ -135,6 +151,25 @@ async def _run(
 
 
 def main() -> None:
+    # Subcommand dispatch — kept hand-rolled rather than argparse subparsers
+    # because the default-no-args path runs the daemon, and argparse doesn't
+    # express that cleanly without losing the bare ``timetrace-client`` UX.
+    args = sys.argv[1:]
+    if args and args[0] in ("-h", "--help"):
+        print(_HELP_TEXT)
+        return
+    if args and args[0] == "init":
+        from timetrace.client.init_cmd import run as init_run  # noqa: PLC0415
+
+        sys.exit(init_run(args[1:]))
+    if args and args[0] == "print-config":
+        _print_config()
+        return
+    if args:
+        print(f"Unknown command: {args[0]}\n", file=sys.stderr)
+        print(_HELP_TEXT, file=sys.stderr)
+        sys.exit(2)
+
     logging.basicConfig(level=logging.WARNING)
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
@@ -190,6 +225,34 @@ def main() -> None:
             except (KeyboardInterrupt, SystemExit, Exception):
                 pass
         loop.close()
+
+
+def _print_config() -> None:
+    """Dump the resolved client.toml + env-overlay values to stdout.
+
+    Useful for "what is the daemon actually about to do" debugging without
+    starting the heavy capture loop. Token is shown by length only — never
+    the value — so the output can be safely pasted into a bug report.
+    """
+    cfg = ClientConfig.load_or_default().apply_env_overrides()
+    token_view = f"<{len(cfg.server.auth_token)} chars>" if cfg.server.auth_token else "<empty>"
+    print(f"server.url            = {cfg.server.url}")
+    print(f"server.auth_token     = {token_view}")
+    print(f"device.id             = {cfg.device.id or '<unset>'}")
+    print(f"device.name           = {cfg.device.name or '<unset>'}")
+    print(f"device.description    = {cfg.device.description or '<unset>'}")
+    print(f"outbox.root_dir       = {cfg.outbox.root_dir}")
+    print(f"upload.max_kbps       = {cfg.upload.max_kbps}")
+    print(f"storage.data_dir      = {cfg.storage.data_dir}")
+    print(f"capture.min_interval  = {cfg.capture.min_capture_interval_s}s")
+    print(f"capture.max_interval  = {cfg.capture.max_capture_interval_s}s")
+    print(f"capture.idle_threshold= {cfg.capture.idle_threshold_s}s")
+    print(f"capture.mode          = {cfg.capture.capture_mode}")
+    print(f"privacy.mode          = {cfg.privacy.mode}")
+    print(f"privacy.paused        = {cfg.privacy.paused}")
+    print(f"privacy.store_images  = {cfg.privacy.store_images}")
+    print(f"privacy.app_blacklist = {cfg.privacy.app_blacklist}")
+    print(f"privacy.title_keywords= {cfg.privacy.title_keywords}")
 
 
 if __name__ == "__main__":

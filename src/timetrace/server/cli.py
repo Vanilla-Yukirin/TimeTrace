@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import sys
 
 import structlog
 from dotenv import load_dotenv
@@ -25,12 +26,45 @@ from timetrace.server.bootstrap import build_server_components, serve  # noqa: E
 logger = structlog.get_logger(__name__)
 
 
+_HELP_TEXT = """\
+timetrace-server — server half of TimeTrace (API + DB + worker, no capture).
+
+Usage:
+  timetrace-server                       Run the server (default).
+  timetrace-server info                  Print resolved paths + listen addr.
+  timetrace-server tokens list           List all bearer tokens (masked).
+  timetrace-server tokens add <label>    Mint a new token; shows the value
+                                         ONCE, copy into client.toml.
+  timetrace-server tokens revoke <id>    Revoke by label / full / suffix-8.
+  timetrace-server -h | --help           Show this help.
+
+Token file lives at ~/.config/timetrace-server/tokens.json (chmod 600 on POSIX).
+After tokens add/revoke, restart the server for changes to take effect.
+"""
+
+
 async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
     components = await build_server_components(config)
     await serve(components, config, quit_event)
 
 
 def main() -> None:
+    # Subcommand dispatch — bare ``timetrace-server`` runs the server,
+    # everything else is admin / one-shot. Hand-rolled rather than argparse
+    # subparsers so the bare-no-args daemon path stays uncluttered.
+    args = sys.argv[1:]
+    if args and args[0] in ("-h", "--help"):
+        print(_HELP_TEXT)
+        return
+    if args and args[0] in ("info", "tokens"):
+        from timetrace.server.admin_cmd import run as admin_run  # noqa: PLC0415
+
+        sys.exit(admin_run(args))
+    if args:
+        print(f"Unknown command: {args[0]}\n", file=sys.stderr)
+        print(_HELP_TEXT, file=sys.stderr)
+        sys.exit(2)
+
     logging.basicConfig(level=logging.WARNING)
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
