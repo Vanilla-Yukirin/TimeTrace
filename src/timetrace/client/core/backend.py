@@ -216,9 +216,17 @@ class HttpBackend:
         return client_record_id
 
     async def close_record(self, record_id: str) -> None:
-        """Close the record on the server (sets ts_end to client clock)."""
+        """Close the record on the server (sets ts_end to current client clock)."""
+        await self.post_close(record_id, ts_end=int(time.time() * 1000))
+
+    async def post_close(self, record_id: str, ts_end: int) -> None:
+        """Wire-level close with a caller-supplied ts_end.
+
+        Exposed for OutboxSender so it can replay close entries with the
+        ts_end that was stamped when capture originally produced the close,
+        not the time the sender happens to drain the outbox entry.
+        """
         server_id = self._record_id_for.get(record_id, record_id)
-        ts_end = int(time.time() * 1000)
         resp = await self._client.post(
             f"/v1/ingest/record/{server_id}/close",
             json={"ts_end": ts_end},
@@ -320,6 +328,20 @@ class HttpBackend:
         if self._device_id:
             headers["X-Device-Id"] = self._device_id
         return headers or None
+
+    async def post_ingest(
+        self,
+        payload: dict,
+        *,
+        image_bytes: bytes | None = None,
+        thumb_bytes: bytes | None = None,
+    ) -> dict:
+        """Wire-level POST to /v1/ingest/record with a fully-formed payload.
+
+        Exposed for OutboxSender so it can replay queued entries verbatim
+        (the payload was assembled at OutboxBackend.append time).
+        """
+        return await self._post_ingest(payload, image_bytes=image_bytes, thumb_bytes=thumb_bytes)
 
     async def _post_ingest(
         self,
