@@ -71,6 +71,12 @@ CREATE TABLE IF NOT EXISTS screenshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_screenshots_record  ON screenshots(record_id);
+-- Partial UNIQUE: at most one row per (record_id, hash_sha256). Lets the ingest
+-- route absorb outbox at-least-once replays without inserting a duplicate
+-- screenshot row + double-feeding the pHash index. Pre-P3a rows with NULL
+-- hash_sha256 are excluded so the migration is non-breaking.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_screenshots_record_hash
+    ON screenshots(record_id, hash_sha256) WHERE hash_sha256 IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS analysis_results (
     record_id           TEXT PRIMARY KEY REFERENCES records(id),
@@ -231,6 +237,14 @@ class SqliteDatabase:
             )
             await self._conn.commit()
             logger.info("database.migrate", added_column="records.client_record_id")
+
+        # Backfill the (record_id, hash_sha256) UNIQUE for DBs created before
+        # the dedup work in P3a-cleanup. Idempotent; the index uses IF NOT EXISTS.
+        await self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_screenshots_record_hash "
+            "ON screenshots(record_id, hash_sha256) WHERE hash_sha256 IS NOT NULL"
+        )
+        await self._conn.commit()
 
     async def _seed_categories(self) -> None:
         """Insert built-in categories if they don't exist yet.
@@ -585,30 +599,50 @@ class SqliteDatabase:
         hash_sha256: str,
         privacy_level: str = "normal",
         phash: bytes | None = None,
-    ) -> str:
+    ) -> tuple[str, bool]:
+        """Insert a screenshot row; returns ``(screenshot_id, was_new)``.
+
+        Idempotent on ``(record_id, hash_sha256)``: if the same screenshot was
+        already inserted for this record (outbox at-least-once replay) we
+        return the existing id with ``was_new=False`` so the caller can skip
+        side-effects like phash_index.insert.
+        """
         screenshot_id = _new_id()
         now = _now_ms()
         async with self._lock:
-            await self.conn.execute(
-                """INSERT INTO screenshots
-                   (id, record_id, path, thumb_path, width, height,
-                    hash_sha256, phash, privacy_level, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    screenshot_id,
-                    record_id,
-                    path,
-                    thumb_path,
-                    width,
-                    height,
-                    hash_sha256,
-                    phash,
-                    privacy_level,
-                    now,
-                ),
-            )
-            await self.conn.commit()
-        return screenshot_id
+            try:
+                await self.conn.execute(
+                    """INSERT INTO screenshots
+                       (id, record_id, path, thumb_path, width, height,
+                        hash_sha256, phash, privacy_level, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        screenshot_id,
+                        record_id,
+                        path,
+                        thumb_path,
+                        width,
+                        height,
+                        hash_sha256,
+                        phash,
+                        privacy_level,
+                        now,
+                    ),
+                )
+                await self.conn.commit()
+                return screenshot_id, True
+            except aiosqlite.IntegrityError:
+                # Duplicate (record_id, hash_sha256) — read back the id we already have.
+                await self.conn.rollback()
+                async with self.conn.execute(
+                    "SELECT id FROM screenshots WHERE record_id=? AND hash_sha256=?",
+                    (record_id, hash_sha256),
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is None:
+                    # Should be impossible: UNIQUE violation but row missing on re-read.
+                    raise
+                return row["id"], False
 
     async def get_record_ts_start(self, record_id: str) -> int | None:
         """Return `records.ts_start` for the given record, or None if missing."""

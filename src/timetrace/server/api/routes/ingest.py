@@ -116,7 +116,7 @@ async def ingest_record(
             thumb_key = f"thumbs/{date}/{record_id}.{payload.thumb_format}"
             await blob_storage.put(thumb_key, thumb_bytes, expected_md5=payload.thumb_md5)
 
-        screenshot_id = await db.insert_screenshot(
+        screenshot_id, screenshot_was_new = await db.insert_screenshot(
             record_id=record_id,
             path=image_key,
             thumb_path=thumb_key,
@@ -126,7 +126,9 @@ async def ingest_record(
             phash=phash_to_blob(payload.image_phash) if payload.image_phash is not None else None,
         )
 
-        if payload.image_phash is not None and phash_index is not None:
+        # Skip pHash side-index update on replay so the BK-tree doesn't end up
+        # with two entries pointing at the same screenshot.
+        if screenshot_was_new and payload.image_phash is not None and phash_index is not None:
             phash_index.insert(screenshot_id, payload.image_phash, payload.ts_start)
 
     # mark_pending is idempotent (INSERT OR IGNORE under the hood) so it's safe

@@ -50,13 +50,14 @@ async def _seed_record_with_screenshot(
 ) -> tuple[str, str]:
     ctx = CaptureContext(app_name=app_name, process_name=app_name.lower(), window_title=title)
     record_id = await db.insert_record(ctx, reason="heartbeat")
-    sid = await db.insert_screenshot(
+    sid, _ = await db.insert_screenshot(
         record_id=record_id,
         path=f"screenshots/{record_id}.png",
         thumb_path=f"thumbs/2026/04/22/{record_id}.jpg",
         width=64,
         height=64,
-        hash_sha256="sha",
+        # unique-per-record so the dedup UNIQUE index doesn't collapse fixtures
+        hash_sha256=f"sha-{record_id}",
         phash=phash_to_blob(phash_val) if phash_val is not None else None,
     )
     return record_id, sid

@@ -202,7 +202,7 @@ async def test_phash_index_from_db_skips_deleted(db):
     ctx = CaptureContext(app_name="App", process_name="app", window_title="Win")
     record_id = await db.insert_record(ctx, reason="heartbeat")
 
-    sid = await db.insert_screenshot(
+    sid, _ = await db.insert_screenshot(
         record_id=record_id,
         path="s/a.png",
         thumb_path=None,

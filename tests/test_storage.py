@@ -82,7 +82,7 @@ async def test_insert_screenshot(db):
     ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
     record_id = await db.insert_record(ctx, reason="heartbeat")
 
-    screenshot_id = await db.insert_screenshot(
+    screenshot_id, was_new = await db.insert_screenshot(
         record_id=record_id,
         path="screenshots/2026/04/11/test.png",
         thumb_path="thumbs/2026/04/11/test.jpg",
@@ -91,6 +91,7 @@ async def test_insert_screenshot(db):
         hash_sha256="abc123",
     )
     assert screenshot_id
+    assert was_new is True
 
     shots = await db.get_screenshots_for_record(record_id)
     assert len(shots) == 1

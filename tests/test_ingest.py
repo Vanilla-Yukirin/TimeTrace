@@ -264,3 +264,76 @@ async def test_ingest_marks_record_pending_for_worker(db, blob_storage):
 
     task = await db.claim_next_task("pending_vlm")
     assert task is not None  # worker would pick this up
+
+
+# --------------------------------------------------------------------------- #
+# At-least-once replay (outbox crashes mid-ack)                                #
+# --------------------------------------------------------------------------- #
+
+
+async def test_ingest_replay_with_image_does_not_duplicate_screenshot(db, blob_storage):
+    """Outbox is at-least-once: if the sender successfully POSTs but crashes
+    before ack_next, the same (record + image) entry is re-sent. The server
+    must NOT insert a second screenshots row for the same (record_id, sha256)
+    or the phash_index will get a duplicate, doubling visual-search hits.
+    """
+    app = create_app(db, blob_storage=blob_storage)
+    image_data = _png_bytes((10, 20, 30))
+    payload = _record_payload(
+        "client-replay-img",
+        image_md5=_md5(image_data),
+        image_width=16,
+        image_height=16,
+    )
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/ingest/record",
+            data={"record": payload},
+            files={"image": ("a.png", image_data, "image/png")},
+        ).json()
+        second = client.post(
+            "/v1/ingest/record",
+            data={"record": payload},
+            files={"image": ("a.png", image_data, "image/png")},
+        ).json()
+
+    assert first["was_new"] is True
+    assert second["was_new"] is False
+    assert second["record_id"] == first["record_id"]
+    # Critical: same screenshot id is echoed back — no second insert happened.
+    assert second["screenshot_id"] == first["screenshot_id"]
+
+    shots = await db.get_screenshots_for_record(first["record_id"])
+    assert len(shots) == 1
+
+
+async def test_ingest_replay_with_image_does_not_duplicate_phash_index(db, blob_storage):
+    """Same setup as above, but verifies the phash_index isn't double-inserted."""
+    index = PHashIndex()
+    app = create_app(db, blob_storage=blob_storage, phash_index=index)
+
+    image_data = _png_bytes((40, 50, 60))
+    phash_val = 0xDEADBEEFCAFEBABE
+    payload = _record_payload(
+        "client-replay-phash",
+        image_md5=_md5(image_data),
+        image_width=16,
+        image_height=16,
+        image_phash=phash_val,
+    )
+
+    with TestClient(app) as client:
+        client.post(
+            "/v1/ingest/record",
+            data={"record": payload},
+            files={"image": ("a.png", image_data, "image/png")},
+        )
+        client.post(
+            "/v1/ingest/record",
+            data={"record": payload},
+            files={"image": ("a.png", image_data, "image/png")},
+        )
+
+    hits = index.search(phash_val, radius=0)
+    assert len(hits) == 1, f"phash_index has duplicate hits after replay: {hits!r}"

@@ -97,7 +97,7 @@ class InProcessBackend:
 
     async def submit_screenshot(self, payload: ScreenshotSubmission) -> str:
         phash_blob = phash_to_blob(payload.phash) if payload.phash is not None else None
-        screenshot_id = await self._db.insert_screenshot(
+        screenshot_id, was_new = await self._db.insert_screenshot(
             record_id=payload.record_id,
             path=payload.path,
             thumb_path=payload.thumb_path,
@@ -107,7 +107,7 @@ class InProcessBackend:
             privacy_level=payload.privacy_level,
             phash=phash_blob,
         )
-        if payload.phash is not None and self._phash_index is not None:
+        if was_new and payload.phash is not None and self._phash_index is not None:
             ts_start = await self._db.get_record_ts_start(payload.record_id)
             if ts_start is not None:
                 self._phash_index.insert(screenshot_id, payload.phash, ts_start)
