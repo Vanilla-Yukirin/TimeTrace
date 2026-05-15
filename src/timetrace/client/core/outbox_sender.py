@@ -11,6 +11,17 @@ Loop semantics:
 - Strict FIFO: a failing entry is retried (with backoff) until it either
   succeeds and gets acked, or the stop event fires. The loop never skips
   a failing entry to try the next — that's the whole point of the outbox.
+
+  **Load-bearing for OutboxBackend**: capture's submit_record →
+  submit_screenshot → close_record sequence reaches the outbox in that
+  order, and the server expects the same order on the wire (close hits
+  ``/v1/ingest/record/{id}/close``, which only succeeds once the matching
+  record exists). Strict FIFO gives us that ordering for free. If a future
+  refactor introduces parallel senders sharing one outbox, that invariant
+  breaks and either close needs to re-route through the by-client-id
+  fallback every time (extra SELECT per close) or sender needs explicit
+  per-record_id sequencing.
+
 - Backoff: doubles after each consecutive failure, capped at ``backoff_max_s``.
   Resets on success.
 - Idle wait: when the queue is empty the loop sleeps ``idle_poll_interval_s``

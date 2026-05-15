@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
 import re
+from ctypes import wintypes
 from dataclasses import dataclass
 
 import structlog
@@ -10,6 +12,36 @@ import win32gui
 import win32process
 
 logger = structlog.get_logger(__name__)
+
+
+# QueryFullProcessImageNameW is the modern API (Vista+) that pairs cleanly with
+# PROCESS_QUERY_LIMITED_INFORMATION — it returns the regular Win32 path of the
+# target process's main executable using only the minimum-privilege handle.
+# pywin32 doesn't expose it (as of 306+), so call kernel32 directly via ctypes.
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_QueryFullProcessImageNameW = _kernel32.QueryFullProcessImageNameW
+_QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    wintypes.LPWSTR,
+    ctypes.POINTER(wintypes.DWORD),
+]
+_QueryFullProcessImageNameW.restype = wintypes.BOOL
+
+
+def _query_full_process_image_name(handle: int) -> str:
+    """Wrapper around kernel32!QueryFullProcessImageNameW.
+
+    ``handle`` must be a HANDLE int (pywin32 PyHANDLE coerces via __int__).
+    Returns the full Win32 path (e.g. ``C:\\Windows\\System32\\notepad.exe``)
+    or raises OSError.
+    """
+    buf_size = wintypes.DWORD(1024)
+    buf = ctypes.create_unicode_buffer(buf_size.value)
+    if not _QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(buf_size)):
+        raise OSError(ctypes.get_last_error(), "QueryFullProcessImageNameW failed")
+    return buf.value
+
 
 # Known browser process names → we'll try to extract URL via UI Automation later.
 _BROWSER_PROCESSES = frozenset(
@@ -56,25 +88,29 @@ def get_active_window() -> WindowInfo | None:
 def _get_process_info(pid: int) -> tuple[str, str]:
     """Return (process_name, app_name) for the given PID.
 
-    Uses ``QueryFullProcessImageName`` (Vista+) which is the only modern API
-    that pairs cleanly with ``PROCESS_QUERY_LIMITED_INFORMATION`` — the
-    minimum-privilege handle a normal-user process can obtain on most other
-    processes (including elevated ones in the same session). The legacy
-    ``GetModuleFileNameEx`` requires ``PROCESS_QUERY_INFORMATION + VM_READ``
-    which usually fails, leaving every window logged as Unknown.
+    Uses :func:`_query_full_process_image_name` (kernel32 ctypes call) —
+    the modern Win32 API designed to pair with
+    ``PROCESS_QUERY_LIMITED_INFORMATION``, the minimum-privilege handle a
+    normal-user process can obtain on most other processes (including
+    elevated ones in the same session).
+
+    Historical note: the original implementation used pywin32's
+    ``GetModuleFileNameEx`` which requires ``PROCESS_QUERY_INFORMATION +
+    VM_READ`` — a higher privilege than the LIMITED handle being passed in.
+    That mismatch made nearly every cross-user call fail to except, leaving
+    24213 records in the 2026-05-04 backup tagged "Unknown". A short-lived
+    intermediate fix tried ``win32process.QueryFullProcessImageName`` as
+    fallback, but pywin32 doesn't expose that name — so the fallback always
+    AttributeError'd and we still hit the unknown path. ctypes is the only
+    reliable route until pywin32 ships the binding.
     """
     try:
         import win32api  # noqa: PLC0415
         import win32con  # noqa: PLC0415
-        import win32process  # noqa: PLC0415
 
         handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         try:
-            exe_path: str = win32process.GetModuleFileNameEx(handle, 0)
-        except Exception:
-            # GetModuleFileNameEx wants more privilege; try the modern API
-            # that's spec'd to work with the LIMITED handle we already have.
-            exe_path = win32process.QueryFullProcessImageName(handle, 0)
+            exe_path = _query_full_process_image_name(int(handle))
         finally:
             win32api.CloseHandle(handle)
 
