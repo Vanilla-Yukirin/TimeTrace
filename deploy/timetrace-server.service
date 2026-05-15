@@ -1,0 +1,82 @@
+# =============================================================================
+# timetrace-server.service — systemd --user unit for the TimeTrace server.
+#
+# Installed by deploy/deploy.sh into ~/.config/systemd/user/ on the target.
+# Enable persistence across logout (so it runs on a headless box) with:
+#
+#     loginctl enable-linger ${USER}
+#
+# Start manually for the first time:
+#
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now timetrace-server.service
+#
+# Inspect:
+#
+#     systemctl --user status timetrace-server.service
+#     journalctl --user -u timetrace-server.service -f
+#
+# Override env without editing this file (e.g. local data_dir override):
+#
+#     mkdir -p ~/.config/systemd/user/timetrace-server.service.d
+#     cat > ~/.config/systemd/user/timetrace-server.service.d/override.conf <<'EOF'
+#     [Service]
+#     Environment="TIMETRACE_DATA_DIR=/srv/timetrace-data"
+#     EOF
+#     systemctl --user daemon-reload
+#     systemctl --user restart timetrace-server.service
+# =============================================================================
+
+[Unit]
+Description=TimeTrace server (capture-free, API + DB + worker)
+Documentation=https://github.com/Vanilla-Yukirin/TimeTrace
+# Wait for actual network reachability, not just the interface being up.
+# Critical because uvicorn's bind would still succeed on an isolated NIC,
+# but our FRP tunnel won't have come up yet → first /healthz from CI fails.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# %h expands to the user's home dir at unit-load time. Avoid hard-coding
+# /home/<user> so the unit copies cleanly across forks / boxes.
+WorkingDirectory=%h/TimeTrace
+ExecStart=%h/.local/bin/uv run timetrace-server
+
+# Defensive defaults — most can be overridden via the d/override.conf
+# pattern documented above. .env is loaded from the repo root if present
+# (used for VLM creds, etc.); leading "-" makes the file optional.
+Environment="TIMETRACE_DATA_DIR=%h/TimeTraceData"
+EnvironmentFile=-%h/TimeTrace/.env
+
+# Restart policy: bounce on any non-clean exit, but back off after a few
+# rapid failures so a misconfigured run doesn't melt the journal. After
+# StartLimit kicks in, systemd marks the unit `failed` and we'd see it in
+# `systemctl --user status`.
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Stop signal: uvicorn handles SIGTERM gracefully via the same quit_event
+# path Ctrl+C uses (see server/bootstrap.py _watch_quit). Give it 30s to
+# drain in-flight requests + close DB before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# Sandbox tightening — cheap wins, no behavior cost. Tighten further only
+# if a future hardening pass shows it's needed; over-restricting can break
+# uv's caching writes inside ~/.cache/uv.
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+# We need write access to data_dir + cache + repo (uv writes lockfiles).
+ReadWritePaths=%h/TimeTrace %h/TimeTraceData %h/.cache %h/.config/timetrace-server
+
+[Install]
+# `default.target` is the user-level analogue of `multi-user.target`.
+# Combined with `loginctl enable-linger` this means "starts on boot,
+# stays running across logout".
+WantedBy=default.target

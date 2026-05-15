@@ -1,0 +1,117 @@
+# =============================================================================
+# deploy.yml — Manual SSH deploy to the target machine (home small box via
+# FRP-tunneled cloud jumphost). Companion docs:
+#
+#   devlogs/infra/archive-202605161000-deployment-architecture.md
+#   devlogs/infra/archive-202605161015-cicd-workflow.md
+#
+# === Trigger ==================================================================
+# workflow_dispatch only — no push/tag automation in v1. Run from the GH
+# Actions UI (Actions tab → "deploy" → Run workflow) or locally:
+#
+#     gh workflow run deploy.yml
+#     gh run watch
+#
+# === Fork safety ==============================================================
+# Two layers prevent fork forks from accidentally deploying to MY machine:
+#
+#  1. `if: github.repository == '...'` skips the entire job in any fork.
+#  2. GitHub doesn't propagate repository secrets to forks, so even if
+#     someone removed the guard, all the SSH steps would fail with empty
+#     secrets.
+#
+# A fork user adapting this for their own deploy needs to:
+#   - change the repo string in `if:` below
+#   - configure the same secrets in their own repo settings
+#   - point DEPLOY_JUMP_HOST + DEPLOY_TARGET_HOST at their infra
+#
+# === Required secrets =========================================================
+# Configure under repo Settings → Secrets and variables → Actions:
+#
+#   DEPLOY_SSH_KEY          ed25519 private key (no passphrase) authorized
+#                           on the jumphost AND on the target box.
+#   DEPLOY_KNOWN_HOSTS      Output of `ssh-keyscan <jumphost> <target>` so
+#                           we don't strict-host-prompt at runtime.
+#   DEPLOY_JUMP_USER_HOST   "user@121.x.x.x" — public cloud SSH jump entry.
+#   DEPLOY_JUMP_PORT        SSH port on the jumphost (typically 22).
+#   DEPLOY_TARGET_USER_HOST "Yuki@127.0.0.1" — over the FRP tunnel as
+#                           seen FROM the jumphost.
+#   DEPLOY_TARGET_PORT      Port on the jumphost where FRP forwards to the
+#                           target's sshd (e.g. 22001).
+#
+# The jumphost is used purely as a ProxyJump — no code runs there.
+# =============================================================================
+
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (default: branch this workflow runs on)"
+        required: false
+        default: ""
+
+jobs:
+  deploy:
+    # Double guard: fork-safe + manual-only.
+    if: github.repository == 'Vanilla-Yukirin/TimeTrace' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout (for visibility in run summary; deploy.sh re-pulls on target)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      # Stand up a temporary SSH agent + key. Using webfactory/ssh-agent is
+      # the standard pattern; it cleans up the key on job teardown so the
+      # private key never persists on the runner FS.
+      - name: Set up SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      # known_hosts is plaintext (host pubkeys are not secret), but we keep
+      # it in a secret so changes go through repo settings rather than commits.
+      # `tee -a` so the runner's default known_hosts (currently empty) merges.
+      - name: Trust jumphost + target host keys
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      # The actual deploy. ProxyJump chains: runner → jumphost → target.
+      # We run deploy.sh on the target (which we just freshly cloned/pulled
+      # if not present). The `bash -s` trick lets us pipe the script over
+      # SSH with no temp file, ensuring the running version always matches
+      # whatever's on $TIMETRACE_BRANCH.
+      - name: Deploy via SSH (jump → FRP → target)
+        env:
+          JUMP: ${{ secrets.DEPLOY_JUMP_USER_HOST }}
+          JUMP_PORT: ${{ secrets.DEPLOY_JUMP_PORT }}
+          TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
+          TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
+        run: |
+          set -euo pipefail
+          echo "Connecting via ProxyJump ${JUMP}:${JUMP_PORT} → ${TARGET}:${TARGET_PORT}..."
+          # ServerAliveInterval keeps long FRP-tunneled SSH from idle-dropping.
+          # StrictHostKeyChecking=yes forces a hard fail if known_hosts disagrees,
+          # turning a host-key swap (potential MitM) into a visible CI failure.
+          ssh \
+            -J "${JUMP}" \
+            -p "${TARGET_PORT}" \
+            -o ProxyJumpPort="${JUMP_PORT}" \
+            -o ServerAliveInterval=15 \
+            -o StrictHostKeyChecking=yes \
+            "${TARGET}" \
+            'bash -s' < deploy/deploy.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Deploy summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Repo: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Ref: ${{ github.event.inputs.ref || github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Outcome: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
