@@ -14,7 +14,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from timetrace.client.core.backend import HttpBackend
+from timetrace.client.core.backend import BackendError, HttpBackend
 from timetrace.client.core.outbox import Outbox, OutboxEntry
 from timetrace.client.core.outbox_backend import OutboxBackend, make_http_sender
 from timetrace.client.core.outbox_sender import OutboxSender
@@ -97,8 +97,8 @@ async def test_submit_screenshot_inlines_image_bytes(outbox, tmp_path):
             phash=0xDEAD,
         )
     )
-    # OutboxBackend returns a deferred sentinel — no real id exists yet
-    assert sid.startswith("deferred:")
+    # OutboxBackend defers — real screenshot id is server-side, not knowable yet
+    assert sid is None
 
     entries = [e async for e in outbox.iter_pending()]
     # 1 record-only + 1 record-with-image
@@ -138,11 +138,35 @@ async def test_submit_screenshot_resolves_relative_path_against_data_dir(outbox,
 
 async def test_submit_screenshot_relative_path_without_data_dir_raises(outbox, tmp_path):
     backend = OutboxBackend(outbox)  # no data_dir
-    with pytest.raises(FileNotFoundError, match="data_dir"):
+    with pytest.raises(BackendError, match="data_dir"):
         await backend.submit_screenshot(
             ScreenshotSubmission(
                 record_id="any",
                 path="rel/x.png",
+                thumb_path=None,
+                width=1,
+                height=1,
+                hash_sha256="x",
+            )
+        )
+
+
+async def test_submit_screenshot_rejects_path_traversal_outside_data_dir(outbox, tmp_path):
+    """Defence-in-depth: a relative path that resolve()s outside data_dir
+    must be refused, mirroring HttpBackend's guard. Same threat model:
+    a malicious ScreenshotSubmission could otherwise read host secrets
+    via the upload pipeline."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    # Sensitive file outside data_dir
+    (tmp_path / "secret.txt").write_bytes(b"OWNED")
+
+    backend = OutboxBackend(outbox, data_dir=data_dir)
+    with pytest.raises(BackendError, match="data_dir"):
+        await backend.submit_screenshot(
+            ScreenshotSubmission(
+                record_id="any",
+                path="../secret.txt",
                 thumb_path=None,
                 width=1,
                 height=1,

@@ -43,6 +43,35 @@ class BackendError(Exception):
     """Raised when a backend call fails (network, 4xx/5xx, malformed reply)."""
 
 
+def resolve_path_under_data_dir(raw: str, data_dir: Path | None, *, kind: str) -> Path:
+    """Normalise a path against an optional ``data_dir`` base.
+
+    Shared by every BackendClient that needs to read screenshot bytes off
+    disk (HttpBackend, OutboxBackend). Behaviour:
+
+    - Absolute paths are returned as-is.
+    - Relative paths are joined to ``data_dir`` and ``resolve()``'d.
+    - ``data_dir is None`` makes relative paths an error — refusing to
+      silently read from CWD avoids accidental log/config exfiltration.
+    - Relative paths whose ``resolve()`` escapes ``data_dir``
+      (``../../../etc/passwd``) raise — defence against a malicious
+      ScreenshotSubmission feeding host secrets into the upload pipeline.
+    """
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    if data_dir is None:
+        raise BackendError(f"need absolute {kind} path or a data_dir; got {raw!r}")
+    resolved = (data_dir / path).resolve()
+    try:
+        resolved.relative_to(data_dir)
+    except ValueError as exc:
+        raise BackendError(
+            f"{kind} path {raw!r} resolves outside data_dir {str(data_dir)!r}"
+        ) from exc
+    return resolved
+
+
 class BackendClient(Protocol):
     """The minimal capture-facing surface for a TimeTrace backend."""
 
@@ -59,11 +88,17 @@ class BackendClient(Protocol):
         """Set ts_end on a previously-submitted record."""
         ...
 
-    async def submit_screenshot(self, payload: ScreenshotSubmission) -> str:
+    async def submit_screenshot(self, payload: ScreenshotSubmission) -> str | None:
         """Persist a screenshot + thumbnail and update any side indexes.
 
-        Returns the new screenshot id. Implementations are responsible for
-        feeding the pHash into whatever similarity index they keep.
+        Returns the new screenshot id when the implementation can produce
+        one synchronously (InProcessBackend, HttpBackend) or ``None`` when
+        the call is queued for later upload (OutboxBackend, where the real
+        id is server-side and unknown until drain time). Capture treats both
+        the same — neither value is persisted client-side.
+
+        Implementations are responsible for feeding the pHash into whatever
+        similarity index they keep.
         """
         ...
 
@@ -290,30 +325,7 @@ class HttpBackend:
     # ---- internal -----------------------------------------------------------
 
     def _resolve_path(self, raw: str, *, kind: str) -> Path:
-        """Normalise a screenshot/thumb path against ``self._data_dir``.
-
-        Absolute paths are returned as-is. Relative paths are joined to
-        ``data_dir`` (capture's storage root). Without a configured
-        ``data_dir`` only absolute paths are accepted — refusing to silently
-        read from CWD avoids accidental log/config exfiltration.
-
-        Also rejects relative paths that, after resolution, escape data_dir
-        (e.g. ``../../../etc/passwd``) so a malicious payload cannot read
-        arbitrary files on the host.
-        """
-        path = Path(raw)
-        if path.is_absolute():
-            return path
-        if self._data_dir is None:
-            raise BackendError(f"HttpBackend needs absolute {kind} path or a data_dir; got {raw!r}")
-        resolved = (self._data_dir / path).resolve()
-        try:
-            resolved.relative_to(self._data_dir)
-        except ValueError as exc:
-            raise BackendError(
-                f"{kind} path {raw!r} resolves outside data_dir {str(self._data_dir)!r}"
-            ) from exc
-        return resolved
+        return resolve_path_under_data_dir(raw, self._data_dir, kind=kind)
 
     def _extra_headers(self) -> dict[str, str] | None:
         """Per-request headers that need to be added even when the AsyncClient

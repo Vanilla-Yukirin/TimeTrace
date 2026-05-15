@@ -32,6 +32,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from timetrace.client.core.backend import resolve_path_under_data_dir
 from timetrace.client.core.outbox import Outbox, OutboxEntry
 
 if TYPE_CHECKING:
@@ -82,7 +83,7 @@ class OutboxBackend:
         )
         return client_record_id
 
-    async def submit_screenshot(self, payload: ScreenshotSubmission) -> str:
+    async def submit_screenshot(self, payload: ScreenshotSubmission) -> str | None:
         """Read the screenshot bytes off disk and queue them as an ingest entry.
 
         Bytes are inlined into the outbox blob store (not the jsonl) so the
@@ -90,6 +91,11 @@ class OutboxBackend:
         copy after this returns and the sender will still have everything
         it needs to POST. (capture today doesn't delete; this is a future
         ergonomic affordance.)
+
+        Returns ``None`` because the real screenshot id is server-side and
+        only knowable after the sender drains and POSTs. The Protocol allows
+        ``str | None`` for exactly this deferred case; capture doesn't
+        persist the return value either way.
         """
         image_bytes = self._read_path(payload.path)
         image_format = Path(payload.path).suffix.lstrip(".") or "png"
@@ -116,9 +122,7 @@ class OutboxBackend:
             image_bytes=image_bytes,
             thumb_bytes=thumb_bytes,
         )
-        # Synthetic id — the real screenshot id is server-side and not knowable
-        # at queue time. Capture only logs this return value, never persists.
-        return f"deferred:{payload.record_id}"
+        return None
 
     async def close_record(self, record_id: str) -> None:
         """Queue a close entry stamping the *current* client clock as ts_end.
@@ -143,14 +147,11 @@ class OutboxBackend:
     # ---- internals --------------------------------------------------------- #
 
     def _read_path(self, raw: str) -> bytes:
-        path = Path(raw)
-        if not path.is_absolute():
-            if self._data_dir is None:
-                raise FileNotFoundError(
-                    f"OutboxBackend got relative path {raw!r} but no data_dir to resolve against"
-                )
-            path = self._data_dir / path
-        return path.read_bytes()
+        # Shares HttpBackend's resolver: same absolute / relative semantics
+        # AND the same defence-in-depth traversal guard, so a malicious
+        # ScreenshotSubmission with ../etc/passwd can't read host files even
+        # if it never reaches the wire.
+        return resolve_path_under_data_dir(raw, self._data_dir, kind="screenshot").read_bytes()
 
 
 # --------------------------------------------------------------------------- #
