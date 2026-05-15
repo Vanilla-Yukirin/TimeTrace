@@ -34,7 +34,12 @@ dependencies = [
 ]
 
 [project.scripts]
+# Single-process all-in-one (capture + API + DB + worker + tray). Stable default.
 timetrace = "timetrace.main:main"
+# Two-process split (P3a-5b). Run alongside each other for loopback,
+# or deploy server on a remote host and point client.toml at it.
+timetrace-client = "timetrace.client.cli:main"
+timetrace-server = "timetrace.server.cli:main"
 
 # Optional-dependencies are forward-looking buckets — none of them are pulled
 # in by `uv sync` today. Each maps to a phase in the kickoff devlog
