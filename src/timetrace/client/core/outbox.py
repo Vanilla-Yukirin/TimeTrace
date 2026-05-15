@@ -25,11 +25,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
+
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -134,24 +139,45 @@ class Outbox:
 
     def _write_blob(self, name: str, data: bytes) -> None:
         path = self._blobs_dir / name
-        path.write_bytes(data)
+        # write + fsync the file content so an OS-level crash after this returns
+        # cannot leave the blob torn for the post-crash sender to read.
+        with path.open("wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
 
     def _append_line(self, entry: dict) -> None:
         line = json.dumps(entry, ensure_ascii=False) + "\n"
         with self._log_path.open("a", encoding="utf-8") as f:
             f.write(line)
             f.flush()
+            os.fsync(f.fileno())
 
     def _read_log(self) -> list[dict]:
         if not self._log_path.exists():
             return []
         out: list[dict] = []
         with self._log_path.open("r", encoding="utf-8") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                out.append(json.loads(raw))
+            lines = f.readlines()
+        for idx, raw in enumerate(lines):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                out.append(json.loads(stripped))
+            except json.JSONDecodeError:
+                # Tolerate a torn last line caused by a crash mid-append.
+                # Anywhere earlier means real corruption — propagate so an
+                # operator can investigate rather than silently lose data.
+                is_last_nonblank = all(not s.strip() for s in lines[idx + 1 :])
+                if is_last_nonblank:
+                    logger.warning(
+                        "outbox.log.partial_line_skipped",
+                        path=str(self._log_path),
+                        line_index=idx,
+                    )
+                    break
+                raise
         return out
 
     def _read_acked(self) -> int:
@@ -162,7 +188,10 @@ class Outbox:
     def _write_acked(self, value: int) -> None:
         # Write to a tmp file then rename so we never have a half-written state.json
         tmp = self._state_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"acked": value}), encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(json.dumps({"acked": value}))
+            f.flush()
+            os.fsync(f.fileno())
         tmp.replace(self._state_path)
 
     async def _read_blob_if(self, entry: dict, kind: str) -> bytes | None:

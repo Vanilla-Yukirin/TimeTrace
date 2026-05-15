@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from timetrace.client.core.outbox import Outbox, OutboxError
@@ -127,3 +129,59 @@ async def test_crash_recovery_preserves_acked_offset(tmp_path):
     assert await second.pending_count() == 1
     entries = [e async for e in second.iter_pending()]
     assert entries[0].payload == _PAYLOAD_B
+
+
+# --------------------------------------------------------------------------- #
+# fsync — kickoff 宪法要求 append 与 ack 都要 fsync 后才视为持久化            #
+# --------------------------------------------------------------------------- #
+
+
+async def test_append_fsyncs_log_and_blobs(outbox, monkeypatch):
+    """Each append must fsync the jsonl line and any blob it writes — otherwise
+    a power loss between flush and writeback can corrupt the log."""
+    fsynced: list[int] = []
+    real_fsync = os.fsync
+
+    def _spy(fd: int) -> None:
+        fsynced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr("timetrace.client.core.outbox.os.fsync", _spy)
+    await outbox.append(_PAYLOAD_A, image_bytes=b"IMG", thumb_bytes=b"TH")
+    # 1 jsonl + 2 blobs = 3 fds
+    assert len(fsynced) >= 3
+
+
+async def test_ack_fsyncs_state(outbox, monkeypatch):
+    """state.json rename must be durable — fsync after replace."""
+    eid = await outbox.append(_PAYLOAD_A)
+
+    fsynced: list[int] = []
+    real_fsync = os.fsync
+
+    def _spy(fd: int) -> None:
+        fsynced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr("timetrace.client.core.outbox.os.fsync", _spy)
+    await outbox.ack_next(eid)
+    assert len(fsynced) >= 1
+
+
+async def test_partial_last_line_is_tolerated(tmp_path):
+    """If the process dies mid-append, log.jsonl can end with a half-written line.
+    The outbox must skip that line and continue, not refuse to start."""
+    root = tmp_path / "outbox"
+    first = Outbox(root)
+    eid_good = await first.append(_PAYLOAD_A)
+
+    # Simulate crash: append a partial JSON line (no closing brace, no newline).
+    log_path = root / "log.jsonl"
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write('{"entry_id": "broken", "timestamp_ms": 0, "payload"')
+
+    second = Outbox(root)
+    # The complete entry survives; the half-written line is silently dropped.
+    assert await second.pending_count() == 1
+    entries = [e async for e in second.iter_pending()]
+    assert entries[0].entry_id == eid_good
