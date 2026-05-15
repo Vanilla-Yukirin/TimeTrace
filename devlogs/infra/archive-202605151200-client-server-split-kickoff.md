@@ -400,6 +400,34 @@ OCR 文字: 仅用于内部判断，不上传也不落盘
 
 **Exit criteria（部分达成）**：✅ ingest API + HttpBackend + Outbox 三件套都有测试覆盖，pytest 164 passed；❌ 双终端跑通待 P3a-5；❌ 离线 5 分钟再恢复待 OutboxSender 实装。
 
+### P3a-cleanup — 接线前的预防性 bug fix（2026-05-15 review 后落地）
+
+**目标**：第三方 review 发现 7 个 P3a-5b 接线后会立刻踩到的 bug，全部在接线前消除，避免集成时与接线问题搅在一起难定位。
+
+- [x] `outbox` 三处 fsync 缺失 + jsonl 末尾 partial line 容错（commit `50043d7`）
+- [x] `insert_record` IntegrityError 路径 heal UPDATE 留挂事务 → 独立 commit + 显式 rollback（commit `ba6f3ca`）
+- [x] `screenshots(record_id, hash_sha256)` UNIQUE 索引 + `insert_screenshot` 返 `(id, was_new)`，路由按 was_new 决定 phash_index 是否双插（commit `c85ca9e`）
+- [x] `/close` 路由对未知 ID 返 404；route 接受 client_record_id 兜底；response.ts_end 用真值（commit `1168971`，同时解决 #2 跨重启 silent fail）
+- [x] HttpBackend 接受 capture 输出的相对路径（`data_dir` 解析 + 路径穿越守卫）（commit `2e71d2d`）
+- [x] HttpBackend borrowed-client 模式补 `Authorization` 注入（与 device_id 对称的 `_extra_headers` 模式）（commit `9dbc7a4`）
+- [x] 截图 blob 路径用 `record.ts_start` 算日期目录，不用上传时刻（commit `c9b567e`）
+
+**测试增量**：194 → 210 passed（+16 个）。每个 fix 都先写红测试再绿，闭环。
+
+**未触动的低风险（接线后再回顾）**：tokens.json chmod 600（Linux 部署再说）、ClientConfig TOML 无注释、Outbox compaction、capture/service.py 三处 close_record helper 抽取、token bucket retry 不重扣。
+
+### P3a-5b — 接线（进行中）
+
+**目标**：把 OutboxBackend 这一最后一公里写完，加 timetrace-client / timetrace-server 双入口，跑通真实双进程链路。
+
+- [ ] `client/core/outbox_backend.py::OutboxBackend`：实现 BackendClient Protocol，把 submit_record/screenshot/close 写成 outbox.append 条目（payload 直接是 wire-ready JSON）
+- [ ] `HttpBackend.post_ingest` / `HttpBackend.post_close` 提为 public，给 OutboxSender 的 send 回调用
+- [ ] `make_http_sender(http_backend)` 适配函数：根据 entry.payload["kind"] 选择 endpoint
+- [ ] `client/cli.py::main` 入口：load ClientConfig → 起 Outbox → HttpBackend → OutboxBackend → OutboxSender → CaptureService → 托盘
+- [ ] `server/cli.py::main` 入口：仅 Database + PHashIndex + AnalysisWorker + uvicorn(create_app)，去掉 capture / 托盘
+- [ ] `pyproject.toml [project.scripts]` 加 `timetrace-client` / `timetrace-server`，原 `timetrace` 保留指向 main.py（单进程兼容）
+- [ ] E2E smoke 测试：in-process 起两侧，模拟 capture 触发链路，验证 server DB 收到 record + screenshot
+
 ### P3b — Auth + Init
 
 **目标**：把鉴权和初始化补齐，达到"开源可用"门槛。
