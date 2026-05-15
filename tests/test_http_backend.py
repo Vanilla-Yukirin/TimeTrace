@@ -343,6 +343,45 @@ async def test_borrowed_client_aclose_is_noop(backend):
     # double-close error is what we're verifying here.
 
 
+async def test_borrowed_client_includes_auth_token_per_request(db, blob_storage):
+    """HttpBackend(client=raw, auth_token=...) used to silently drop the
+    auth_token because Authorization was only set when constructing an owned
+    client. Borrowed-client tests would then auth-bypass against a server
+    that requires Bearer — masking real auth misconfiguration in production.
+    """
+    captured: list[str | None] = []
+    base_app = create_app(db, blob_storage=blob_storage)
+
+    @base_app.middleware("http")
+    async def _capture_auth(request, call_next):  # noqa: ANN001
+        captured.append(request.headers.get("authorization"))
+        return await call_next(request)
+
+    transport = httpx.ASGITransport(app=base_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw:
+        backend = HttpBackend(client=raw, auth_token="tt_live_secret123")
+        await backend.submit_record(_CTX, reason="heartbeat")
+
+    assert any(h == "Bearer tt_live_secret123" for h in captured)
+
+
+async def test_no_authorization_header_when_token_unset(db, blob_storage):
+    captured: list[str | None] = []
+    base_app = create_app(db, blob_storage=blob_storage)
+
+    @base_app.middleware("http")
+    async def _capture_auth(request, call_next):  # noqa: ANN001
+        captured.append(request.headers.get("authorization"))
+        return await call_next(request)
+
+    transport = httpx.ASGITransport(app=base_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw:
+        backend = HttpBackend(client=raw)
+        await backend.submit_record(_CTX, reason="heartbeat")
+
+    assert all(h is None for h in captured)
+
+
 def _img_bytes() -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", (4, 4)).save(buf, format="PNG")

@@ -152,8 +152,10 @@ class HttpBackend:
         data_dir: Path | str | None = None,
         timeout_s: float = 30.0,
     ) -> None:
-        # Hold device_id so callers can inject it on a borrowed client too,
-        # via a single "extra headers" dict on each request.
+        # Hold auth_token + device_id on the instance so they're injected on
+        # every request regardless of whether the AsyncClient is owned (headers
+        # baked in at construction) or borrowed (per-request _extra_headers).
+        self._auth_token = auth_token or None
         self._device_id = device_id or None
         # data_dir lets submit_screenshot resolve paths relative to the client's
         # storage root (capture_active_window emits relative paths). Without it,
@@ -166,8 +168,8 @@ class HttpBackend:
             if base_url is None:
                 raise ValueError("HttpBackend needs either base_url or an AsyncClient")
             headers: dict[str, str] = {}
-            if auth_token:
-                headers["Authorization"] = f"Bearer {auth_token}"
+            if self._auth_token:
+                headers["Authorization"] = f"Bearer {self._auth_token}"
             if self._device_id:
                 headers["X-Device-Id"] = self._device_id
             self._client = httpx.AsyncClient(
@@ -312,9 +314,12 @@ class HttpBackend:
         For self-owned clients these headers are also pre-set on the client,
         so passing them again per-request is harmless duplication, not a bug.
         """
+        headers: dict[str, str] = {}
+        if self._auth_token:
+            headers["Authorization"] = f"Bearer {self._auth_token}"
         if self._device_id:
-            return {"X-Device-Id": self._device_id}
-        return None
+            headers["X-Device-Id"] = self._device_id
+        return headers or None
 
     async def _post_ingest(
         self,
