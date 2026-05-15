@@ -40,7 +40,7 @@ from timetrace.client.core.outbox import Outbox  # noqa: E402
 from timetrace.client.core.outbox_backend import OutboxBackend, make_http_sender  # noqa: E402
 from timetrace.client.core.outbox_sender import OutboxSender  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
-from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig  # noqa: E402
+from timetrace.common.config import StorageConfig  # noqa: E402
 
 logger = structlog.get_logger(__name__)
 
@@ -75,9 +75,6 @@ def _warn_if_shares_data_dir_with_server(storage_cfg: StorageConfig) -> None:
 
 async def _run(
     client_cfg: ClientConfig,
-    storage_cfg: StorageConfig,
-    capture_cfg: CaptureConfig,
-    privacy_cfg: PrivacyConfig,
     quit_event: asyncio.Event,
 ) -> None:
     # AsyncExitStack guarantees HttpBackend (and any future async-cleanup
@@ -99,19 +96,19 @@ async def _run(
             base_url=client_cfg.server.url,
             auth_token=client_cfg.server.auth_token or None,
             device_id=client_cfg.device.id or None,
-            data_dir=storage_cfg.data_dir,
+            data_dir=client_cfg.storage.data_dir,
         )
         stack.push_async_callback(http.aclose)
 
         # 3) Capture-facing backend (queues into outbox)
-        backend = OutboxBackend(outbox, data_dir=storage_cfg.data_dir)
+        backend = OutboxBackend(outbox, data_dir=client_cfg.storage.data_dir)
 
         # 4) Capture service feeds the outbox
         capture_svc = CaptureService(
-            capture_cfg,
-            privacy_cfg,
+            client_cfg.capture,
+            client_cfg.privacy,
             backend,
-            storage_cfg=storage_cfg,
+            storage_cfg=client_cfg.storage,
         )
 
         # 5) Sender drains outbox → HTTP
@@ -143,7 +140,9 @@ def main() -> None:
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
     )
 
-    client_cfg = ClientConfig.load_or_default()
+    # Load order: file → env overrides. Env wins so headless deploys can ship
+    # a baseline `client.toml` and tune per-host via systemd `Environment=`.
+    client_cfg = ClientConfig.load_or_default().apply_env_overrides()
     # First-launch ergonomics: mint a device_id and persist client.toml so the
     # user can edit it instead of staring at "where do I put my token".
     if not client_cfg.device.id:
@@ -151,13 +150,7 @@ def main() -> None:
         path = client_cfg.save()
         logger.info("client.config_seeded", path=str(path), device_id=client_cfg.device.id)
 
-    # The capture / privacy / storage configs share the AppConfig defaults; in
-    # P3b-3 they'll move into client.toml too. For now reuse what AppConfig has.
-    storage_cfg = StorageConfig()
-    capture_cfg = CaptureConfig()
-    privacy_cfg = PrivacyConfig()
-
-    _warn_if_shares_data_dir_with_server(storage_cfg)
+    _warn_if_shares_data_dir_with_server(client_cfg.storage)
 
     loop = asyncio.new_event_loop()
     quit_event = asyncio.Event()
@@ -173,7 +166,7 @@ def main() -> None:
     # Tray is optional — only meaningful on a Windows desktop. The thread
     # daemonizes so a headless future variant (no display) can simply skip it.
     try:
-        start_tray_thread(privacy_cfg, _request_quit)
+        start_tray_thread(client_cfg.privacy, _request_quit)
     except Exception:  # noqa: BLE001
         logger.warning("client.tray_start_failed", exc_info=True)
 
@@ -184,7 +177,7 @@ def main() -> None:
     )
 
     try:
-        loop.run_until_complete(_run(client_cfg, storage_cfg, capture_cfg, privacy_cfg, quit_event))
+        loop.run_until_complete(_run(client_cfg, quit_event))
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:

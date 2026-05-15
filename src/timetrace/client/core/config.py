@@ -3,25 +3,45 @@
 `client.toml` is the persisted configuration the standalone
 `timetrace-client` reads at startup. The single-process `uv run timetrace`
 entry doesn't need it because in that mode capture is wired via
-`InProcessBackend` directly. Once the two-process mode lands at P3a-5b,
-the client process reads this file to learn server URL + auth token +
-device identity + privacy mode.
+`InProcessBackend` directly. In the two-process mode, the client process
+reads this file to learn:
+
+- **server** — URL + bearer token to talk to a remote `timetrace-server`
+- **device** — local identity (UUID + human name + description)
+- **outbox** — append-only spool dir for offline buffering
+- **upload** — per-second bandwidth cap (token bucket inside OutboxSender)
+- **storage** — local data_dir (where capture writes screenshots before they
+  reach the server's blob store; reused as outbox blob root if not set)
+- **capture** — intervals / idle threshold / capture mode (mirrors
+  `common.CaptureConfig`)
+- **privacy** — operational privacy + P4 mode selector (mirrors
+  `common.PrivacyConfig`)
 
 Default location: `%USERPROFILE%/TimeTraceData/client.toml`.
 
 Read uses stdlib `tomllib` (read-only). Write hand-formats the small fixed
 schema rather than pulling in `tomli-w` for one file. The format kept
-intentionally flat — three or four `[section]` blocks with primitive keys —
-so the manual writer is one short function and a human can hand-edit it
-without surprises.
+intentionally flat — primitive keys per section — so the manual writer is
+short and a human can hand-edit it without surprises.
+
+Env-var overrides
+-----------------
+`apply_env_overrides()` reads `TIMETRACE_SERVER_URL`, `TIMETRACE_AUTH_TOKEN`,
+`TIMETRACE_DEVICE_ID`, `TIMETRACE_DEVICE_NAME`, `TIMETRACE_OUTBOX_DIR`,
+`TIMETRACE_UPLOAD_MAX_KBPS`, `TIMETRACE_DATA_DIR`, `TIMETRACE_PRIVACY_MODE`
+and overlays them on top of the loaded values. Useful for headless
+deployments that want to ship a baseline `client.toml` and tune via env.
 """
 
 from __future__ import annotations
 
+import os
 import tomllib
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig
 
 _DEFAULT_PATH = Path.home() / "TimeTraceData" / "client.toml"
 _DEFAULT_OUTBOX_DIR = Path.home() / "TimeTraceData" / "outbox"
@@ -47,17 +67,9 @@ class OutboxSection:
 
 @dataclass
 class UploadSection:
-    # 0 means unlimited; positive ints are KB/s caps that P3a-5 will turn
-    # into a token bucket inside OutboxSender.
+    # 0 means unlimited; positive ints are KB/s caps that OutboxSender turns
+    # into a token bucket.
     max_kbps: int = 0
-
-
-@dataclass
-class PrivacySection:
-    # off  — no client-side filtering (current default)
-    # text_only — block only on title keywords (P4 partial)
-    # full — full OCR + classifier + blur pipeline (P4 main)
-    mode: str = "off"
 
 
 @dataclass
@@ -66,7 +78,9 @@ class ClientConfig:
     device: DeviceSection = field(default_factory=DeviceSection)
     outbox: OutboxSection = field(default_factory=OutboxSection)
     upload: UploadSection = field(default_factory=UploadSection)
-    privacy: PrivacySection = field(default_factory=PrivacySection)
+    storage: StorageConfig = field(default_factory=StorageConfig)
+    capture: CaptureConfig = field(default_factory=CaptureConfig)
+    privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
 
     # ------------------------------------------------------------------ #
     # Load                                                                 #
@@ -88,6 +102,8 @@ class ClientConfig:
         device_data = data.get("device", {})
         outbox_data = data.get("outbox", {})
         upload_data = data.get("upload", {})
+        storage_data = data.get("storage", {})
+        capture_data = data.get("capture", {})
         privacy_data = data.get("privacy", {})
 
         return cls(
@@ -106,8 +122,41 @@ class ClientConfig:
                 else _DEFAULT_OUTBOX_DIR
             ),
             upload=UploadSection(max_kbps=int(upload_data.get("max_kbps", 0))),
-            privacy=PrivacySection(mode=str(privacy_data.get("mode", "off"))),
+            storage=_storage_from_toml(storage_data),
+            capture=_capture_from_toml(capture_data),
+            privacy=_privacy_from_toml(privacy_data),
         )
+
+    # ------------------------------------------------------------------ #
+    # Env-var overrides                                                    #
+    # ------------------------------------------------------------------ #
+
+    def apply_env_overrides(self) -> ClientConfig:
+        """Overlay TIMETRACE_* env vars on top of current values, in place.
+
+        Returns self so callers can chain. Env vars beat file values; absent
+        vars leave the field untouched. Designed for headless deploys: ship a
+        baseline `client.toml`, tune per-host via systemd `Environment=`.
+        """
+        if v := os.getenv("TIMETRACE_SERVER_URL"):
+            self.server.url = v
+        if v := os.getenv("TIMETRACE_AUTH_TOKEN"):
+            self.server.auth_token = v
+        if v := os.getenv("TIMETRACE_DEVICE_ID"):
+            self.device.id = v
+        if v := os.getenv("TIMETRACE_DEVICE_NAME"):
+            self.device.name = v
+        if v := os.getenv("TIMETRACE_DEVICE_DESC"):
+            self.device.description = v
+        if v := os.getenv("TIMETRACE_OUTBOX_DIR"):
+            self.outbox.root_dir = Path(v)
+        if v := os.getenv("TIMETRACE_UPLOAD_MAX_KBPS"):
+            self.upload.max_kbps = int(v)
+        if v := os.getenv("TIMETRACE_DATA_DIR"):
+            self.storage.data_dir = Path(v)
+        if v := os.getenv("TIMETRACE_PRIVACY_MODE"):
+            self.privacy.mode = v
+        return self
 
     # ------------------------------------------------------------------ #
     # Save                                                                 #
@@ -131,14 +180,6 @@ class ClientConfig:
         return path
 
     def _render_toml(self) -> str:
-        def _kv(key: str, value: str | int) -> str:
-            if isinstance(value, int):
-                return f"{key} = {value}"
-            # Escape backslashes + quotes for safety; client.toml values are
-            # short and ASCII-typical so this is enough.
-            escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-            return f'{key} = "{escaped}"'
-
         lines = [
             "[server]",
             _kv("url", self.server.url),
@@ -155,8 +196,77 @@ class ClientConfig:
             "[upload]",
             _kv("max_kbps", self.upload.max_kbps),
             "",
+            "[storage]",
+            _kv("data_dir", str(self.storage.data_dir)),
+            "",
+            "[capture]",
+            _kv("min_capture_interval_s", self.capture.min_capture_interval_s),
+            _kv("max_capture_interval_s", self.capture.max_capture_interval_s),
+            _kv("idle_threshold_s", self.capture.idle_threshold_s),
+            _kv("switch_capture_delay_s", self.capture.switch_capture_delay_s),
+            _kv("capture_mode", self.capture.capture_mode),
+            "",
             "[privacy]",
             _kv("mode", self.privacy.mode),
+            _kv("paused", self.privacy.paused),
+            _kv("store_images", self.privacy.store_images),
+            _kv_list("app_blacklist", self.privacy.app_blacklist),
+            _kv_list("title_keywords", self.privacy.title_keywords),
             "",
         ]
         return "\n".join(lines)
+
+
+# --------------------------------------------------------------------- #
+# Section parsers + writers                                              #
+# --------------------------------------------------------------------- #
+
+
+def _storage_from_toml(data: dict) -> StorageConfig:
+    if "data_dir" in data:
+        return StorageConfig(data_dir=Path(data["data_dir"]))
+    return StorageConfig()
+
+
+def _capture_from_toml(data: dict) -> CaptureConfig:
+    return CaptureConfig(
+        min_capture_interval_s=float(
+            data.get("min_capture_interval_s", CaptureConfig.min_capture_interval_s)
+        ),
+        max_capture_interval_s=float(
+            data.get("max_capture_interval_s", CaptureConfig.max_capture_interval_s)
+        ),
+        idle_threshold_s=float(data.get("idle_threshold_s", CaptureConfig.idle_threshold_s)),
+        switch_capture_delay_s=float(
+            data.get("switch_capture_delay_s", CaptureConfig.switch_capture_delay_s)
+        ),
+        capture_mode=str(data.get("capture_mode", CaptureConfig.capture_mode)),
+    )
+
+
+def _privacy_from_toml(data: dict) -> PrivacyConfig:
+    return PrivacyConfig(
+        paused=bool(data.get("paused", False)),
+        app_blacklist=list(data.get("app_blacklist", [])),
+        title_keywords=list(data.get("title_keywords", [])),
+        store_images=bool(data.get("store_images", True)),
+        mode=str(data.get("mode", "off")),
+    )
+
+
+def _kv(key: str, value: str | int | float | bool) -> str:
+    """Render one TOML key/value pair for a primitive scalar."""
+    if isinstance(value, bool):
+        return f"{key} = {'true' if value else 'false'}"
+    if isinstance(value, (int, float)):
+        return f"{key} = {value}"
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'{key} = "{escaped}"'
+
+
+def _kv_list(key: str, values: list[str]) -> str:
+    """Render a list-of-strings TOML key/value pair."""
+    if not values:
+        return f"{key} = []"
+    items = ", ".join('"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"' for v in values)
+    return f"{key} = [{items}]"

@@ -94,6 +94,13 @@ class PrivacyConfig:
     app_blacklist: list[str] = field(default_factory=list)
     title_keywords: list[str] = field(default_factory=list)
     store_images: bool = True  # False → record metadata only
+    # P4 OCR + classifier + blur pipeline selector. Operational today's runtime
+    # privacy is the four fields above; `mode` is forward-compat for the
+    # client-side text/full filter that lands in P4.
+    #   off       — current behavior (no OCR, no blur)
+    #   text_only — title keyword block only
+    #   full      — OCR + classifier + strong blur
+    mode: str = "off"
 
 
 @dataclass
