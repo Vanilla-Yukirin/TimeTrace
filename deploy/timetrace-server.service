@@ -67,13 +67,20 @@ TimeoutStopSec=30s
 
 # Sandbox tightening — cheap wins, no behavior cost. Tighten further only
 # if a future hardening pass shows it's needed; over-restricting can break
-# uv's caching writes inside ~/.cache/uv.
+# uv's caching writes inside ~/.cache/uv or ~/.local/share/uv.
+#
+# ReadWritePaths whitelist intentionally includes %h/.local because uv may
+# bootstrap a managed Python interpreter into ~/.local/share/uv/python/...
+# on first launch — without this, a fork user who does
+#     systemctl --user start timetrace-server
+# without first running deploy/deploy.sh (which pre-syncs deps outside the
+# sandbox) would hit a write-EACCES the first time uv resolves Python.
+# Keeping both paths writable means "systemctl start cold" also works.
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-# We need write access to data_dir + cache + repo (uv writes lockfiles).
-ReadWritePaths=%h/TimeTrace %h/TimeTraceData %h/.cache %h/.config/timetrace-server
+ReadWritePaths=%h/TimeTrace %h/TimeTraceData %h/.cache %h/.local %h/.config/timetrace-server
 
 [Install]
 # `default.target` is the user-level analogue of `multi-user.target`.

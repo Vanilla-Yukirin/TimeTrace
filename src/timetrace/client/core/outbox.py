@@ -167,7 +167,7 @@ class Outbox:
         async with self._lock:
             entries = await asyncio.to_thread(self._read_log)
             acked = await asyncio.to_thread(self._read_acked)
-            if acked < min_acked or acked == 0:
+            if acked < min_acked:
                 return 0
 
             kept = entries[acked:]

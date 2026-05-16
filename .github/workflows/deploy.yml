@@ -26,18 +26,28 @@
 #   - point DEPLOY_JUMP_HOST + DEPLOY_TARGET_HOST at their infra
 #
 # === Required secrets =========================================================
-# Configure under repo Settings → Secrets and variables → Actions:
+# Configure under repo Settings → Secrets and variables → Actions.
 #
-#   DEPLOY_SSH_KEY          ed25519 private key (no passphrase) authorized
-#                           on the jumphost AND on the target box.
-#   DEPLOY_KNOWN_HOSTS      Output of `ssh-keyscan <jumphost> <target>` so
-#                           we don't strict-host-prompt at runtime.
-#   DEPLOY_JUMP_USER_HOST   "user@121.x.x.x" — public cloud SSH jump entry.
-#   DEPLOY_JUMP_PORT        SSH port on the jumphost (typically 22).
-#   DEPLOY_TARGET_USER_HOST "Yuki@127.0.0.1" — over the FRP tunnel as
-#                           seen FROM the jumphost.
-#   DEPLOY_TARGET_PORT      Port on the jumphost where FRP forwards to the
-#                           target's sshd (e.g. 22001).
+# Two "viewpoints" to keep straight:
+#   • "from the runner" viewpoint: needs to reach the public cloud jumphost.
+#   • "from the jumphost" viewpoint: needs to reach the home box via FRP.
+#
+#   DEPLOY_SSH_KEY            ed25519 private key (no passphrase) authorized
+#                             on BOTH the jumphost and the target box.
+#   DEPLOY_KNOWN_HOSTS        Output of `ssh-keyscan -p <jport> <jumphost>`
+#                             concatenated with `ssh-keyscan -p <tport> <target>`.
+#                             Pre-populates known_hosts so we never hit the
+#                             "yes/no" prompt at runtime.
+#   DEPLOY_JUMP_USER_HOST     "user@121.x.x.x"  — the runner → jumphost hop.
+#   DEPLOY_JUMP_PORT          jumphost sshd port (usually 22). Goes into the
+#                             -J argument as "user@host:port", NOT into a
+#                             separate -o flag (OpenSSH has no ProxyJumpPort
+#                             keyword and would reject it with exit 255).
+#   DEPLOY_TARGET_USER_HOST   "Yuki@127.0.0.1" — the jumphost → home box hop.
+#                             127.0.0.1 because FRP listens on the jumphost's
+#                             loopback and forwards to the home box's sshd.
+#   DEPLOY_TARGET_PORT        Port on the jumphost where FRP listens (e.g. 22001).
+#                             This is what `-p` on the final ssh call uses.
 #
 # The jumphost is used purely as a ProxyJump — no code runs there.
 # =============================================================================
@@ -95,14 +105,17 @@ jobs:
           TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
         run: |
           set -euo pipefail
-          echo "Connecting via ProxyJump ${JUMP}:${JUMP_PORT} → ${TARGET}:${TARGET_PORT}..."
+          # `-J user@host:port` is the only correct way to give OpenSSH the
+          # jumphost port — there is no -o ProxyJumpPort. The :port suffix on
+          # -J matches ssh_config(5)'s ProxyJump grammar exactly.
+          # `-p` is the FINAL target port (jumphost's FRP listener).
           # ServerAliveInterval keeps long FRP-tunneled SSH from idle-dropping.
-          # StrictHostKeyChecking=yes forces a hard fail if known_hosts disagrees,
-          # turning a host-key swap (potential MitM) into a visible CI failure.
+          # StrictHostKeyChecking=yes forces a hard fail if known_hosts
+          # disagrees (a host-key swap turns into a visible CI failure).
+          echo "Connecting ${JUMP}:${JUMP_PORT} (jump) → ${TARGET}:${TARGET_PORT} (target via FRP)..."
           ssh \
-            -J "${JUMP}" \
+            -J "${JUMP}:${JUMP_PORT}" \
             -p "${TARGET_PORT}" \
-            -o ProxyJumpPort="${JUMP_PORT}" \
             -o ServerAliveInterval=15 \
             -o StrictHostKeyChecking=yes \
             "${TARGET}" \

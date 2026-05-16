@@ -14,29 +14,25 @@ Why a CLI instead of a `/v1/admin/tokens` API:
   up but a reload just picks them up next boot)
 
 The commands here intentionally **do not** hot-reload the running server.
-After `tokens add` / `tokens revoke`, restart the systemd unit so the
+After ``tokens add`` / ``tokens revoke``, restart the systemd unit so the
 in-memory token set picks up the change. Keeps the file→memory sync logic
 in one place (load_or_generate at startup), avoids file-watcher complexity.
+
+Schema ownership: token-file reads / writes go through
+:class:`timetrace.server.auth.ServerAuth` (``read_tokens`` / ``write_tokens``).
+This module does NOT re-implement the JSON shape — schema changes ripple
+from auth.py only.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import secrets
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import asdict
-from pathlib import Path
 
 from timetrace.common.config import AppConfig
-from timetrace.server.auth import (
-    _DEFAULT_TOKEN_DIR,  # noqa: PLC2701  intentional admin reach-in
-    _TOKEN_FILE_NAME,
-    _TOKEN_PREFIX,
-    TokenEntry,
-)
+from timetrace.server.auth import ServerAuth, TokenEntry
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,7 +90,7 @@ def _cmd_info(out: Callable[[str], None]) -> int:
     out(f"db_path          = {cfg.storage.db_path}")
     out(f"thumbs_dir       = {cfg.storage.thumbs_dir}")
     out(f"screenshots_dir  = {cfg.storage.screenshots_dir}")
-    out(f"token_file       = {_DEFAULT_TOKEN_DIR / _TOKEN_FILE_NAME}")
+    out(f"token_file       = {ServerAuth.token_path()}")
     out(f"listen_addr      = {cfg.api_host}:{cfg.api_port}")
     if cfg.vlm is None:
         out("vlm              = <not configured (no TIMETRACE_VLM_API_KEY)>")
@@ -105,7 +101,7 @@ def _cmd_info(out: Callable[[str], None]) -> int:
 
 
 def _cmd_tokens_list(out: Callable[[str], None]) -> int:
-    tokens = _read_tokens()
+    tokens = ServerAuth.read_tokens()
     if not tokens:
         out("(no tokens)")
         return 0
@@ -122,17 +118,17 @@ def _cmd_tokens_list(out: Callable[[str], None]) -> int:
 
 
 def _cmd_tokens_add(label: str, out: Callable[[str], None]) -> int:
-    tokens = _read_tokens()
+    tokens = ServerAuth.read_tokens()
     if any(t.label == label for t in tokens):
         out(f"refused: a token with label {label!r} already exists. Revoke it first.")
         return 1
     new_entry = TokenEntry(
-        value=_TOKEN_PREFIX + secrets.token_urlsafe(32),
+        value=ServerAuth.mint_token_value(),
         label=label,
         created_at=int(time.time() * 1000),
     )
     tokens.append(new_entry)
-    _write_tokens(tokens)
+    ServerAuth.write_tokens(tokens)
     out("Minted new token. Copy this value NOW — it will not be shown again:")
     out("")
     out(f"  {new_entry.value}")
@@ -144,7 +140,7 @@ def _cmd_tokens_add(label: str, out: Callable[[str], None]) -> int:
 
 
 def _cmd_tokens_revoke(identifier: str, out: Callable[[str], None]) -> int:
-    tokens = _read_tokens()
+    tokens = ServerAuth.read_tokens()
     if not tokens:
         out("(no tokens to revoke)")
         return 1
@@ -161,44 +157,10 @@ def _cmd_tokens_revoke(identifier: str, out: Callable[[str], None]) -> int:
         return 1
     target = matches[0]
     remaining = [t for t in tokens if t is not target]
-    _write_tokens(remaining)
+    ServerAuth.write_tokens(remaining)
     out(f"Revoked token labelled {target.label!r} (...{target.value[-8:]}).")
     out("Restart timetrace-server for the revocation to take effect.")
     return 0
-
-
-# --------------------------------------------------------------------- #
-# File I/O                                                               #
-# --------------------------------------------------------------------- #
-
-
-def _token_path() -> Path:
-    return _DEFAULT_TOKEN_DIR / _TOKEN_FILE_NAME
-
-
-def _read_tokens() -> list[TokenEntry]:
-    path = _token_path()
-    if not path.exists():
-        return []
-    data = json.loads(path.read_text("utf-8"))
-    return [TokenEntry(**e) for e in data.get("tokens", [])]
-
-
-def _write_tokens(tokens: list[TokenEntry]) -> None:
-    path = _token_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"tokens": [asdict(t) for t in tokens]}, indent=2)
-    path.write_text(payload, encoding="utf-8")
-    _harden_perms(path)
-
-
-def _harden_perms(path: Path) -> None:
-    """chmod 600 on POSIX. No-op on Windows (NTFS family ACL good enough)."""
-    try:
-        if sys.platform != "win32":
-            path.chmod(0o600)
-    except OSError:
-        pass
 
 
 if __name__ == "__main__":  # pragma: no cover

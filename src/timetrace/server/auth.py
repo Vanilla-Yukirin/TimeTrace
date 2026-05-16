@@ -12,14 +12,15 @@ metadata fields per token:
       ]
     }
 
-On server first-start `ServerAuth.load_or_generate(...)` creates the file
-with a freshly-minted token and returns `was_generated=True` so the caller
-can log it for the user to copy into `timetrace-client init`.
+On server first-start :meth:`ServerAuth.load_or_generate` creates the file
+with a freshly-minted token and returns ``was_generated=True`` so the caller
+can log it for the user to copy into ``timetrace-client init``.
 
-Auth is applied at the FastAPI router level via `make_bearer_dependency`;
-unauthenticated routes (healthz, /thumbs/* static, frontend-facing read
-endpoints today) skip the dependency. Future P3b adds the same dependency
-to the close endpoint and any other write paths.
+The token-file I/O is intentionally consolidated here. Admin tooling
+(``timetrace-server tokens add/revoke``) reaches into the same on-disk
+schema, so :meth:`ServerAuth.read_tokens` / :meth:`ServerAuth.write_tokens`
+are public classmethods rather than ad-hoc helpers in two modules — see
+the 2026-05-16 schema-drift review note.
 """
 
 from __future__ import annotations
@@ -33,9 +34,12 @@ from pathlib import Path
 
 from fastapi import Header, HTTPException, status
 
-_DEFAULT_TOKEN_DIR = Path.home() / ".config" / "timetrace-server"
-_TOKEN_FILE_NAME = "tokens.json"
-_TOKEN_PREFIX = "tt_live_"
+# Public — admin tooling reaches in for the same file location. Keeping
+# these public-by-name (no underscore) is intentional; if you want to
+# change where tokens live, change it once here.
+DEFAULT_TOKEN_DIR = Path.home() / ".config" / "timetrace-server"
+TOKEN_FILE_NAME = "tokens.json"
+TOKEN_PREFIX = "tt_live_"
 
 
 def _harden_token_file_perms(path: Path) -> None:
@@ -69,6 +73,47 @@ class ServerAuth:
         self._tokens = list(tokens)
         self._token_set = {t.value for t in self._tokens}
 
+    # ------------------------------------------------------------------ #
+    # Token-file I/O (the single owner of the on-disk schema)            #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def token_path(token_dir: Path | None = None) -> Path:
+        """Return the resolved tokens.json path under ``token_dir`` (or default)."""
+        return (token_dir or DEFAULT_TOKEN_DIR) / TOKEN_FILE_NAME
+
+    @classmethod
+    def read_tokens(cls, token_dir: Path | None = None) -> list[TokenEntry]:
+        """Read all token entries from disk; empty list if the file does not exist."""
+        path = cls.token_path(token_dir)
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text("utf-8"))
+        return [TokenEntry(**e) for e in data.get("tokens", [])]
+
+    @classmethod
+    def write_tokens(
+        cls,
+        tokens: list[TokenEntry],
+        token_dir: Path | None = None,
+    ) -> Path:
+        """Persist ``tokens`` to disk and apply POSIX permission hardening.
+
+        Creates ``token_dir`` if missing. Returns the resolved path written.
+        Centralising this means any future schema change (extra fields, a
+        version marker, etc.) lives in one place.
+        """
+        path = cls.token_path(token_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"tokens": [asdict(t) for t in tokens]}, indent=2)
+        path.write_text(payload, encoding="utf-8")
+        _harden_token_file_perms(path)
+        return path
+
+    # ------------------------------------------------------------------ #
+    # First-start convenience                                              #
+    # ------------------------------------------------------------------ #
+
     @classmethod
     def load_or_generate(
         cls, token_dir: Path | None = None
@@ -79,28 +124,29 @@ class ServerAuth:
         ``was_generated`` is True the caller should log ``generated_entry.value``
         so the user can copy it into the client init flow.
         """
-        token_dir = token_dir or _DEFAULT_TOKEN_DIR
-        token_dir.mkdir(parents=True, exist_ok=True)
-        token_file = token_dir / _TOKEN_FILE_NAME
-
-        if token_file.exists():
-            data = json.loads(token_file.read_text("utf-8"))
-            tokens = [TokenEntry(**e) for e in data.get("tokens", [])]
-            return cls(tokens), False, None
+        # Materialise the dir even when the file already exists, so a
+        # subsequent admin `tokens add` doesn't trip on a missing parent.
+        (token_dir or DEFAULT_TOKEN_DIR).mkdir(parents=True, exist_ok=True)
+        existing = cls.read_tokens(token_dir)
+        if existing:
+            return cls(existing), False, None
 
         new_token = TokenEntry(
-            value=cls._generate_token(),
+            value=cls.mint_token_value(),
             label="default",
             created_at=int(time.time() * 1000),
         )
-        data = {"tokens": [asdict(new_token)]}
-        token_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        _harden_token_file_perms(token_file)
+        cls.write_tokens([new_token], token_dir)
         return cls([new_token]), True, new_token
 
     @staticmethod
-    def _generate_token() -> str:
-        return _TOKEN_PREFIX + secrets.token_urlsafe(32)
+    def mint_token_value() -> str:
+        """Generate a fresh ``tt_live_<32urlbytes>`` token value."""
+        return TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+    # ------------------------------------------------------------------ #
+    # Runtime validator surface                                            #
+    # ------------------------------------------------------------------ #
 
     def is_valid(self, token: str) -> bool:
         return token in self._token_set

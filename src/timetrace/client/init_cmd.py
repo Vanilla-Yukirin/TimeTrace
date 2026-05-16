@@ -176,9 +176,10 @@ def run(
     out(f"  server    = {cfg.server.url}")
 
     if args.probe:
-        rc = _probe_server(cfg.server.url, cfg.server.auth_token, out)
-        if rc != 0:
-            return rc
+        # Probe is intentionally best-effort: it prints OK / WARN / FAILED
+        # but does not influence init's exit code (a wrong server URL still
+        # left a valid client.toml on disk that the user can edit by hand).
+        _probe_server(cfg.server.url, out)
 
     return 0
 
@@ -214,29 +215,29 @@ def _default_path() -> Path:
     return Path.home() / "TimeTraceData" / "client.toml"
 
 
-def _probe_server(
-    url: str,
-    auth_token: str,
-    out: Callable[[str], None],
-) -> int:
-    """Hit /healthz once. Best-effort — don't fail init if probe fails."""
+def _probe_server(url: str, out: Callable[[str], None]) -> None:
+    """Hit /healthz once. Best-effort — returns nothing; just prints status.
+
+    /healthz is intentionally unauthenticated server-side (see auth.py), so
+    no token argument is needed here. If the probe fails, the caller leaves
+    client.toml on disk regardless: a wrong server URL is fixable by hand
+    edit + retry; init shouldn't roll back a perfectly good config write.
+    """
     try:
         import httpx  # noqa: PLC0415
     except ImportError:
         out("Probe skipped: httpx not installed.")
-        return 0
+        return
 
     try:
         response = httpx.get(url.rstrip("/") + "/healthz", timeout=5.0)
         if response.status_code == 200:
             out(f"Probe OK: {url}/healthz returned 200.")
-            return 0
-        out(f"Probe WARN: {url}/healthz returned {response.status_code}.")
-        return 0
+        else:
+            out(f"Probe WARN: {url}/healthz returned {response.status_code}.")
     except Exception as exc:  # noqa: BLE001
         out(f"Probe FAILED: {exc!r}")
         out("(Init still wrote client.toml; fix server URL / firewall and rerun.)")
-        return 0
 
 
 # --------------------------------------------------------------------- #

@@ -1,7 +1,7 @@
 [project]
 name = "timetrace"
 version = "0.1.0"
-description = "Local-first desktop activity memory layer for Windows"
+description = "Local-first desktop activity memory layer (Windows capture client + cross-platform server)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

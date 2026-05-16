@@ -1,7 +1,8 @@
 """Tests for ``timetrace-server tokens`` admin commands.
 
-Each test redirects `_DEFAULT_TOKEN_DIR` via monkeypatch to a tmp_path so
-real ~/.config is never touched.
+Each test redirects ``DEFAULT_TOKEN_DIR`` via monkeypatch to a tmp_path so
+real ~/.config is never touched. Only auth.py owns the module-level
+attribute now (admin_cmd reads it via ServerAuth helpers).
 """
 
 from __future__ import annotations
@@ -24,9 +25,8 @@ class _Capture:
 
 
 def _redirect_token_dir(monkeypatch, tmp_path):
-    """Point both auth and admin_cmd at tmp_path/tokens.json."""
-    monkeypatch.setattr(auth, "_DEFAULT_TOKEN_DIR", tmp_path)
-    monkeypatch.setattr(admin_cmd, "_DEFAULT_TOKEN_DIR", tmp_path)
+    """Point auth's DEFAULT_TOKEN_DIR at tmp_path/tokens.json."""
+    monkeypatch.setattr(auth, "DEFAULT_TOKEN_DIR", tmp_path)
 
 
 # --------------------------------------------------------------------- #
