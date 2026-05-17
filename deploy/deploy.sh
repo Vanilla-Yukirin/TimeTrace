@@ -41,7 +41,7 @@ set -euo pipefail
 : "${TIMETRACE_HOME:=/home/${TIMETRACE_USER}}"
 : "${TIMETRACE_REPO_URL:=https://github.com/Vanilla-Yukirin/TimeTrace.git}"
 : "${TIMETRACE_BRANCH:=main}"
-: "${TIMETRACE_REPO_DIR:=${TIMETRACE_HOME}/TimeTrace}"
+: "${TIMETRACE_REPO_DIR:=${TIMETRACE_HOME}/Github/TimeTrace}"
 : "${TIMETRACE_DATA_DIR:=${TIMETRACE_HOME}/TimeTraceData}"
 : "${TIMETRACE_SERVICE:=timetrace-server.service}"
 : "${TIMETRACE_HEALTHZ_URL:=http://127.0.0.1:8765/healthz}"

@@ -41,14 +41,17 @@ Type=simple
 
 # %h expands to the user's home dir at unit-load time. Avoid hard-coding
 # /home/<user> so the unit copies cleanly across forks / boxes.
-WorkingDirectory=%h/TimeTrace
+# Repo path: ~/Github/TimeTrace (matches the convention in deploy.sh's
+# TIMETRACE_REPO_DIR default). Fork users with a different layout override
+# both WorkingDirectory + EnvironmentFile via the d/override.conf pattern.
+WorkingDirectory=%h/Github/TimeTrace
 ExecStart=%h/.local/bin/uv run timetrace-server
 
 # Defensive defaults — most can be overridden via the d/override.conf
 # pattern documented above. .env is loaded from the repo root if present
 # (used for VLM creds, etc.); leading "-" makes the file optional.
 Environment="TIMETRACE_DATA_DIR=%h/TimeTraceData"
-EnvironmentFile=-%h/TimeTrace/.env
+EnvironmentFile=-%h/Github/TimeTrace/.env
 
 # Restart policy: bounce on any non-clean exit, but back off after a few
 # rapid failures so a misconfigured run doesn't melt the journal. After
@@ -80,7 +83,7 @@ PrivateTmp=true
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/TimeTrace %h/TimeTraceData %h/.cache %h/.local %h/.config/timetrace-server
+ReadWritePaths=%h/Github/TimeTrace %h/TimeTraceData %h/.cache %h/.local %h/.config/timetrace-server
 
 [Install]
 # `default.target` is the user-level analogue of `multi-user.target`.
