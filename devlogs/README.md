@@ -1,8 +1,20 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-05-17
+**最后更新：** 2026-05-18
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
+
+---
+
+## **🗺️ 找路速读**
+
+| 想知道 | 看 |
+|---|---|
+| **下一步该做什么** | [`PLAN.md`](./PLAN.md) ← 滚动 TODO，找具体待办从这里开始 |
+| 重构总路线 + 阶段状态 | [`infra/archive-202605151200-client-server-split-kickoff.md`](infra/archive-202605151200-client-server-split-kickoff.md) |
+| 当前架构 | [`infra/readme.md`](../infra/readme.md) |
+| 具体某次决策 / 实现细节 | 下方索引按主题翻 |
+| 项目协作约定 | [`CLAUDE.md`](../CLAUDE.md) |
 
 ---
 
@@ -10,7 +22,7 @@
 
 **本目录下所有 devlog 是「写入即不再修改的历史快照」**，记录某次决策 / 排查 / 改造在**当时**的认识。后续代码 / 文档可能与这里描述不一致 —— 这是预期行为，不是 bug。
 
-**遇到冲突时优先级**：实际代码 > [infra/](../infra/) 当前架构文档 > 本目录最新 devlog > 本目录早期 devlog。
+**遇到冲突时优先级**：实际代码 > [`infra/`](../infra/) 当前架构文档 > [`PLAN.md`](./PLAN.md) > 本目录最新 devlog > 本目录早期 devlog。
 
 (用 `grep '^##' devlogs/README.md` 能定位到此声明。)
 
@@ -58,6 +70,8 @@ devlogs/
 | [archive-202605171500-p3b3-cli-design.md](infra/archive-202605171500-p3b3-cli-design.md) | P3b-3 CLI 工程化：init/admin 子命令拆分 + dispatch、ClientConfig 吃 storage/capture/privacy 三段 + 9 个 TIMETRACE_* env 覆盖、ServerAuth token 公开 I/O API 防 schema drift |
 | [archive-202605171501-outbox-compaction-and-review-fixes.md](infra/archive-202605171501-outbox-compaction-and-review-fixes.md) | Outbox compaction crash-safe 顺序（state 先于 log，最坏 at-least-once replay 而非 silent loss）+ capture 抽 _safe_close_record helper + ctypes 两段式 buffer + bootstrap 类型收窄 |
 | [archive-202605171502-packaging-and-container.md](infra/archive-202605171502-packaging-and-container.md) | P5 第一刀：pyproject sys_platform 标记让 Linux 自动跳过 Windows-only 依赖、Dockerfile 多阶段非 root + /data + /tokens 双 mount + symlink 让 ServerAuth 零 docker-aware、docker-compose loopback only |
+| [archive-202605180000-deploy-evolution-and-prod-bugs.md](infra/archive-202605180000-deploy-evolution-and-prod-bugs.md) | 部署设施 7-commit 演进 + 真部署发现 4 个 bug：runner 不 checkout / 路径迁移 ~/Github/TimeTrace / infra plan B / TIMETRACE_USER=Yuki 硬编码 / ReadWritePaths 未创建目录引发 226/NAMESPACE / StartLimit 段位错 / main 分支 pywin32 无 marker |
+| [archive-202605180001-search-tokenization-open-question.md](infra/archive-202605180001-search-tokenization-open-question.md) | 搜索匹配策略 open question：实测发现 LIKE 只覆盖 window_title + vlm_desc (NULL)，未覆盖 app_name/process_name/url；分析三方案 (多字段 LIKE / FTS5 trigram / 向量 embedding) tradeoff，待决策 |
 
 ---
 
