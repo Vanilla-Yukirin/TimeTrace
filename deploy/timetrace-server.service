@@ -49,6 +49,13 @@ Documentation=https://github.com/Vanilla-Yukirin/TimeTrace
 After=network-online.target
 Wants=network-online.target
 
+# Restart rate-limit — systemd 230+ moved these from [Service] to [Unit].
+# After 5 failed starts within 300s the unit is marked `failed` and stops
+# auto-restarting, so a misconfigured run doesn't melt the journal.
+# `systemctl --user reset-failed timetrace-server` clears the limit manually.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 
@@ -66,14 +73,11 @@ ExecStart=%h/.local/bin/uv run timetrace-server
 Environment="TIMETRACE_DATA_DIR=%h/TimeTraceData"
 EnvironmentFile=-%h/Github/TimeTrace/.env
 
-# Restart policy: bounce on any non-clean exit, but back off after a few
-# rapid failures so a misconfigured run doesn't melt the journal. After
-# StartLimit kicks in, systemd marks the unit `failed` and we'd see it in
-# `systemctl --user status`.
+# Restart policy: bounce on any non-clean exit. The burst limit itself
+# lives in [Unit] above (systemd 230+ requires it there — older versions
+# of this file had it here and systemd silently ignored it).
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Stop signal: uvicorn handles SIGTERM gracefully via the same quit_event
 # path Ctrl+C uses (see server/bootstrap.py _watch_quit). Give it 30s to

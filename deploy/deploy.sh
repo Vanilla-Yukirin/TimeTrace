@@ -37,8 +37,13 @@ set -euo pipefail
 # --- Step 0: knobs ----------------------------------------------------------
 # `:=` syntax: only set if unset / empty. So callers can override any of
 # these via `export TIMETRACE_X=...` before invoking us.
-: "${TIMETRACE_USER:=Yuki}"
-: "${TIMETRACE_HOME:=/home/${TIMETRACE_USER}}"
+#
+# TIMETRACE_USER / TIMETRACE_HOME auto-detect by default (id -un + $HOME),
+# so deploying as `vanilla`, `ubuntu`, `alice`, etc. just works with zero
+# overrides. Override only if you want to deploy "as a different user than
+# the one running this script" (rare; typically you'd `sudo -u <user> bash deploy.sh`).
+: "${TIMETRACE_USER:=$(id -un)}"
+: "${TIMETRACE_HOME:=${HOME}}"
 : "${TIMETRACE_REPO_URL:=https://github.com/Vanilla-Yukirin/TimeTrace.git}"
 : "${TIMETRACE_BRANCH:=main}"
 : "${TIMETRACE_REPO_DIR:=${TIMETRACE_HOME}/Github/TimeTrace}"
@@ -114,6 +119,19 @@ echo "[deploy] now at ${HEAD_SHA}: $(git log -1 --pretty=%s)"
 # pip resolver — we intentionally keep them in the resolver-skipped path).
 echo "[deploy] uv sync..."
 uv sync
+
+# --- Step 2.5: pre-create sandbox dirs --------------------------------------
+# systemd ReadWritePaths prepares the mount namespace BEFORE ExecStart, so
+# every path listed in the unit must already exist or systemd exits with
+# 226/NAMESPACE before the process ever runs. On first deploy, the data dir
+# and the tokens config dir don't exist yet (they're created lazily by
+# server code on first DB write / token mint). Create them now with the
+# permissions they'd naturally end up at (700: user-only RWX).
+#
+# `install -d -m 700` is idempotent — repeated runs just no-op.
+install -d -m 700 \
+    "${TIMETRACE_DATA_DIR}" \
+    "${TIMETRACE_HOME}/.config/timetrace-server"
 
 # --- Step 3: install / update systemd unit (only if changed) ----------------
 # The unit file LIVES in the repo (deploy/timetrace-server.service) so any
