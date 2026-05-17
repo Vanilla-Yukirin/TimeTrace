@@ -86,9 +86,9 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Git ref to deploy (branch / tag / commit SHA). Default: main"
+        description: "Git ref to deploy (branch / tag / commit SHA). Default: feature/refactor-split (main is legacy v1, pywin32 dep blocks Linux uv sync)"
         required: false
-        default: "main"
+        default: "feature/refactor-split"
 
 jobs:
   deploy:

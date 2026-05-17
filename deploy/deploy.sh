@@ -45,7 +45,13 @@ set -euo pipefail
 : "${TIMETRACE_USER:=$(id -un)}"
 : "${TIMETRACE_HOME:=${HOME}}"
 : "${TIMETRACE_REPO_URL:=https://github.com/Vanilla-Yukirin/TimeTrace.git}"
-: "${TIMETRACE_BRANCH:=main}"
+# Default branch is `feature/refactor-split` while the client/server-split
+# refactor is in flight. main is still the legacy v1 single-process code,
+# where pywin32 is an un-marked hard dependency → `uv sync` fails on Linux
+# with "pywin32 has no wheel for current platform" (markers landed in
+# 44d61b5 but only on feature/refactor-split). When feature merges to main,
+# flip this default back to "main".
+: "${TIMETRACE_BRANCH:=feature/refactor-split}"
 : "${TIMETRACE_REPO_DIR:=${TIMETRACE_HOME}/Github/TimeTrace}"
 : "${TIMETRACE_DATA_DIR:=${TIMETRACE_HOME}/TimeTraceData}"
 : "${TIMETRACE_SERVICE:=timetrace-server.service}"
@@ -128,8 +134,14 @@ uv sync
 # server code on first DB write / token mint). Create them now with the
 # permissions they'd naturally end up at (700: user-only RWX).
 #
-# `install -d -m 700` is idempotent — repeated runs just no-op.
+# `install -d -m 700` creates with 700 on first run; on existing dirs it's
+# a no-op AND doesn't touch their mode. The explicit chmod below converges
+# perms of dirs that pre-existed under looser perms (e.g. someone mkdir'd
+# them at 755 before our hardening landed). Both ops idempotent.
 install -d -m 700 \
+    "${TIMETRACE_DATA_DIR}" \
+    "${TIMETRACE_HOME}/.config/timetrace-server"
+chmod 700 \
     "${TIMETRACE_DATA_DIR}" \
     "${TIMETRACE_HOME}/.config/timetrace-server"
 
