@@ -1,19 +1,48 @@
 # =============================================================================
 # deploy.yml — Manual SSH deploy to the target machine (home small box via
-# FRP-tunneled cloud jumphost). Companion docs:
+# single-hop FRP reverse tunnel). Companion docs:
 #
 #   devlogs/infra/archive-202605161000-deployment-architecture.md
 #   devlogs/infra/archive-202605161015-cicd-workflow.md
+#
+# === Topology =================================================================
+# Pure FRP, no ProxyJump:
+#
+#   GH runner ──── public internet ────► cloud:FRP_PORT
+#                                              │
+#                                              │ FRP reverse tunnel
+#                                              ▼
+#                                        home box's sshd:22
+#
+# `ssh -p FRP_PORT vanilla@cloud_ip` lands you straight on the home box.
+# The cloud server is a tunnel endpoint only — nothing runs there.
+#
+# === Self-fetching deploy.sh (no runner-side checkout) ========================
+# Runner does NOT clone the repo. It only:
+#   1) holds the SSH key,
+#   2) opens an ssh control channel to the home box,
+#   3) tells the home box to `curl ... deploy/deploy.sh | bash`.
+#
+# Why: keep "runner only knows SSH credentials, target does everything else".
+# The big payloads (git clone of repo + uv sync of PyPI) happen on the home
+# box over its own broadband, never round-tripping the runner. This also
+# means `ssh GTi13-Ultra-2v4G 'curl ... | bash'` from your laptop reproduces
+# CI behavior byte-for-byte for local debugging.
+#
+# Tradeoff: deploy.sh must exist at the given ref on GitHub raw. If you push
+# a new deploy.sh to a branch, the next `gh workflow run --ref <branch>` uses
+# THAT version (good). If you want to pin to a specific tested deploy.sh,
+# pass `--ref <commit-SHA>` instead of a branch name.
 #
 # === Trigger ==================================================================
 # workflow_dispatch only — no push/tag automation in v1. Run from the GH
 # Actions UI (Actions tab → "deploy" → Run workflow) or locally:
 #
-#     gh workflow run deploy.yml
+#     gh workflow run deploy.yml --ref main
 #     gh run watch
 #
 # === Fork safety ==============================================================
-# Two layers prevent fork forks from accidentally deploying to MY machine:
+# Two layers prevent forks from accidentally deploying to MY machine:
 #
 #  1. `if: github.repository == '...'` skips the entire job in any fork.
 #  2. GitHub doesn't propagate repository secrets to forks, so even if
@@ -22,34 +51,33 @@
 #
 # A fork user adapting this for their own deploy needs to:
 #   - change the repo string in `if:` below
-#   - configure the same secrets in their own repo settings
-#   - point DEPLOY_JUMP_HOST + DEPLOY_TARGET_HOST at their infra
+#   - change the GitHub raw URL in the curl step to their fork's path
+#   - configure the 4 secrets in their own repo settings
 #
-# === Required secrets =========================================================
-# Configure under repo Settings → Secrets and variables → Actions.
+# === Required secrets (4) =====================================================
+# Configure under repo Settings → Secrets and variables → Actions:
 #
-# Two "viewpoints" to keep straight:
-#   • "from the runner" viewpoint: needs to reach the public cloud jumphost.
-#   • "from the jumphost" viewpoint: needs to reach the home box via FRP.
+#   DEPLOY_SSH_KEY            ed25519 private key (no passphrase) whose .pub
+#                             is in the target box's ~/.ssh/authorized_keys.
+#   DEPLOY_KNOWN_HOSTS        Output of `ssh-keyscan -p <port> <host>` for
+#                             the single hop. Pre-populates known_hosts so we
+#                             never hit a "yes/no" prompt at runtime.
+#   DEPLOY_TARGET_USER_HOST   "vanilla@121.43.33.13" — the runner → FRP-public
+#                             hop's user@host. From the GH runner's viewpoint
+#                             this IS the target (FRP makes the home box
+#                             reachable directly).
+#   DEPLOY_TARGET_PORT        Public port the cloud-side FRP listener exposes,
+#                             reverse-tunneled to the home box's sshd:22
+#                             (e.g. 10089). This is what `-p` uses.
 #
-#   DEPLOY_SSH_KEY            ed25519 private key (no passphrase) authorized
-#                             on BOTH the jumphost and the target box.
-#   DEPLOY_KNOWN_HOSTS        Output of `ssh-keyscan -p <jport> <jumphost>`
-#                             concatenated with `ssh-keyscan -p <tport> <target>`.
-#                             Pre-populates known_hosts so we never hit the
-#                             "yes/no" prompt at runtime.
-#   DEPLOY_JUMP_USER_HOST     "user@121.x.x.x"  — the runner → jumphost hop.
-#   DEPLOY_JUMP_PORT          jumphost sshd port (usually 22). Goes into the
-#                             -J argument as "user@host:port", NOT into a
-#                             separate -o flag (OpenSSH has no ProxyJumpPort
-#                             keyword and would reject it with exit 255).
-#   DEPLOY_TARGET_USER_HOST   "Yuki@127.0.0.1" — the jumphost → home box hop.
-#                             127.0.0.1 because FRP listens on the jumphost's
-#                             loopback and forwards to the home box's sshd.
-#   DEPLOY_TARGET_PORT        Port on the jumphost where FRP listens (e.g. 22001).
-#                             This is what `-p` on the final ssh call uses.
+# === Env vars on target (NOT touched by this workflow) =======================
+# Server config like VLM API keys lives in ~/TimeTrace/.env on the target.
+# That file is in .gitignore and the deploy script does `git reset --hard`
+# which only touches tracked files — so .env persists forever across deploys.
+# Set it once after the first successful deploy:
 #
-# The jumphost is used purely as a ProxyJump — no code runs there.
+#     scp -P 10089 .env vanilla@121.43.33.13:~/TimeTrace/.env
+#     ssh GTi13-Ultra-2v4G "systemctl --user restart timetrace-server"
 # =============================================================================
 
 name: deploy
@@ -58,73 +86,73 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Git ref to deploy (default: branch this workflow runs on)"
+        description: "Git ref to deploy (branch / tag / commit SHA). Default: main"
         required: false
-        default: ""
+        default: "main"
 
 jobs:
   deploy:
     # Double guard: fork-safe + manual-only.
     if: github.repository == 'Vanilla-Yukirin/TimeTrace' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # First deploy on a slow home upstream can take a while: pip wheels for
+    # numpy / Pillow / fastapi etc. add up. 30 min is generous; reduce later.
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout (for visibility in run summary; deploy.sh re-pulls on target)
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+      # No actions/checkout — runner holds zero source files. deploy.sh is
+      # fetched from GitHub raw by the target itself in the final step.
 
-      # Stand up a temporary SSH agent + key. Using webfactory/ssh-agent is
-      # the standard pattern; it cleans up the key on job teardown so the
-      # private key never persists on the runner FS.
+      # webfactory/ssh-agent loads DEPLOY_SSH_KEY into an in-memory ssh-agent
+      # and exports SSH_AUTH_SOCK so subsequent ssh calls find it. Cleans up
+      # on job teardown — the private key never lands on the runner FS.
       - name: Set up SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
       # known_hosts is plaintext (host pubkeys are not secret), but we keep
-      # it in a secret so changes go through repo settings rather than commits.
-      # `tee -a` so the runner's default known_hosts (currently empty) merges.
-      - name: Trust jumphost + target host keys
+      # it in a secret so updates go through repo settings rather than commits.
+      - name: Trust target host key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      # The actual deploy. ProxyJump chains: runner → jumphost → target.
-      # We run deploy.sh on the target (which we just freshly cloned/pulled
-      # if not present). The `bash -s` trick lets us pipe the script over
-      # SSH with no temp file, ensuring the running version always matches
-      # whatever's on $TIMETRACE_BRANCH.
-      - name: Deploy via SSH (jump → FRP → target)
+      # The one and only deploy step.
+      #
+      # On the remote bash:
+      #   1. set -o pipefail so a curl failure is not masked by bash's exit 0.
+      #   2. export TIMETRACE_BRANCH=<ref> so deploy.sh fetches+resets to it.
+      #   3. curl deploy.sh from GitHub raw at exactly that ref, pipe to bash.
+      #
+      # `${REF}` is interpolated on the runner (bash on ubuntu-latest), so the
+      # remote box just sees an already-substituted command string.
+      - name: Deploy via SSH (target self-fetches deploy.sh)
         env:
-          JUMP: ${{ secrets.DEPLOY_JUMP_USER_HOST }}
-          JUMP_PORT: ${{ secrets.DEPLOY_JUMP_PORT }}
           TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
           TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
+          REF: ${{ github.event.inputs.ref }}
         run: |
           set -euo pipefail
-          # `-J user@host:port` is the only correct way to give OpenSSH the
-          # jumphost port — there is no -o ProxyJumpPort. The :port suffix on
-          # -J matches ssh_config(5)'s ProxyJump grammar exactly.
-          # `-p` is the FINAL target port (jumphost's FRP listener).
-          # ServerAliveInterval keeps long FRP-tunneled SSH from idle-dropping.
-          # StrictHostKeyChecking=yes forces a hard fail if known_hosts
-          # disagrees (a host-key swap turns into a visible CI failure).
-          echo "Connecting ${JUMP}:${JUMP_PORT} (jump) → ${TARGET}:${TARGET_PORT} (target via FRP)..."
+          DEPLOY_URL="https://raw.githubusercontent.com/Vanilla-Yukirin/TimeTrace/${REF}/deploy/deploy.sh"
+          echo "Target  : ${TARGET}:${TARGET_PORT}"
+          echo "Ref     : ${REF}"
+          echo "Script  : ${DEPLOY_URL}"
+          echo ""
           ssh \
-            -J "${JUMP}:${JUMP_PORT}" \
             -p "${TARGET_PORT}" \
             -o ServerAliveInterval=15 \
             -o StrictHostKeyChecking=yes \
             "${TARGET}" \
-            'bash -s' < deploy/deploy.sh
+            "set -o pipefail; export TIMETRACE_BRANCH='${REF}'; curl -fsSL '${DEPLOY_URL}' | bash"
 
       - name: Summary
         if: always()
         run: |
-          echo "## Deploy summary" >> $GITHUB_STEP_SUMMARY
-          echo "- Repo: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Ref: ${{ github.event.inputs.ref || github.ref }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Outcome: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Deploy summary"
+            echo "- Repo: ${{ github.repository }}"
+            echo "- Ref: ${{ github.event.inputs.ref }}"
+            echo "- Outcome: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

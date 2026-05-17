@@ -69,10 +69,26 @@ if [[ ! -d "${TIMETRACE_REPO_DIR}/.git" ]]; then
 fi
 
 cd "${TIMETRACE_REPO_DIR}"
-echo "[deploy] fetching origin..."
-git fetch --prune origin
-echo "[deploy] resetting to origin/${TIMETRACE_BRANCH}..."
-git reset --hard "origin/${TIMETRACE_BRANCH}"
+echo "[deploy] fetching origin (incl. tags)..."
+# --tags so a `gh workflow run --ref v0.1.0` lands a fresh tag too.
+# --force on tags so a tag move (re-pointing v0.1.0 to a new commit) actually
+# updates locally rather than the safe-by-default reject.
+git fetch --prune --tags --force origin
+
+# Resolve TIMETRACE_BRANCH to whatever git can find: branch name → use
+# origin/<name> (so the deploy mirrors the remote, not a possibly stale
+# local branch). Tag name or commit SHA → use it directly. Unknown → fail
+# loud rather than silently deploying the wrong revision.
+if git rev-parse --verify --quiet "origin/${TIMETRACE_BRANCH}" >/dev/null; then
+    TARGET_REF="origin/${TIMETRACE_BRANCH}"
+elif git rev-parse --verify --quiet "${TIMETRACE_BRANCH}" >/dev/null; then
+    TARGET_REF="${TIMETRACE_BRANCH}"
+else
+    echo "[deploy] FATAL: ref '${TIMETRACE_BRANCH}' not found as branch / tag / SHA"
+    exit 1
+fi
+echo "[deploy] resetting to ${TARGET_REF}..."
+git reset --hard "${TARGET_REF}"
 HEAD_SHA="$(git rev-parse --short HEAD)"
 echo "[deploy] now at ${HEAD_SHA}: $(git log -1 --pretty=%s)"
 
