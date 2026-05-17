@@ -4,6 +4,23 @@
 
 ---
 
+## **⚠️ 本页描述 v1 单进程架构，与 P1 之后的现状不一致**
+
+主要变更：
+- 代码已按 `src/timetrace/{common,client,server}/` 三层重组
+- 运行时**两种入口**并存：单进程 `uv run timetrace`（默认稳定）+ 双进程 `timetrace-server` + `timetrace-client`（P3a-5b 接线完成）
+- 通信层：双进程模式走 HTTP multipart + Bearer token + Outbox（at-least-once，crash-safe）
+- 鉴权：`ServerAuth` token 体系；浏览器 admin UI 短期不做（CLI over SSH 足够）
+
+**当前事实**：
+- 完整重构路线 + 当前阶段状态：[`devlogs/infra/archive-202605151200-client-server-split-kickoff.md`](../../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)
+- 项目协作约定速读：[`CLAUDE.md`](../../CLAUDE.md)
+- 用户向使用流程：[`README.md`](../../README.md)
+
+整页重写计划在所有 P0–P7 完成后整体翻新（架构图、组件交互、运行时拓扑均需重画）。
+
+---
+
 ## 分层原则
 
 | 层 | 原则 |

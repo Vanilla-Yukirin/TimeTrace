@@ -4,6 +4,24 @@
 
 ---
 
+## **⚠️ 本页描述 v1 单进程架构，与 P3a/P3b 之后的现状不一致**
+
+主要变更：
+- 新增 `/v1/ingest/record` + `/v1/ingest/record/{id}/close` 两条路由（multipart 上行 / close 端点），受 `Depends(bearer)` 保护
+- `ServerAuth` token 体系：首启自动 mint `tt_live_<32urlbytes>` 落 `~/.config/timetrace-server/tokens.json`（POSIX chmod 600）
+- 路由幂等：`client_record_id` UNIQUE + `screenshots(record_id, hash_sha256)` UNIQUE
+- `timetrace-server` 独立入口；`bootstrap.py` 共享单 / 双进程装配；CLI 子命令 `info` / `tokens list/add/revoke`
+- 监听仍是 `127.0.0.1:8765`（loopback only）—— 公网访问由 SSH `-L` 隧道或前置 Caddy/nginx 反代承担
+
+**当前事实**：
+- 代码：[`src/timetrace/server/api/`](../../src/timetrace/server/api/)、[`server/auth.py`](../../src/timetrace/server/auth.py)、[`server/admin_cmd.py`](../../src/timetrace/server/admin_cmd.py)、[`server/bootstrap.py`](../../src/timetrace/server/bootstrap.py)
+- 设计：[`devlogs/infra/archive-202605151200-client-server-split-kickoff.md`](../../devlogs/infra/archive-202605151200-client-server-split-kickoff.md) P3a/P3b 段
+- CLI：[`archive-202605171500-p3b3-cli-design.md`](../../devlogs/infra/archive-202605171500-p3b3-cli-design.md)
+
+整页重写计划在 P5 Postgres/Redis/S3 适配器接入后进行（届时 routes 仍稳定，只是底层 Database / Queue / BlobStorage 多种选项）。
+
+---
+
 ## 职责
 
 - 为 Web UI 与 MCP 提供统一业务接口（查询、筛选、统计、summary 触发、反馈写入）

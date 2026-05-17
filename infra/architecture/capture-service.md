@@ -4,6 +4,22 @@
 
 ---
 
+## **⚠️ 本页描述 v1 单进程架构，与 P3a-5b 之后的现状不一致**
+
+主要变更：
+- capture 不再直调 `Database` / `PHashIndex`，统一走 `BackendClient` Protocol
+- 三种 backend 实现：`InProcessBackend`（单进程）、`HttpBackend`（双进程直发）、`OutboxBackend`→`OutboxSender`→`HttpBackend`（双进程默认，含 outbox + compaction）
+- `_safe_close_record(where=...)` helper 收口 4 处 close 调用
+
+**当前事实**：
+- 代码：[`src/timetrace/client/capture/`](../../src/timetrace/client/capture/)、[`client/core/backend.py`](../../src/timetrace/client/core/backend.py)、[`client/core/outbox.py`](../../src/timetrace/client/core/outbox.py)
+- 设计：[`devlogs/infra/archive-202605151200-client-server-split-kickoff.md`](../../devlogs/infra/archive-202605151200-client-server-split-kickoff.md) P2/P3a/P3a-5b 段
+- compaction：[`archive-202605171501-outbox-compaction-and-review-fixes.md`](../../devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md)
+
+整页重写计划在 P4 OCR 管线落地后进行（capture → privacy pipeline → outbox 整条链一次性翻新）。
+
+---
+
 ## 职责
 
 - 监听活跃窗口切换（窗口标题 / 进程 / 应用 / URL）

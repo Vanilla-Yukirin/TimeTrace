@@ -4,6 +4,24 @@
 
 ---
 
+## **⚠️ 本页描述 v1 单进程架构，与 P3c/P5 第一刀之后的现状不一致**
+
+主要变更：
+- `[project.scripts]` 三入口：`timetrace`（单进程）/ `timetrace-client` / `timetrace-server`
+- Windows-only 依赖（pywin32 / mss / pynput / pystray）加 `; sys_platform == 'win32'` 标记，Linux `uv sync` 自动跳过
+- 新增 `Dockerfile` 多阶段非 root + `docker-compose.yml`（loopback only bind）+ `.dockerignore`
+- `[project.optional-dependencies]` 桶：`client-priv` / `server-pg` / `server-redis` / `server-s3` / `headless` / `all-extras`（占位待 P5/P6 接入）
+- 部署三件套：[`deploy/deploy.sh`](../../deploy/deploy.sh)、[`deploy/timetrace-server.service`](../../deploy/timetrace-server.service)、[`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)（workflow_dispatch + fork-safe repo guard）
+- 部署目标：家里小主机 `~/Github/TimeTrace/`，通过云 FRP 反向隧道单跳 SSH
+
+**当前事实**：
+- 代码：[`pyproject.toml`](../../pyproject.toml)、[`Dockerfile`](../../Dockerfile)、[`docker-compose.yml`](../../docker-compose.yml)、[`deploy/`](../../deploy/)、[`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)
+- 设计：[`archive-202605161000-deployment-architecture.md`](../../devlogs/infra/archive-202605161000-deployment-architecture.md)、[`archive-202605161015-cicd-workflow.md`](../../devlogs/infra/archive-202605161015-cicd-workflow.md)、[`archive-202605171502-packaging-and-container.md`](../../devlogs/infra/archive-202605171502-packaging-and-container.md)
+
+整页重写计划在 P5 完整（PostgresDatabase / RedisQueue / S3BlobStorage 真接入）+ ghcr 镜像推送上线后进行。
+
+---
+
 ## 目标
 
 - **本地可分发**：一键安装/运行、托盘图标入口、可选开机自启

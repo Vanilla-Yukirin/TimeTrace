@@ -4,13 +4,13 @@
 
 ---
 
-## ⚠️ 重构期间状态说明（2026-05-15 起）
+## **⚠️ 重构期间状态说明（2026-05-15 起）**
 
-项目正在进行 **客户端 / 服务端分离** 的架构级重构。本 wiki 当前各页**仍描述 v1 单进程架构**（即 commit `dd1969b` 时的状态），与即将到来的目标架构存在差距。
+项目正在进行 **客户端 / 服务端分离** 的架构级重构。本 wiki 当前各页**仍描述 v1 单进程架构**（即 commit `dd1969b` 时的状态），与现状存在差距。
 
 - **目标架构与分阶段方案**：见 [devlogs/infra/archive-202605151200-client-server-split-kickoff.md](../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)（重构宪法，所有 PR 应能追溯到其中某个 P）
 - **重构分支**：`feature/refactor-split`（main 在合并前不动）
-- **文档迁移节奏**：每个阶段（P0–P8）完成时同步更新对应 wiki 子页；本索引页在所有阶段完成后整体重写
+- **文档迁移节奏**：每个阶段（P0–P7）完成时**只在受影响 wiki 子页顶部加 deprecation 警告**（保留 v1 内容作历史快照），整页重写延后到 P4 / P5 主体落地
 
 ### 目标架构一句话
 
@@ -18,11 +18,27 @@
 - **服务端**（默认 SQLite + 内存队列 + 本地文件；Postgres / Redis / S3 可选）：接收 → 入库 → Worker 调 VLM → 提供搜索 / MCP / Frontend
 - **通信**：HTTP + Bearer token；客户端 `init` 命令交互式配置；服务端首启自动生成 token
 
-### 重构期间使用 wiki 时
+### 已完成阶段速览（2026-05-17）
 
-- 看到与目标架构冲突的描述，**以 devlog 为准**
-- 子文档（architecture/、storage/、privacy/）会按阶段陆续重写；时间戳过期的优先核对 git log
-- 隐私策略页（privacy/strategy.md）变动最大：v1 主要靠规则黑名单 + 服务端过滤；v2 改为客户端 OCR + 模糊，**原图不离开本机**
+| 阶段 | 状态 | 核心交付 | 详见 |
+|---|---|---|---|
+| P0 工程基建 | ✅ | LICENSE / CI / 重构分支 | kickoff devlog |
+| P1 目录重组 | ✅ | `src/timetrace/{common,client,server}/` 三层 | kickoff devlog |
+| P2 / P2.5 接口抽象 | ✅ | BackendClient / Database / Queue / BlobStorage Protocol | kickoff devlog |
+| P3a HTTP + Outbox | ✅ | ingest 路由幂等、HttpBackend、Outbox 严格 FIFO | kickoff devlog |
+| P3a-5b 双入口接线 | ✅ | OutboxBackend + 三入口 + bootstrap 共享装配 | kickoff devlog |
+| P3b Auth + Init | ✅ | tokens.json 体系 / chmod 600 / init/admin CLI | [p3b3-cli-design](../devlogs/infra/archive-202605171500-p3b3-cli-design.md) |
+| P3c 部署设施 | ✅ | deploy.sh / systemd unit / GH Actions（workflow_dispatch） | [deployment-architecture](../devlogs/infra/archive-202605161000-deployment-architecture.md)、[cicd-workflow](../devlogs/infra/archive-202605161015-cicd-workflow.md) |
+| P4 客户端隐私管线 | ⚠️ 仅周边硬化 | Outbox compaction / _safe_close_record / ctypes 长路径完成；OCR + 分类 + 模糊未启 | [outbox-compaction](../devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md) |
+| P5 容器化 + 适配器 | ⚠️ 容器完成 | Dockerfile / docker-compose / pyproject 平台标记；PostgresDatabase / RedisQueue / S3BlobStorage 未启 | [packaging-and-container](../devlogs/infra/archive-202605171502-packaging-and-container.md) |
+| P6 Headless TUI | ❌ 未启动 | — | — |
+| P7 分发自动化 | ❌ 未启动 | — | — |
+
+### 阅读 wiki 时
+
+- **遇到与现状冲突的描述以代码 + 最新 devlog 为准**：每受影响子页顶部已加 H2 deprecation 警告，`grep '^## \*\*⚠️' infra/architecture/*.md` 一键定位过期最严重的页
+- **子页内容是历史快照**：等 P4 / P5 主体落地再整页翻新；中间不做局部修补（局部修补会让 v1 描述与新增段落混杂，反而更难读）
+- **完整状态优先看 [kickoff devlog](../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)**：那是滚动更新的"重构宪法"
 
 ---
 
