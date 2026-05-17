@@ -6,7 +6,7 @@
 # behind NAT, reached via FRP tunnel from a public cloud server). The GH
 # Actions workflow (.github/workflows/deploy.yml) uploads + invokes this
 # script over SSH; nothing here assumes it was launched by GH specifically,
-# so you can `ssh tt-rb4g 'bash ~/TimeTrace/deploy/deploy.sh'` by hand the
+# so you can `ssh tt-rb4g 'bash ~/Github/TimeTrace/deploy/deploy.sh'` by hand the
 # same way.
 #
 # Idempotent: pulls latest, syncs deps, restarts the unit, verifies healthz.
@@ -56,6 +56,21 @@ echo "         TIMETRACE_BRANCH   = ${TIMETRACE_BRANCH}"
 echo "         TIMETRACE_REPO_DIR = ${TIMETRACE_REPO_DIR}"
 echo "         TIMETRACE_DATA_DIR = ${TIMETRACE_DATA_DIR}"
 echo "         TIMETRACE_SERVICE  = ${TIMETRACE_SERVICE}"
+
+# --- Step 0: v1 → v2 path migration（一次性，幂等） ---------------------------
+# 早期部署用 ~/TimeTrace，2026-05-17 改默认到 ~/Github/TimeTrace。第一次升级
+# 时通过 mv 把整个 repo 原地搬到新位置：
+#  - 旧 .git 保留 → git fetch / reset 后续步骤照常工作
+#  - 旧 .env (gitignored) 跟着搬，VLM 配置不丢
+#  - 旧 .venv 跟着搬；uv sync 会重建里面任何路径相关的内容
+# TimeTraceData/ 在 ${TIMETRACE_HOME}/ 下与 repo 解耦，无需迁移。
+# 没旧路径或新路径已存在 → 整段静默 no-op。
+LEGACY_REPO_DIR="${TIMETRACE_HOME}/TimeTrace"
+if [[ -d "${LEGACY_REPO_DIR}/.git" && ! -d "${TIMETRACE_REPO_DIR}/.git" ]]; then
+    echo "[deploy] migrating legacy repo: ${LEGACY_REPO_DIR} -> ${TIMETRACE_REPO_DIR}"
+    mkdir -p "$(dirname "${TIMETRACE_REPO_DIR}")"
+    mv "${LEGACY_REPO_DIR}" "${TIMETRACE_REPO_DIR}"
+fi
 
 # --- Step 1: ensure repo exists, fetch latest -------------------------------
 # First-deploy convenience: clone if the dir isn't there yet. Subsequent

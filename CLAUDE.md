@@ -85,6 +85,8 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 - **数据目录**：`%USERPROFILE%/TimeTraceData/`（不在仓库内）
 - **日志**：`structlog.get_logger(__name__)`，禁用 `print`
 - **前端代码风格**：以 inline style + Tailwind 工具类混用为主，已装 `@radix-ui/react-dialog/select/separator/slot/tooltip`、`@tanstack/react-query`、`lucide-react`，新增 UI 优先复用
+- **文档过期警告格式**：所有"本页/本段内容已过期"的标注统一用 `## **⚠️ 一句话标题**`（H2 + 加粗紧贴 emoji，无空格）。这样 `grep '^## \*\*⚠️' infra/ devlogs/` 能稳定枚举所有 deprecation 标注，不会因为下个人写成 H3 / blockquote / `> ⚠️` 而漏命中
+- **devlog 写完即不改**：`devlogs/**/*.md` 是历史快照（只追加新归档，不改老归档）。子目录索引 `devlogs/README.md` + `infra/readme.md` 可以更新，但具体 archive 文件本身视为只读 —— 想纠正 / 补充就再写一份新 archive
 
 ## 部署 / 运行环境
 

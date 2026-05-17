@@ -25,6 +25,19 @@
 #     EOF
 #     systemctl --user daemon-reload
 #     systemctl --user restart timetrace-server.service
+#
+# === Fork users: relocating the repo away from ~/Github/TimeTrace ===
+# systemd does NOT read deploy.sh's TIMETRACE_REPO_DIR env var; the three
+# repo-path-dependent fields below are hardcoded with %h/Github/TimeTrace
+# and must ALL be overridden together via a drop-in:
+#
+#     [Service]
+#     WorkingDirectory=/srv/timetrace
+#     EnvironmentFile=-/srv/timetrace/.env
+#     ReadWritePaths=/srv/timetrace /srv/timetrace-data %h/.cache %h/.local %h/.config/timetrace-server
+#
+# Forgetting any one will fail systemd unit start (ExecStart cwd / .env load /
+# sandbox write-allow respectively).
 # =============================================================================
 
 [Unit]

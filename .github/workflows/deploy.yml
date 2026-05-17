@@ -71,12 +71,12 @@
 #                             (e.g. 10089). This is what `-p` uses.
 #
 # === Env vars on target (NOT touched by this workflow) =======================
-# Server config like VLM API keys lives in ~/TimeTrace/.env on the target.
+# Server config like VLM API keys lives in ~/Github/TimeTrace/.env on the target.
 # That file is in .gitignore and the deploy script does `git reset --hard`
 # which only touches tracked files — so .env persists forever across deploys.
 # Set it once after the first successful deploy:
 #
-#     scp -P 10089 .env vanilla@121.43.33.13:~/TimeTrace/.env
+#     scp -P 10089 .env vanilla@121.43.33.13:~/Github/TimeTrace/.env
 #     ssh GTi13-Ultra-2v4G "systemctl --user restart timetrace-server"
 # =============================================================================
 
