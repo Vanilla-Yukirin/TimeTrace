@@ -68,7 +68,14 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
     ``ask_agent``; if ``None``, the tool returns a degraded "VLM unavailable"
     response so the rest of the MCP surface still works).
     """
-    mcp: FastMCP = FastMCP("timetrace")
+    # stateless_http=True: each HTTP request is independent (no session id /
+    # event store). Trade-off is no resumable streams, but for our use case
+    # (Claude Code invokes a tool, gets a JSON result, done) statelessness
+    # avoids needing FastAPI ↔ mounted-app lifespan plumbing for the
+    # background session-manager task. json_response=True returns plain JSON
+    # instead of SSE-streaming, which is more debuggable from curl + matches
+    # how most MCP clients invoke single-shot tools.
+    mcp: FastMCP = FastMCP("timetrace", stateless_http=True, json_response=True)
     # Cache an OpenAI client per server (not per tool call) so the underlying
     # httpx connection pool gets reused across requests. None if VLM unset.
     chat_client: AsyncOpenAI | None = None
