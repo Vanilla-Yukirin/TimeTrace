@@ -1,10 +1,63 @@
 # TimeTrace 滚动 TODO / Plan
 
-**最后更新：** 2026-05-27
+**最后更新：** 2026-05-27（晚间 sprint Day 0：核心链路全部跑通）
 
 > 滚动文档，不是历史快照。完成的事项移到 devlog archive 归档，这里只留"未完成"和"未决策"。
 >
 > 找代码细节去 [`devlogs/README.md`](./README.md) 索引；找架构现状去 [`infra/`](../infra/)；本文档只回答 **"下一步该做什么"**。
+
+---
+
+## **✅ Day 0 完成清单（一晚跑完，原定 Day 0-4 全压缩进来）**
+
+| 项 | 状态 | 关键事实 |
+|---|---|---|
+| `.env` 接 LM Studio @ 127.0.0.1:1234 | ✅ 生产 | `qwen3.6-35b-a3b-uncensored` (50K context, 17.6 GiB VRAM) |
+| LM Studio + Qwen3 reasoning_content 怪癖兜底 | ✅ commit `2bfb144` | content 空时 fallback；json_schema 替换 json_object |
+| VLM 实战质量验证 | ✅ 695 条积压秒清，每条 3-5s | 鸣潮识别哥莱姆 Lv.70；微信识别群名 + 程序讨论 |
+| FTS5 trigram + 多字段搜索 | ✅ commit `851f860` | 哥莱姆/Code.exe/Visual/Weixin 全 BM25 命中 |
+| MCP 4 tools 实装 + 挂 `/mcp` | ✅ commit `0882a4c → e0ca5a4` | streamable-http + FastAPI lifespan + stateless_http |
+| `ask_agent` 端到端 LLM 调用 | ✅ 48s 返回 + 元认知 | 自动指出"80 条样本不足，建议 app_breakdown 全量统计" |
+| Claude Code 接入：`.mcp.json` + skill | ✅ commit `e5a2c44` | 项目级 auto-discover；skill 含决策树 + 反模式 |
+
+**累计当晚 commit：** 6 个 feature commit + 全程 270+ 测试绿。代码主体已 demo-ready。
+
+---
+
+## **🔜 周三前还要做（按优先级）**
+
+| # | 任务 | 估时 | 谁来做 |
+|---|---|---|---|
+| 1 | **dress rehearsal** —— 本机起 SSH 隧道 + Claude Code 重启 + `claude mcp list` 确认 + 真问 "我过去一周做了什么" | 15 min | 用户亲手 |
+| 2 | embedding pipeline（用户说自己搞，待用户开 session 跟进） | — | 用户 |
+| 3 | 前端 search UX 微调（placeholder 提醒多字段、错误提示等） | 30 min | 可选 |
+| 4 | LM Studio autostart 配 `~/.config/autostart/lmstudio.desktop`（小主机重启后无需手点） | 5 min | 用户 |
+| 5 | 写 archive 归档今晚 sprint（建议 demo 后写，免得重复改） | 30 min | demo 后 |
+
+**Demo 前一晚做的事**：跑一次完整 dress rehearsal + 打两个截图（Search 命中 + Claude Code MCP 工具列表 + ask_agent 答案）当 backup。
+
+---
+
+## **🎬 Demo 周三 5 分钟跑法（runbook）**
+
+**演示前 30 秒**：
+```powershell
+# 终端 A，长期保持
+ssh -N -L 8765:127.0.0.1:8765 GTi13-Ultra-2v4G
+# 终端 B，看前端
+cd D:\Github\TimeTrace\frontend && npm run dev
+```
+
+**Demo 流程**：
+
+1. **30s 开场** — 屏幕角落出 timetrace-client 托盘图标，"它一直在低打扰记录"
+2. **1min 前端** — http://127.0.0.1:5173/ Timeline 页滚动今天的活动；Search 页搜 "鸣潮" / "Code.exe" / "微信" 命中（**关键**：这步证明 fallback search 真在工作）
+3. **2min Claude Code MCP** — 打开本仓库的 Claude Code，问：
+   - 问 1（精确）："我过去 10 天在哪些应用上花时间最多" → 自动调 `get_app_breakdown`，秒级回答
+   - 问 2（语义）："我有没有玩过鸣潮里那个叫哥莱姆的区域" → 调 `search_activity`，命中那张 Lv.70 截图描述
+   - 问 3（推理 + 整合）："总结一下我过去一周的活动模式" → 调 `ask_agent`，~30-60s 拿自然语言答案 + 元认知
+4. **1min 架构** — 一图：client 本机采集 → SSH 隧道 → 小主机 server (VLM + DB + MCP) → Claude Code。强调：**模型本地、数据本地、零云调用**
+5. **30s 收束** — github.com/Vanilla-Yukirin/TimeTrace + 本 PLAN.md 里"未做"清单
 
 ---
 
