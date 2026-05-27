@@ -239,9 +239,27 @@ async def test_query_records_fts_bm25_actually_ranks(db):
     """Regression: BM25 ordering was a silent no-op because bm25() was called
     in a subquery without MATCH (FTS5 aux functions only work alongside MATCH).
     A record whose vlm_desc mentions the keyword many times should out-rank
-    one that mentions it once. Without working BM25 ordering this test fails
-    intermittently because results came back in undefined order."""
-    # Two records, both about "TimeTrace" but with different match densities.
+    one that mentions it once.
+
+    Insert order is INVERTED relative to the expected output order: we put
+    the LOW-density record in first (lower rowid) and the HIGH-density one
+    second. This way the test can actually distinguish:
+      - real BM25 working → high-density wins regardless of insert order
+      - bug regression (e.g. ORDER BY constant → falls back to rowid)
+        → low-density would come first
+    """
+    # Insert LOW-density first so it gets the lower rowid.
+    rid_low = await db.insert_record(
+        CaptureContext(app_name="App2", process_name="b", window_title="w"),
+        reason="heartbeat",
+    )
+    await db.mark_pending(rid_low)
+    await db.save_description(
+        rid_low,
+        "今天天气真好，顺便提一句 TimeTrace 这种工具能记录我看了什么。",
+    )
+
+    # Then insert HIGH-density (4 mentions) with the higher rowid.
     rid_high = await db.insert_record(
         CaptureContext(app_name="App1", process_name="a", window_title="w"),
         reason="heartbeat",
@@ -253,21 +271,27 @@ async def test_query_records_fts_bm25_actually_ranks(db):
         "我现在正在阅读 TimeTrace 的源码，理解 TimeTrace 的架构。",
     )
 
-    rid_low = await db.insert_record(
-        CaptureContext(app_name="App2", process_name="b", window_title="w"),
+    # Plus a third record with even higher density (7 mentions) inserted
+    # last — most-relevant must end up first regardless of insert order,
+    # which a working BM25 satisfies but rowid-fallback does not.
+    rid_top = await db.insert_record(
+        CaptureContext(app_name="App3", process_name="c", window_title="w"),
         reason="heartbeat",
     )
-    await db.mark_pending(rid_low)
+    await db.mark_pending(rid_top)
     await db.save_description(
-        rid_low,
-        "今天天气真好，顺便提一句 TimeTrace 这种工具能记录我看了什么。",
+        rid_top,
+        "TimeTrace TimeTrace TimeTrace TimeTrace "
+        "TimeTrace TimeTrace TimeTrace 测试 BM25 排序。",
     )
 
     rows = await db.query_records(0, 9_999_999_999_999, keyword="TimeTrace")
-    assert len(rows) == 2
-    # high-density (4 mentions) must out-rank low-density (1 mention).
-    assert rows[0]["id"] == rid_high
-    assert rows[1]["id"] == rid_low
+    assert len(rows) == 3
+    # Expected: highest density first, lowest last. The opposite of insert order.
+    assert [r["id"] for r in rows] == [rid_top, rid_high, rid_low], (
+        f"BM25 ranking broken; got insert-order or worse: "
+        f"{[r['app_name'] for r in rows]}"
+    )
 
 
 async def test_reclaim_stale_tasks(db):

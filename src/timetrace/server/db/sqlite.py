@@ -577,11 +577,17 @@ class SqliteDatabase:
         keyword: str | None = None,
         order: str = "asc",
     ) -> list[dict]:
-        # `order` controls ts_start direction when no keyword is supplied
-        # (or short-keyword LIKE branch). FTS branch ignores it — BM25
-        # relevance always wins, doesn't make sense to sort by time.
-        # Default "asc" preserves the timeline-view semantics that the
-        # frontend depends on; callers wanting "most recent N" pass "desc".
+        """Query records over a time window with optional filters.
+
+        ``order`` controls ts_start direction. Behavior depends on keyword:
+        - no keyword / short-keyword LIKE: pure ts_start sort in given direction
+        - FTS5 keyword (≥3 chars): primary key is BM25 relevance (most-relevant
+          first, non-negotiable — keyword search is about relevance). ``order``
+          becomes the secondary sort: same-score rows are broken by ts_start
+          in the requested direction. Default 'asc' preserves timeline-view
+          semantics that the frontend depends on; callers wanting "most recent
+          N" pass 'desc'.
+        """
         order_dir = "DESC" if order.lower() == "desc" else "ASC"
 
         conditions = ["r.ts_start BETWEEN ? AND ?"]
@@ -660,9 +666,9 @@ class SqliteDatabase:
                     GROUP BY record_id
                 ) s ON s.record_id = r.id
                 WHERE {where}
-                ORDER BY h.rank_score ASC
+                ORDER BY h.rank_score ASC, r.ts_start {direction}
                 LIMIT ?
-            """.format(where=where)
+            """.format(where=where, direction=order_dir)
             params: list[Any] = [fts_match, *where_params, limit]
         else:
             sql = """
