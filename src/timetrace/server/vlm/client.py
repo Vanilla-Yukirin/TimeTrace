@@ -1,13 +1,25 @@
 """VLM (vision-language model) client over the OpenAI Chat Completions protocol.
 
 Works against OpenAI proper or any compatible endpoint (DashScope, SiliconFlow,
-Ollama, vLLM, ...).
+Ollama, vLLM, LM Studio, ...).
 
-The thinking switch is opt-in: vanilla ``api.openai.com`` rejects unknown body
-fields with HTTP 400, so we only attach ``extra_body={"enable_thinking": False}``
-when the caller sets ``TIMETRACE_VLM_DISABLE_THINKING=true``. Endpoints whose
-default has thinking ON (DashScope qwen / SiliconFlow Qwen3+) need that flag;
-OpenAI proper must have it off.
+Two provider-quirk knobs:
+
+1. ``disable_thinking`` (``TIMETRACE_VLM_DISABLE_THINKING=true``) attaches
+   ``extra_body={"enable_thinking": False}`` for DashScope / SiliconFlow Qwen3+
+   whose default is thinking-on. Vanilla OpenAI rejects unknown body fields
+   with HTTP 400, so it's opt-in.
+
+2. ``response_format`` uses ``json_schema`` (structured outputs, GA in
+   OpenAI 2024-08+ and supported by LM Studio / vLLM / llama.cpp grammars).
+   Older ``json_object`` is rejected by LM Studio with "must be 'json_schema'
+   or 'text'", and on OpenAI it does not enforce schema fields anyway.
+
+3. Reasoning-content fallback: LM Studio detects Qwen3+ as a reasoning model
+   and pipes ALL output to the non-standard ``reasoning_content`` field with
+   ``content`` empty — even when thinking is explicitly disabled via prompt
+   tag, chat_template_kwargs, or extra_body. We read both and prefer content,
+   so vanilla OpenAI (no reasoning_content) still works.
 """
 
 from __future__ import annotations
@@ -48,10 +60,40 @@ _DESCRIBE_PROMPT = (
 # fmt: on
 _HEARTBEAT_PROMPT = "1+1=? 直接给出数字答案，不要解释。"
 _HEARTBEAT_EXPECTED = "2"
-_DESCRIBE_TIMEOUT_S = 60.0
-_HEARTBEAT_TIMEOUT_S = 15.0
+_DESCRIBE_TIMEOUT_S = 120.0  # LM Studio cold-load + first inference on Qwen3-35BA3B can take ~60s
+_HEARTBEAT_TIMEOUT_S = 30.0
 _JPEG_QUALITY = 80
 _MAX_DESCRIBE_EDGE = 1280  # cap longest edge before sending; cuts payload + cost
+
+# JSON schema for structured outputs. Matches _validate_describe_payload exactly.
+_DESCRIBE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "keywords": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 8,
+        },
+        "summary": {"type": "string"},
+        "description": {"type": "string"},
+    },
+    "required": ["keywords", "summary", "description"],
+    "additionalProperties": False,
+}
+
+
+def _extract_message_content(message: Any) -> str:
+    """Return message.content, falling back to reasoning_content for LM Studio.
+
+    LM Studio routes Qwen3+ output to a non-standard ``reasoning_content``
+    field while leaving ``content`` empty; vanilla OpenAI has only ``content``.
+    Read via getattr so plain ``SimpleNamespace`` test doubles work the same
+    as pydantic ``ChatCompletionMessage`` instances.
+    """
+    content = getattr(message, "content", None) or ""
+    if not content:
+        content = getattr(message, "reasoning_content", None) or ""
+    return content
 
 
 class VLMError(Exception):
@@ -159,7 +201,14 @@ class VLMClient:
                         ],
                     }
                 ],
-                response_format={"type": "json_object"},
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "describe",
+                        "strict": True,
+                        "schema": _DESCRIBE_SCHEMA,
+                    },
+                },
                 timeout=_DESCRIBE_TIMEOUT_S,
                 **self._extra_kwargs(),
             )
@@ -167,7 +216,7 @@ class VLMClient:
             raise VLMError(f"VLM describe API call failed: {exc}") from exc
 
         try:
-            content = resp.choices[0].message.content or ""
+            content = _extract_message_content(resp.choices[0].message)
         except (IndexError, AttributeError) as exc:
             raise VLMError(f"VLM response shape unexpected: {exc}") from exc
 
@@ -187,7 +236,7 @@ class VLMClient:
                 timeout=_HEARTBEAT_TIMEOUT_S,
                 **self._extra_kwargs(),
             )
-            content = resp.choices[0].message.content or ""
+            content = _extract_message_content(resp.choices[0].message)
         except Exception as exc:  # noqa: BLE001
             logger.debug("vlm.heartbeat_failed", error=str(exc))
             return False

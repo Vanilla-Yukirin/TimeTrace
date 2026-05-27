@@ -112,7 +112,13 @@ async def test_vlm_client_describe_parses_response():
     assert result == {"keywords": ["a", "b"], "summary": "s", "description": "d"}
 
     kwargs = mock.call_args.kwargs
-    assert kwargs["response_format"] == {"type": "json_object"}
+    # Structured outputs via json_schema — works on OpenAI 2024-08+, LM Studio,
+    # vLLM. Old "json_object" was rejected by LM Studio with HTTP 400.
+    rf = kwargs["response_format"]
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["name"] == "describe"
+    assert rf["json_schema"]["strict"] is True
+    assert set(rf["json_schema"]["schema"]["required"]) == {"keywords", "summary", "description"}
     # default config does NOT send extra_body so vanilla OpenAI doesn't 400
     assert "extra_body" not in kwargs
 
