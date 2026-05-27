@@ -248,12 +248,28 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             end_ms=now_ms,
             limit=_ASK_AGENT_MAX_RECORDS,
         )
+        window_note = ""
         if not rows:
-            return {
-                "answer": f"过去 {hours_back} 小时没有活动记录。",
-                "records_consulted": 0,
-                "model": vlm_cfg.model,
-            }
+            # No data in the requested window. Try the all-time fallback so a
+            # demo against a stale DB still returns something useful, with a
+            # note explaining the auto-widening.
+            rows = await db.query_records(
+                start_ms=0,
+                end_ms=now_ms,
+                limit=_ASK_AGENT_MAX_RECORDS,
+            )
+            if not rows:
+                return {
+                    "answer": "数据库里还没有任何活动记录。先启动 timetrace-client 采集一段时间再试。",
+                    "records_consulted": 0,
+                    "model": vlm_cfg.model,
+                }
+            oldest = rows[-1].get("ts_start") if rows else now_ms
+            actual_hours = max(1, int((now_ms - oldest) / 3600_000))
+            window_note = (
+                f"（请求窗口 {hours_back}h 内无数据，已自动扩窗到 ~{actual_hours}h 找到 "
+                f"{len(rows)} 条历史记录用于回答）"
+            )
         timeline = "\n".join(_format_record_for_llm(r) for r in rows)
         system = (
             "你是 TimeTrace 的活动记录助手。基于下面的活动时间线，"
@@ -290,8 +306,11 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
         # LM Studio routes Qwen3+ output to reasoning_content; vanilla OpenAI
         # uses content. Same fallback as vlm/client.py::_extract_message_content.
         answer = getattr(msg, "content", None) or getattr(msg, "reasoning_content", None) or ""
+        final_answer = answer.strip()
+        if window_note:
+            final_answer = f"{window_note}\n\n{final_answer}"
         return {
-            "answer": answer.strip(),
+            "answer": final_answer,
             "records_consulted": len(rows),
             "model": vlm_cfg.model,
         }

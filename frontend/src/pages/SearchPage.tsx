@@ -132,7 +132,7 @@ export function SearchPage() {
               autoFocus
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="关键词（窗口标题或画面描述）..."
+              placeholder="关键词（标题/应用/进程/URL/画面描述都搜）。中文 ≥3 字走 FTS5 BM25 排序"
               style={{
                 flex: 1,
                 background: 'transparent',
@@ -215,7 +215,13 @@ export function SearchPage() {
             <EmptyState text={`搜索失败：${(error as Error).message}`} error />
           )}
           {submitted && !error && data && data.items.length === 0 && !isFetching && (
-            <EmptyState text="未找到符合条件的活动。换个关键词或调整筛选试试。" />
+            <EmptyState
+              text={
+                q.trim().length === 1
+                  ? '关键词太短（仅 1 字符）。试试 2-3 字以上的具体词。'
+                  : '未找到符合条件的活动。中文搜索建议 ≥3 字（走 FTS5），或换个应用名/进程名/URL 关键词试试。'
+              }
+            />
           )}
           {data && data.items.length > 0 && (
             <>
