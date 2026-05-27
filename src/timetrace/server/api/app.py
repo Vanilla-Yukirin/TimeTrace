@@ -9,9 +9,10 @@ from fastapi.staticfiles import StaticFiles
 
 from timetrace.server.api.routes import feedback, ingest, records, search
 from timetrace.server.auth import make_bearer_dependency
+from timetrace.server.mcp_layer.server import mount_mcp
 
 if TYPE_CHECKING:
-    from timetrace.common.config import StorageConfig
+    from timetrace.common.config import StorageConfig, VLMConfig
     from timetrace.server.auth import ServerAuth
     from timetrace.server.db import Database
     from timetrace.server.phash_index.index import PHashIndex
@@ -26,6 +27,7 @@ def create_app(
     vlm_client: VLMClient | None = None,
     blob_storage: BlobStorage | None = None,
     auth: ServerAuth | None = None,
+    vlm_cfg: VLMConfig | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="TimeTrace Local API",
@@ -69,5 +71,10 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict:
         return {"status": "ok"}
+
+    # MCP server: exposes activity context as tools to external AI agents
+    # (Claude Code / Desktop). Mounted at /mcp, streamable-HTTP transport.
+    # Unauthenticated like the frontend routes — loopback / SSH-tunnel only.
+    mount_mcp(app, db, vlm_cfg)
 
     return app

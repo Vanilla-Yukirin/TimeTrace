@@ -95,6 +95,7 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
         vlm_client=vlm_client,
         blob_storage=blob_storage,
         auth=auth,
+        vlm_cfg=config.vlm,
     )
     app.state.api_host = config.api_host
     app.state.api_port = config.api_port
