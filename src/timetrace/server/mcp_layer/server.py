@@ -71,11 +71,20 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
     # stateless_http=True: each HTTP request is independent (no session id /
     # event store). Trade-off is no resumable streams, but for our use case
     # (Claude Code invokes a tool, gets a JSON result, done) statelessness
-    # avoids needing FastAPI ↔ mounted-app lifespan plumbing for the
-    # background session-manager task. json_response=True returns plain JSON
-    # instead of SSE-streaming, which is more debuggable from curl + matches
-    # how most MCP clients invoke single-shot tools.
-    mcp: FastMCP = FastMCP("timetrace", stateless_http=True, json_response=True)
+    # is simpler. session_manager.run() still has to be driven from FastAPI
+    # lifespan even in stateless mode (anyio task group).
+    # json_response=True: plain JSON instead of SSE-streaming — debuggable
+    # from curl + matches single-shot tool-call clients.
+    # streamable_http_path="/": the FastMCP default is "/mcp", which collides
+    # with our FastAPI mount point and ends up serving at /mcp/mcp/. Putting
+    # the streamable handler at the mount root means clients connect to /mcp/
+    # directly.
+    mcp: FastMCP = FastMCP(
+        "timetrace",
+        stateless_http=True,
+        json_response=True,
+        streamable_http_path="/",
+    )
     # Cache an OpenAI client per server (not per tool call) so the underlying
     # httpx connection pool gets reused across requests. None if VLM unset.
     chat_client: AsyncOpenAI | None = None
