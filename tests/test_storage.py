@@ -151,6 +151,64 @@ async def test_query_records_filter_keyword(db):
     assert "README" in rows[0]["window_title"]
 
 
+async def test_query_records_keyword_matches_app_name_via_fts(db):
+    """FTS5 ≥3-char keyword hits app_name / process_name / url, not just title."""
+    await db.insert_record(
+        CaptureContext(app_name="Weixin", process_name="WeChat.exe", window_title="微信"),
+        reason="heartbeat",
+    )
+    await db.insert_record(
+        CaptureContext(app_name="VSCode", process_name="Code.exe", window_title="main.py"),
+        reason="heartbeat",
+    )
+    await db.insert_record(
+        CaptureContext(app_name="Chrome", process_name="chrome.exe", window_title="Google",
+                       url="https://example.com/dashboard"),
+        reason="heartbeat",
+    )
+
+    # app_name match (Weixin not in window_title)
+    rows = await db.query_records(0, 9_999_999_999_999, keyword="Weixin")
+    assert len(rows) == 1
+    assert rows[0]["app_name"] == "Weixin"
+
+    # process_name match
+    rows = await db.query_records(0, 9_999_999_999_999, keyword="Code.exe")
+    assert len(rows) == 1
+    assert rows[0]["process_name"] == "Code.exe"
+
+    # url match
+    rows = await db.query_records(0, 9_999_999_999_999, keyword="dashboard")
+    assert len(rows) == 1
+    assert rows[0]["app_name"] == "Chrome"
+
+
+async def test_query_records_keyword_fts_matches_vlm_desc_after_save(db):
+    """save_description must keep records_fts.vlm_desc in sync."""
+    rid = await db.insert_record(
+        CaptureContext(app_name="App", process_name="p", window_title="window"),
+        reason="heartbeat",
+    )
+    await db.mark_pending(rid)
+    await db.save_description(rid, "鸣潮游戏内哥莱姆区域广场场景")
+
+    rows = await db.query_records(0, 9_999_999_999_999, keyword="哥莱姆")
+    assert len(rows) == 1
+    assert rows[0]["id"] == rid
+
+
+async def test_query_records_short_keyword_falls_back_to_like(db):
+    """<3-char queries (incl 2-char CJK) bypass FTS5 and use multi-field LIKE."""
+    await db.insert_record(
+        CaptureContext(app_name="VS", process_name="vs.exe", window_title="some window"),
+        reason="heartbeat",
+    )
+
+    rows = await db.query_records(0, 9_999_999_999_999, keyword="VS")
+    assert len(rows) == 1
+    assert rows[0]["app_name"] == "VS"
+
+
 async def test_reclaim_stale_tasks(db):
     import time
 

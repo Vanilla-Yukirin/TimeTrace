@@ -139,7 +139,26 @@ CREATE TABLE IF NOT EXISTS settings (
     value_json  TEXT NOT NULL,
     updated_at  INTEGER NOT NULL
 );
+
+-- Full-text search across record metadata + VLM description.
+-- trigram tokenizer is CJK-friendly (no whitespace tokenization needed).
+-- record_id is UNINDEXED — stored for JOIN but not searchable.
+-- We populate this manually from insert_record + save_description, with a
+-- migration backfill on cold start. No triggers (debug-friendlier).
+CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
+    record_id UNINDEXED,
+    window_title,
+    app_name,
+    process_name,
+    url,
+    vlm_desc,
+    tokenize='trigram'
+);
 """
+
+# Minimum keyword length where trigram FTS5 can match. Below this, we fall back
+# to multi-field LIKE so 2-char queries like "VS" / "鸣潮" still hit.
+_FTS_MIN_LEN = 3
 
 _BUILTIN_CATEGORIES = [
     ("work/coding", "工作/编程", None),
@@ -166,6 +185,21 @@ def _now_ms() -> int:
 
 def _new_id() -> str:
     return str(uuid.uuid4())
+
+
+def _fts_query(keyword: str) -> str:
+    """Build a safe FTS5 MATCH expression from a user keyword.
+
+    FTS5 treats double-quoted strings as literal phrases, so wrapping the
+    whole keyword (after escaping internal ``"`` to ``""``) sidesteps the
+    "syntax error near ..." class of bug for inputs containing FTS5
+    operators (``AND``/``OR``/``NEAR``/``-``/``:``/``.``/etc.) or punctuation.
+
+    The result is a single phrase, so for trigram tokenizer this means
+    "match any contiguous substring matching this string" — which is what
+    casual users expect (vs. boolean keyword AND).
+    """
+    return '"' + keyword.replace('"', '""') + '"'
 
 
 def _processing_to_pending(status: str) -> str:
@@ -246,6 +280,31 @@ class SqliteDatabase:
         )
         await self._conn.commit()
 
+        # Backfill records_fts for DBs created before the FTS column landed.
+        # The VIRTUAL TABLE itself is created by _SCHEMA (idempotent with
+        # IF NOT EXISTS); we only need to populate it if it's empty AND the
+        # records table already has data. Subsequent inserts/updates keep it
+        # in sync via insert_record + save_description.
+        async with self._conn.execute("SELECT COUNT(*) FROM records_fts") as cur:
+            fts_count = (await cur.fetchone())[0]
+        async with self._conn.execute("SELECT COUNT(*) FROM records") as cur:
+            record_count = (await cur.fetchone())[0]
+        if fts_count == 0 and record_count > 0:
+            await self._conn.execute(
+                """INSERT INTO records_fts
+                       (record_id, window_title, app_name, process_name, url, vlm_desc)
+                   SELECT r.id,
+                          COALESCE(r.window_title, ''),
+                          COALESCE(r.app_name, ''),
+                          COALESCE(r.process_name, ''),
+                          COALESCE(r.url, ''),
+                          COALESCE(a.vlm_desc, '')
+                   FROM records r
+                   LEFT JOIN analysis_results a ON a.record_id = r.id"""
+            )
+            await self._conn.commit()
+            logger.info("database.migrate.fts_backfill", rows=record_count)
+
     async def _seed_categories(self) -> None:
         """Insert built-in categories if they don't exist yet.
 
@@ -317,6 +376,20 @@ class SqliteDatabase:
                         "captured",
                         now,
                         now,
+                    ),
+                )
+                # Mirror into records_fts. vlm_desc is filled by save_description
+                # later (worker pipeline); start empty.
+                await self.conn.execute(
+                    """INSERT INTO records_fts
+                       (record_id, window_title, app_name, process_name, url, vlm_desc)
+                       VALUES (?, ?, ?, ?, ?, '')""",
+                    (
+                        record_id,
+                        ctx.window_title or "",
+                        ctx.app_name or "",
+                        ctx.process_name or "",
+                        ctx.url or "",
                     ),
                 )
                 await self.conn.commit()
@@ -524,19 +597,47 @@ class SqliteDatabase:
             conditions.append(f"a.category_final IN ({placeholders})")
             params.extend(categories)
 
+        # Keyword strategy: trigram-FTS5 MATCH for ≥3-char queries (CJK-friendly,
+        # BM25-ranked), multi-field LIKE for <3 chars (so "VS" / "鸣潮" still
+        # work — trigram requires 3+ chars to match). Both routes search the
+        # same 5 fields: window_title, app_name, process_name, url, vlm_desc.
+        use_fts = False
         if keyword:
-            # Match across window title and VLM description (vlm_desc is NULL until Phase 1.5).
-            # Escape LIKE metachars so literal %/_ in user input don't over-match.
-            conditions.append(
-                "(r.window_title LIKE ? ESCAPE '\\' OR a.vlm_desc LIKE ? ESCAPE '\\')"
-            )
-            escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            like = f"%{escaped}%"
-            params.append(like)
-            params.append(like)
+            kw = keyword.strip()
+            if len(kw) >= _FTS_MIN_LEN:
+                use_fts = True
+                conditions.append(
+                    "r.id IN (SELECT record_id FROM records_fts WHERE records_fts MATCH ?)"
+                )
+                # Quote each token so FTS5 treats them as literal phrases and
+                # doesn't choke on punctuation. Multiple tokens become an
+                # implicit AND.
+                params.append(_fts_query(kw))
+            else:
+                # Short keyword: multi-field LIKE so 1-2 char queries still hit.
+                conditions.append(
+                    "(r.window_title LIKE ? ESCAPE '\\' "
+                    "OR r.app_name LIKE ? ESCAPE '\\' "
+                    "OR r.process_name LIKE ? ESCAPE '\\' "
+                    "OR r.url LIKE ? ESCAPE '\\' "
+                    "OR a.vlm_desc LIKE ? ESCAPE '\\')"
+                )
+                escaped = kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                like = f"%{escaped}%"
+                params.extend([like, like, like, like, like])
 
         where = " AND ".join(conditions)
         params.append(limit)
+
+        # When FTS hit, order by BM25 relevance (lower=better). Otherwise keep
+        # chronological for the timeline view.
+        if use_fts:
+            order_clause = (
+                "ORDER BY (SELECT bm25(records_fts) FROM records_fts "
+                "WHERE record_id = r.id LIMIT 1) ASC"
+            )
+        else:
+            order_clause = "ORDER BY r.ts_start ASC"
 
         async with self._lock:
             async with self.conn.execute(
@@ -554,7 +655,7 @@ class SqliteDatabase:
                         GROUP BY record_id
                     ) s ON s.record_id = r.id
                     WHERE {where}
-                    ORDER BY r.ts_start ASC LIMIT ?""",
+                    {order_clause} LIMIT ?""",
                 params,
             ) as cur:
                 rows = await cur.fetchall()
@@ -773,6 +874,13 @@ class SqliteDatabase:
                 (desc, now, record_id),
             ) as cur:
                 rows_updated = cur.rowcount
+            # Sync vlm_desc into FTS index so subsequent searches can hit it.
+            # UPDATE is a no-op on records inserted before the FTS column landed;
+            # the migration backfill handles those.
+            await self.conn.execute(
+                "UPDATE records_fts SET vlm_desc = ? WHERE record_id = ?",
+                (desc, record_id),
+            )
             await self.conn.commit()
         if rows_updated == 0:
             logger.warning("database.save_description.not_found", record_id=record_id)
