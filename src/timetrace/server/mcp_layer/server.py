@@ -28,8 +28,6 @@ from mcp.server.fastmcp import Context, FastMCP
 from openai import AsyncOpenAI
 
 if TYPE_CHECKING:
-    from fastapi import FastAPI
-
     from timetrace.common.config import VLMConfig
     from timetrace.server.db import Database
 
