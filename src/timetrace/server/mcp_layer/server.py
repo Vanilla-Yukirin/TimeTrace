@@ -1,8 +1,11 @@
 """TimeTrace MCP server — exposes activity context to external AI agents.
 
-Mounted on the main FastAPI app at ``/mcp`` via ``mount_mcp`` (called from
-``server/api/app.py``). Single-process, same port, same SSH-tunnel as the
-REST API — no extra wiring for the demo client (Claude Code / Desktop).
+``build_mcp_server(db, vlm_cfg)`` returns a configured FastMCP instance;
+``server/api/app.py::create_app`` mounts it at ``/mcp`` and drives its
+session manager from the FastAPI lifespan (required even with
+``stateless_http=True`` — see the comment inline). Same process, same port,
+same SSH-tunnel as the REST API — no extra wiring for clients (Claude
+Code / Desktop).
 
 External agents see four tools:
   - ``search_activity`` — keyword search backed by FTS5 trigram + multi-field
@@ -174,8 +177,11 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
     async def get_app_breakdown(hours_back: int = 24, top_n: int = 20) -> dict:
         """Aggregate active duration per app over the last N hours.
 
-        Sums (ts_end - ts_start) for each app. Records without ts_end (still
-        open) are skipped. Use this for "how much time did I spend in X".
+        Sums (ts_end - ts_start) for each app. Records still open (no ts_end)
+        are included in the ``records`` count but contribute 0 to
+        ``total_seconds`` (SQL uses ``COALESCE(ts_end, ts_start)``), so the
+        time totals only reflect closed sessions. Use this for "how much
+        time did I spend in X".
 
         Args:
             hours_back: time window (default 24, cap 720).
@@ -323,41 +329,3 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
         }
 
     return mcp
-
-
-def mount_mcp(app: FastAPI, db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
-    """Mount the MCP server on a FastAPI app at /mcp (streamable HTTP transport).
-
-    External MCP clients (Claude Code / Desktop) connect by configuring this
-    URL in their settings. Streamable HTTP is the modern MCP transport
-    (replaces SSE) and works over plain HTTP + SSH tunnel.
-
-    Returns the FastMCP instance so the caller can also wire it into the
-    FastAPI lifespan (see ``mcp_lifespan``). Even in stateless_http mode the
-    session manager wraps tool dispatch in an anyio task group that must be
-    entered via its run() context manager — otherwise initialize() fails with
-    "Session terminated".
-    """
-    mcp = build_mcp_server(db, vlm_cfg)
-    # FastMCP exposes its ASGI app via streamable_http_app(); mount at /mcp.
-    app.mount("/mcp", mcp.streamable_http_app())
-    logger.info("mcp.mounted", path="/mcp")
-    return mcp
-
-
-def mcp_lifespan(mcp: FastMCP):
-    """Return an async context manager that runs the MCP session manager.
-
-    Use as / chained into the FastAPI ``lifespan`` so the manager's task
-    group stays alive for the app's lifetime. Without this the first
-    initialize() request closes the just-spawned task group and the client
-    sees "Session terminated".
-    """
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def _lifespan():
-        async with mcp.session_manager.run():
-            yield
-
-    return _lifespan

@@ -16,13 +16,13 @@ TimeTrace 在小主机上记录了你的桌面活动（窗口切换 + 截图 + V
 | **`search_activity`** | 用户说出具体关键词、应用名、URL、文件名片段 | `query="鸣潮"`, `limit=10`, `hours_back=72` |
 | **`get_recent_activity`** | 用户问"最近/今天/这几小时在干什么"，但**没**点名具体应用 | `hours_back=24`, `limit=50` |
 | **`get_app_breakdown`** | 用户问**时长统计** —— "在 X 上花了多久"、"哪个应用最耗时" | `hours_back=24`, `top_n=20` |
-| **`ask_agent`** | 用户问的是**需要推理 + 整合**的开放问题，单 tool 答不全 | `question="过去一周我在哪些代码仓库花了时间"`, `hours_back=168` |
+| **`ask_agent`** | 用户问的是**需要推理 + 整合**的开放问题，单 tool 答不全 | `question="过去一周我在哪些代码仓库花了时间"`, `hours_back=168`。**慢，30-180s**，别提早超时 |
 
 ## 决策树
 
 1. **想要时间数字？** → `get_app_breakdown`（精确到秒）
 2. **想要具体记录（标题/截图描述）？** → `search_activity`（有关键词）或 `get_recent_activity`（无关键词）
-3. **想要自然语言总结/排序/推理？** → `ask_agent`（最贵，~30-60s，但会自己整合）
+3. **想要自然语言总结/排序/推理？** → `ask_agent`（最贵，**~30-180s**，但会自己整合；数据库空 / 窗口空时自动扩到全表 DESC 拉最新 N 条）
 4. **复杂问题**：先 `get_app_breakdown` 拿精确数字 + `search_activity` 拿细节 → 自己合成答案；ask_agent 只是兜底
 
 ## 时间窗 (hours_back) 默认建议
