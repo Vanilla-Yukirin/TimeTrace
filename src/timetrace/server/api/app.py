@@ -5,12 +5,15 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+import structlog
 from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from timetrace.server.api.routes import feedback, ingest, records, search
 from timetrace.server.auth import make_bearer_dependency
 from timetrace.server.mcp_layer.server import build_mcp_server
+
+_logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from timetrace.common.config import StorageConfig, VLMConfig
@@ -37,8 +40,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        _logger.info("api.lifespan.enter", mcp_session_manager_running=True)
         async with mcp_server.session_manager.run():
             yield
+        _logger.info("api.lifespan.exit")
 
     app = FastAPI(
         title="TimeTrace Local API",
