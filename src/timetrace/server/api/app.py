@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from fastapi import Depends, FastAPI
@@ -9,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from timetrace.server.api.routes import feedback, ingest, records, search
 from timetrace.server.auth import make_bearer_dependency
-from timetrace.server.mcp_layer.server import mount_mcp
+from timetrace.server.mcp_layer.server import build_mcp_server
 
 if TYPE_CHECKING:
     from timetrace.common.config import StorageConfig, VLMConfig
@@ -29,10 +30,21 @@ def create_app(
     auth: ServerAuth | None = None,
     vlm_cfg: VLMConfig | None = None,
 ) -> FastAPI:
+    # Build MCP first so we can wire its session manager into FastAPI lifespan.
+    # FastMCP's streamable_http_app() needs the session manager's anyio task
+    # group running for the whole app lifetime; mounting alone isn't enough.
+    mcp_server = build_mcp_server(db, vlm_cfg)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        async with mcp_server.session_manager.run():
+            yield
+
     app = FastAPI(
         title="TimeTrace Local API",
         version="0.1.0",
         description="Local-first desktop activity memory layer – Local API",
+        lifespan=lifespan,
     )
 
     app.state.db = db
@@ -75,6 +87,7 @@ def create_app(
     # MCP server: exposes activity context as tools to external AI agents
     # (Claude Code / Desktop). Mounted at /mcp, streamable-HTTP transport.
     # Unauthenticated like the frontend routes — loopback / SSH-tunnel only.
-    mount_mcp(app, db, vlm_cfg)
+    # The session manager itself is driven by the FastAPI lifespan above.
+    app.mount("/mcp", mcp_server.streamable_http_app())
 
     return app

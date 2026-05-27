@@ -288,14 +288,39 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
     return mcp
 
 
-def mount_mcp(app: FastAPI, db: Database, vlm_cfg: VLMConfig | None) -> None:
+def mount_mcp(app: FastAPI, db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
     """Mount the MCP server on a FastAPI app at /mcp (streamable HTTP transport).
 
     External MCP clients (Claude Code / Desktop) connect by configuring this
     URL in their settings. Streamable HTTP is the modern MCP transport
     (replaces SSE) and works over plain HTTP + SSH tunnel.
+
+    Returns the FastMCP instance so the caller can also wire it into the
+    FastAPI lifespan (see ``mcp_lifespan``). Even in stateless_http mode the
+    session manager wraps tool dispatch in an anyio task group that must be
+    entered via its run() context manager — otherwise initialize() fails with
+    "Session terminated".
     """
     mcp = build_mcp_server(db, vlm_cfg)
     # FastMCP exposes its ASGI app via streamable_http_app(); mount at /mcp.
     app.mount("/mcp", mcp.streamable_http_app())
     logger.info("mcp.mounted", path="/mcp")
+    return mcp
+
+
+def mcp_lifespan(mcp: FastMCP):
+    """Return an async context manager that runs the MCP session manager.
+
+    Use as / chained into the FastAPI ``lifespan`` so the manager's task
+    group stays alive for the app's lifetime. Without this the first
+    initialize() request closes the just-spawned task group and the client
+    sees "Session terminated".
+    """
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _lifespan():
+        async with mcp.session_manager.run():
+            yield
+
+    return _lifespan
