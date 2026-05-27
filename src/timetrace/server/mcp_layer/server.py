@@ -32,11 +32,13 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Cap context fed to the LLM in ask_agent. ~6 KB per record × N must stay
-# inside Qwen3.6's 4096-token window after prompt + answer headroom.
-_ASK_AGENT_MAX_RECORDS = 60
-_ASK_AGENT_RECORD_DESC_CHARS = 200
-_ASK_AGENT_TIMEOUT_S = 90.0
+# Context budget for ask_agent. Assumes LM Studio loaded the model with
+# context ≥16K (`lms load <model> -c 16384` or via GUI). Default 4096
+# overflows easily; user is expected to bump on deploy.
+# 80 records × ~160 chars ≈ 13 KB ≈ ~5K tokens, leaves ~10K for prompt/answer.
+_ASK_AGENT_MAX_RECORDS = 80
+_ASK_AGENT_RECORD_DESC_CHARS = 160
+_ASK_AGENT_TIMEOUT_S = 180.0
 
 
 def _ms_to_iso(ms: int | None) -> str:
