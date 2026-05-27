@@ -575,44 +575,49 @@ class SqliteDatabase:
         apps: list[str] | None = None,
         categories: list[str] | None = None,
         keyword: str | None = None,
+        order: str = "asc",
     ) -> list[dict]:
+        # `order` controls ts_start direction when no keyword is supplied
+        # (or short-keyword LIKE branch). FTS branch ignores it — BM25
+        # relevance always wins, doesn't make sense to sort by time.
+        # Default "asc" preserves the timeline-view semantics that the
+        # frontend depends on; callers wanting "most recent N" pass "desc".
+        order_dir = "DESC" if order.lower() == "desc" else "ASC"
+
         conditions = ["r.ts_start BETWEEN ? AND ?"]
-        params: list[Any] = [start_ms, end_ms]
+        where_params: list[Any] = [start_ms, end_ms]
 
         if cursor is not None:
             conditions.append("r.ts_start > (SELECT ts_start FROM records WHERE id=?)")
-            params.append(cursor)
+            where_params.append(cursor)
 
         if app_name:
             conditions.append("r.app_name = ?")
-            params.append(app_name)
+            where_params.append(app_name)
 
         if apps:
             placeholders = ",".join("?" * len(apps))
             conditions.append(f"r.app_name IN ({placeholders})")
-            params.extend(apps)
+            where_params.extend(apps)
 
         if categories:
             placeholders = ",".join("?" * len(categories))
             conditions.append(f"a.category_final IN ({placeholders})")
-            params.extend(categories)
+            where_params.extend(categories)
 
         # Keyword strategy: trigram-FTS5 MATCH for ≥3-char queries (CJK-friendly,
         # BM25-ranked), multi-field LIKE for <3 chars (so "VS" / "鸣潮" still
         # work — trigram requires 3+ chars to match). Both routes search the
         # same 5 fields: window_title, app_name, process_name, url, vlm_desc.
         use_fts = False
+        fts_match: str | None = None
         if keyword:
             kw = keyword.strip()
             if len(kw) >= _FTS_MIN_LEN:
                 use_fts = True
-                conditions.append(
-                    "r.id IN (SELECT record_id FROM records_fts WHERE records_fts MATCH ?)"
-                )
-                # Quote each token so FTS5 treats them as literal phrases and
-                # doesn't choke on punctuation. Multiple tokens become an
-                # implicit AND.
-                params.append(_fts_query(kw))
+                # Quote keyword as a phrase so FTS5 doesn't choke on punctuation
+                # or treat AND/OR/NEAR as operators.
+                fts_match = _fts_query(kw)
             else:
                 # Short keyword: multi-field LIKE so 1-2 char queries still hit.
                 conditions.append(
@@ -624,40 +629,64 @@ class SqliteDatabase:
                 )
                 escaped = kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 like = f"%{escaped}%"
-                params.extend([like, like, like, like, like])
+                where_params.extend([like, like, like, like, like])
 
         where = " AND ".join(conditions)
-        params.append(limit)
 
-        # When FTS hit, order by BM25 relevance (lower=better). Otherwise keep
-        # chronological for the timeline view.
+        # BM25 path uses a CTE so bm25() is called in the same query level
+        # as the FTS5 MATCH (FTS5 aux functions only work in that context;
+        # the old subquery-without-MATCH form silently returned a constant
+        # and the supposed "BM25 ranking" was actually insertion order).
+        # The CTE is also INNER-JOINed back to records, which doubles as the
+        # FTS filter (replaces the old `r.id IN (...)` form).
         if use_fts:
-            order_clause = (
-                "ORDER BY (SELECT bm25(records_fts) FROM records_fts "
-                "WHERE record_id = r.id LIMIT 1) ASC"
-            )
+            sql = """
+                WITH fts_hits AS (
+                    SELECT record_id, bm25(records_fts) AS rank_score
+                    FROM records_fts WHERE records_fts MATCH ?
+                )
+                SELECT r.*, a.vlm_desc, a.category_final, a.confidence,
+                       s.thumb_path,
+                       (SELECT COUNT(*) FROM screenshots
+                        WHERE record_id = r.id AND deleted_at IS NULL
+                       ) AS screenshot_count
+                FROM records r
+                JOIN fts_hits h ON h.record_id = r.id
+                LEFT JOIN analysis_results a ON a.record_id = r.id
+                LEFT JOIN (
+                    SELECT record_id, MIN(thumb_path) AS thumb_path
+                    FROM screenshots
+                    WHERE deleted_at IS NULL
+                    GROUP BY record_id
+                ) s ON s.record_id = r.id
+                WHERE {where}
+                ORDER BY h.rank_score ASC
+                LIMIT ?
+            """.format(where=where)
+            params: list[Any] = [fts_match, *where_params, limit]
         else:
-            order_clause = "ORDER BY r.ts_start ASC"
+            sql = """
+                SELECT r.*, a.vlm_desc, a.category_final, a.confidence,
+                       s.thumb_path,
+                       (SELECT COUNT(*) FROM screenshots
+                        WHERE record_id = r.id AND deleted_at IS NULL
+                       ) AS screenshot_count
+                FROM records r
+                LEFT JOIN analysis_results a ON a.record_id = r.id
+                LEFT JOIN (
+                    SELECT record_id, MIN(thumb_path) AS thumb_path
+                    FROM screenshots
+                    WHERE deleted_at IS NULL
+                    GROUP BY record_id
+                ) s ON s.record_id = r.id
+                WHERE {where}
+                ORDER BY r.ts_start {direction}
+                LIMIT ?
+            """.format(where=where, direction=order_dir)
+            params = [*where_params, limit]
 
         async with self._lock:
-            async with self.conn.execute(
-                f"""SELECT r.*, a.vlm_desc, a.category_final, a.confidence,
-                           s.thumb_path,
-                           (SELECT COUNT(*) FROM screenshots
-                            WHERE record_id = r.id AND deleted_at IS NULL
-                           ) AS screenshot_count
-                    FROM records r
-                    LEFT JOIN analysis_results a ON a.record_id = r.id
-                    LEFT JOIN (
-                        SELECT record_id, MIN(thumb_path) AS thumb_path
-                        FROM screenshots
-                        WHERE deleted_at IS NULL
-                        GROUP BY record_id
-                    ) s ON s.record_id = r.id
-                    WHERE {where}
-                    {order_clause} LIMIT ?""",
-                params,
-            ) as cur:
+            async with self.conn.execute(sql, params) as cur:
                 rows = await cur.fetchall()
         return [dict(r) for r in rows]
 

@@ -250,22 +250,29 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
         )
         window_note = ""
         if not rows:
-            # No data in the requested window. Try the all-time fallback so a
-            # demo against a stale DB still returns something useful, with a
-            # note explaining the auto-widening.
+            # No data in the requested window. Fall back to the all-time DESC
+            # query so a demo against a stale DB still returns the *most
+            # recent* N records, not the oldest 80 (which is what the default
+            # ASC sort would give and was the whole bug we're avoiding).
             rows = await db.query_records(
                 start_ms=0,
                 end_ms=now_ms,
                 limit=_ASK_AGENT_MAX_RECORDS,
+                order="desc",
             )
             if not rows:
                 return {
-                    "answer": "数据库里还没有任何活动记录。先启动 timetrace-client 采集一段时间再试。",
+                    "answer": (
+                        "数据库里还没有任何活动记录。"
+                        "先启动 timetrace-client 采集一段时间再试。"
+                    ),
                     "records_consulted": 0,
                     "model": vlm_cfg.model,
                 }
-            oldest = rows[-1].get("ts_start") if rows else now_ms
-            actual_hours = max(1, int((now_ms - oldest) / 3600_000))
+            # Rows are DESC by ts_start, so rows[0] is newest, rows[-1] is oldest.
+            # actual_hours reports how far back our context now reaches.
+            oldest_ts = min(r["ts_start"] for r in rows)
+            actual_hours = max(1, int((now_ms - oldest_ts) / 3600_000))
             window_note = (
                 f"（请求窗口 {hours_back}h 内无数据，已自动扩窗到 ~{actual_hours}h 找到 "
                 f"{len(rows)} 条历史记录用于回答）"

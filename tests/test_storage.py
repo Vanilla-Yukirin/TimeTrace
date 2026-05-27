@@ -209,6 +209,67 @@ async def test_query_records_short_keyword_falls_back_to_like(db):
     assert rows[0]["app_name"] == "VS"
 
 
+async def test_query_records_order_desc_returns_newest_first(db):
+    """Regression: ask_agent fallback wants the *most recent* N records, not
+    the oldest N. Was a bug — default ASC + LIMIT pulled the oldest N from
+    full-table queries, completely reversed from "what happened lately"."""
+    # Insert 3 records back-to-back; each one's ts_start is later than the
+    # previous because insert_record uses _now_ms() at call time.
+    await db.insert_record(
+        CaptureContext(app_name="OldApp", process_name="o", window_title="first"),
+        reason="heartbeat",
+    )
+    await db.insert_record(
+        CaptureContext(app_name="MidApp", process_name="m", window_title="second"),
+        reason="heartbeat",
+    )
+    await db.insert_record(
+        CaptureContext(app_name="NewApp", process_name="n", window_title="third"),
+        reason="heartbeat",
+    )
+
+    asc = await db.query_records(0, 9_999_999_999_999, limit=2, order="asc")
+    desc = await db.query_records(0, 9_999_999_999_999, limit=2, order="desc")
+
+    assert [r["app_name"] for r in asc] == ["OldApp", "MidApp"]
+    assert [r["app_name"] for r in desc] == ["NewApp", "MidApp"]
+
+
+async def test_query_records_fts_bm25_actually_ranks(db):
+    """Regression: BM25 ordering was a silent no-op because bm25() was called
+    in a subquery without MATCH (FTS5 aux functions only work alongside MATCH).
+    A record whose vlm_desc mentions the keyword many times should out-rank
+    one that mentions it once. Without working BM25 ordering this test fails
+    intermittently because results came back in undefined order."""
+    # Two records, both about "TimeTrace" but with different match densities.
+    rid_high = await db.insert_record(
+        CaptureContext(app_name="App1", process_name="a", window_title="w"),
+        reason="heartbeat",
+    )
+    await db.mark_pending(rid_high)
+    await db.save_description(
+        rid_high,
+        "TimeTrace 是一款桌面活动记录工具。TimeTrace 跑在本机。"
+        "我现在正在阅读 TimeTrace 的源码，理解 TimeTrace 的架构。",
+    )
+
+    rid_low = await db.insert_record(
+        CaptureContext(app_name="App2", process_name="b", window_title="w"),
+        reason="heartbeat",
+    )
+    await db.mark_pending(rid_low)
+    await db.save_description(
+        rid_low,
+        "今天天气真好，顺便提一句 TimeTrace 这种工具能记录我看了什么。",
+    )
+
+    rows = await db.query_records(0, 9_999_999_999_999, keyword="TimeTrace")
+    assert len(rows) == 2
+    # high-density (4 mentions) must out-rank low-density (1 mention).
+    assert rows[0]["id"] == rid_high
+    assert rows[1]["id"] == rid_low
+
+
 async def test_reclaim_stale_tasks(db):
     import time
 
