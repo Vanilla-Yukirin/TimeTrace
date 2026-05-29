@@ -87,13 +87,19 @@ CREATE TABLE IF NOT EXISTS analysis_results (
     category_final      TEXT,
     confidence          REAL,
     decision_trace      TEXT,
-    error_code          TEXT,
+    error_code           TEXT,
     error_msg           TEXT,
     retry_count         INTEGER NOT NULL DEFAULT 0,
     next_retry_at       INTEGER,
     status              TEXT NOT NULL DEFAULT 'pending_vlm',
     locked_at           INTEGER,
-    updated_at          INTEGER NOT NULL
+    updated_at          INTEGER NOT NULL,
+    -- Text embedding of vlm_desc (packed float32 bytes). NULL until the
+    -- worker's embedding stage fills it; backfill script can sweep older
+    -- vlm_done rows. Dimensionality set by EmbeddingConfig.dim (768 for
+    -- nomic-embed-v1.5); search-side numpy decode assumes float32.
+    text_embedding      BLOB,
+    text_embedding_model TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_analysis_status ON analysis_results(status);
@@ -296,6 +302,26 @@ class SqliteDatabase:
             )
             await self._conn.commit()
             logger.info("database.migrate", added_column="records.client_record_id")
+
+        # Embedding columns on analysis_results — added in embedding-pipeline
+        # Phase 1. Existing rows get NULL until backfill (Phase 2) sweeps.
+        async with self._conn.execute("PRAGMA table_info(analysis_results)") as cur:
+            ar_cols = {row["name"] for row in await cur.fetchall()}
+        if "text_embedding" not in ar_cols:
+            await self._conn.execute(
+                "ALTER TABLE analysis_results ADD COLUMN text_embedding BLOB"
+            )
+            await self._conn.commit()
+            logger.info("database.migrate", added_column="analysis_results.text_embedding")
+        if "text_embedding_model" not in ar_cols:
+            await self._conn.execute(
+                "ALTER TABLE analysis_results ADD COLUMN text_embedding_model TEXT"
+            )
+            await self._conn.commit()
+            logger.info(
+                "database.migrate",
+                added_column="analysis_results.text_embedding_model",
+            )
 
         # Backfill the (record_id, hash_sha256) UNIQUE for DBs created before
         # the dedup work in P3a-cleanup. Idempotent; the index uses IF NOT EXISTS.
@@ -944,6 +970,30 @@ class SqliteDatabase:
             await self.conn.commit()
         if rows_updated == 0:
             logger.warning("database.save_description.not_found", record_id=record_id)
+
+    async def save_text_embedding(
+        self, record_id: str, vec: bytes, model: str
+    ) -> None:
+        """Write a packed-float32 text embedding to ``analysis_results``.
+
+        Worker calls this after a successful ``save_description`` + transition
+        to ``vlm_done``. Idempotent — re-running just overwrites. Failures
+        here must never propagate up to the worker loop (caller catches).
+        """
+        now = _now_ms()
+        async with self._lock:
+            async with self.conn.execute(
+                "UPDATE analysis_results "
+                "SET text_embedding=?, text_embedding_model=?, updated_at=? "
+                "WHERE record_id=?",
+                (vec, model, now, record_id),
+            ) as cur:
+                rows_updated = cur.rowcount
+            await self.conn.commit()
+        if rows_updated == 0:
+            logger.warning(
+                "database.save_text_embedding.not_found", record_id=record_id
+            )
 
     async def transition(self, record_id: str, new_status: str) -> None:
         now = _now_ms()

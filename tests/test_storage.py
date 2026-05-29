@@ -57,6 +57,56 @@ async def test_save_description_and_transition(db):
     assert rows[0]["status"] == "vlm_done"
 
 
+async def test_save_text_embedding_round_trips(db):
+    """Round-trip: save → read back yields the same bytes + model.
+
+    Storage layer doesn't care what the bytes mean (just BLOB), but float32
+    packing in the worker → numpy decode on search side is the contract.
+    Validate exactly that the bytes survive unchanged.
+    """
+    import numpy as np  # local — not all storage tests need numpy
+
+    ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
+    record_id = await db.insert_record(ctx, reason="heartbeat")
+    await db.mark_pending(record_id)
+    await db.save_description(record_id, "test desc")
+
+    vec_bytes = np.asarray([0.1, 0.2, -0.3, 0.4], dtype=np.float32).tobytes()
+    await db.save_text_embedding(record_id, vec_bytes, "model-x")
+
+    async with db.conn.execute(
+        "SELECT text_embedding, text_embedding_model FROM analysis_results WHERE record_id=?",
+        (record_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["text_embedding"] == vec_bytes
+    assert row["text_embedding_model"] == "model-x"
+    decoded = np.frombuffer(row["text_embedding"], dtype=np.float32)
+    np.testing.assert_allclose(decoded, [0.1, 0.2, -0.3, 0.4], rtol=1e-6)
+
+
+async def test_save_text_embedding_idempotent_overwrite(db):
+    import numpy as np
+
+    ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
+    record_id = await db.insert_record(ctx, reason="heartbeat")
+    await db.mark_pending(record_id)
+    await db.save_description(record_id, "test desc")
+
+    v1 = np.asarray([1.0, 0.0], dtype=np.float32).tobytes()
+    v2 = np.asarray([0.0, 1.0], dtype=np.float32).tobytes()
+    await db.save_text_embedding(record_id, v1, "m1")
+    await db.save_text_embedding(record_id, v2, "m2")
+
+    async with db.conn.execute(
+        "SELECT text_embedding, text_embedding_model FROM analysis_results WHERE record_id=?",
+        (record_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["text_embedding"] == v2
+    assert row["text_embedding_model"] == "m2"
+
+
 async def test_mark_error_final(db):
     ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
     record_id = await db.insert_record(ctx, reason="heartbeat")

@@ -30,6 +30,7 @@ from timetrace.common.config import AppConfig
 from timetrace.server.api.app import create_app
 from timetrace.server.auth import ServerAuth
 from timetrace.server.db import Database
+from timetrace.server.embedding.client import EmbeddingClient
 from timetrace.server.phash_index.index import PHashIndex
 from timetrace.server.storage.blob import LocalBlobStorage
 from timetrace.server.users import UserStore
@@ -52,6 +53,7 @@ class ServerComponents:
     auth: ServerAuth
     users: UserStore
     vlm_client: VLMClient | None
+    embedding_client: EmbeddingClient | None
     worker: AnalysisWorker
     app: object  # FastAPI; loose-typed to avoid pulling fastapi into the dataclass
 
@@ -71,6 +73,18 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
         vlm_client = None
         gate = None
         logger.info("vlm.disabled", reason="no_api_key")
+
+    if config.embedding is not None:
+        embedding_client: EmbeddingClient | None = EmbeddingClient(config.embedding)
+        logger.info(
+            "embedding.ready",
+            model=config.embedding.model,
+            base_url=config.embedding.base_url,
+            dim=config.embedding.dim,
+        )
+    else:
+        embedding_client = None
+        logger.info("embedding.disabled", reason="no_model_configured")
 
     blob_storage = LocalBlobStorage(config.storage.data_dir)
     auth, was_generated, generated = ServerAuth.load_or_generate()
@@ -106,6 +120,7 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
         gate=gate,
         cfg=config.worker,
         storage_cfg=config.storage,
+        embedding=embedding_client,
     )
 
     app = create_app(
@@ -129,6 +144,7 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
         auth=auth,
         users=users,
         vlm_client=vlm_client,
+        embedding_client=embedding_client,
         worker=worker,
         app=app,
     )
@@ -192,6 +208,11 @@ async def serve(
                 await components.vlm_client.aclose()
             except Exception:  # noqa: BLE001
                 logger.warning("vlm.aclose_failed", exc_info=True)
+        if components.embedding_client is not None:
+            try:
+                await components.embedding_client.aclose()
+            except Exception:  # noqa: BLE001
+                logger.warning("embedding.aclose_failed", exc_info=True)
         try:
             await components.db.close()
         except Exception:  # noqa: BLE001

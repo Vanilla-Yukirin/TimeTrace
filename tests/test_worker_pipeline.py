@@ -198,3 +198,100 @@ async def test_claim_next_task_returns_retry_count(db, tmp_path):
     assert task is not None
     assert task["record_id"] == rid
     assert task["retry_count"] == 3
+
+
+# --------------------------------------------------------------------------- #
+# Embedding stage (best-effort after vlm_done)                                  #
+# --------------------------------------------------------------------------- #
+
+
+class _StubEmbedding:
+    """Mimics EmbeddingClient for the worker; returns a fixed byte string."""
+
+    def __init__(
+        self,
+        *,
+        vec_bytes: bytes = b"\x00" * 16,
+        error: Exception | None = None,
+    ) -> None:
+        self.vec_bytes = vec_bytes
+        self.error = error
+        self.calls = 0
+        self.model = "stub-embed"
+        self.dim = 4
+
+    async def embed(self, text: str) -> bytes:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.vec_bytes
+
+    async def aclose(self) -> None:  # pragma: no cover
+        return
+
+
+async def test_worker_calls_embedding_after_vlm_done(db, tmp_path):
+    """Happy path: VLM succeeds → embedding called → text_embedding column set."""
+    rid = await _seed_pending(db, tmp_path)
+    vlm = _StubVLM(payload={"keywords": ["k"], "summary": "s", "description": "d"})
+    embedding = _StubEmbedding(vec_bytes=b"\x01\x02\x03\x04" * 4)
+    worker = _make_worker(db, vlm, tmp_path)
+    worker._embedding = embedding  # inject post-construct (avoid threading through helper)
+
+    task = await db.claim_next_task("pending_vlm")
+    await worker._handle_one(task, worker_id=0)
+
+    assert embedding.calls == 1
+    async with db.conn.execute(
+        "SELECT text_embedding, text_embedding_model, status "
+        "FROM analysis_results WHERE record_id=?",
+        (rid,),
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "vlm_done"
+    assert row["text_embedding"] == b"\x01\x02\x03\x04" * 4
+    assert row["text_embedding_model"] == "stub-embed"
+
+
+async def test_worker_embedding_failure_does_not_block_vlm_done(db, tmp_path):
+    """Regression: embedding stage must NEVER prevent vlm_done. If embedding
+    endpoint is down, record still completes — backfill sweeps later."""
+    from timetrace.server.embedding.client import EmbeddingError
+
+    rid = await _seed_pending(db, tmp_path)
+    vlm = _StubVLM(payload={"keywords": [], "summary": "s", "description": "d"})
+    embedding = _StubEmbedding(error=EmbeddingError("endpoint down"))
+    worker = _make_worker(db, vlm, tmp_path)
+    worker._embedding = embedding
+
+    task = await db.claim_next_task("pending_vlm")
+    await worker._handle_one(task, worker_id=0)
+
+    assert embedding.calls == 1
+    async with db.conn.execute(
+        "SELECT text_embedding, status FROM analysis_results WHERE record_id=?",
+        (rid,),
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "vlm_done"        # vlm_done despite embedding failure
+    assert row["text_embedding"] is None      # left for backfill
+
+
+async def test_worker_without_embedding_client_short_circuits(db, tmp_path):
+    """When EmbeddingClient is None (env not configured), worker doesn't try."""
+    rid = await _seed_pending(db, tmp_path)
+    vlm = _StubVLM(payload={"keywords": [], "summary": "s", "description": "d"})
+    worker = _make_worker(db, vlm, tmp_path)
+    # worker._embedding is None by default (helper doesn't set it)
+    assert worker._embedding is None
+
+    task = await db.claim_next_task("pending_vlm")
+    await worker._handle_one(task, worker_id=0)
+
+    async with db.conn.execute(
+        "SELECT text_embedding, status FROM analysis_results WHERE record_id=?",
+        (rid,),
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "vlm_done"
+    assert row["text_embedding"] is None

@@ -43,6 +43,45 @@ class VLMConfig:
 
 
 @dataclass
+class EmbeddingConfig:
+    """Text-embedding endpoint config (OpenAI-compatible /v1/embeddings).
+
+    Separate from VLMConfig because (a) the embedding model name is different
+    from the chat model and (b) the endpoint may live on a different host
+    once we move beyond LM-Studio-everything-on-one-box. Today the two
+    typically share base_url and api_key.
+
+    None when ``TIMETRACE_EMBEDDING_*`` env not set — worker then skips the
+    embedding stage gracefully, exactly like it does without VLM.
+    """
+
+    base_url: str
+    api_key: str
+    model: str
+    # Expected vector dimensionality. Stored to validate API responses and
+    # to make the search-side numpy reshape unambiguous. nomic-embed-v1.5 = 768.
+    dim: int = 768
+
+    @classmethod
+    def from_env(cls) -> EmbeddingConfig | None:
+        api_key = os.getenv("TIMETRACE_EMBEDDING_API_KEY", "").strip()
+        # Fall back to VLM API key if embedding key not separately set —
+        # most users will run both against the same LM Studio instance.
+        if not api_key:
+            api_key = os.getenv("TIMETRACE_VLM_API_KEY", "").strip()
+        if not api_key:
+            return None
+        base_url = os.getenv("TIMETRACE_EMBEDDING_BASE_URL", "").strip() or os.getenv(
+            "TIMETRACE_VLM_BASE_URL", "https://api.openai.com/v1"
+        ).strip()
+        model = os.getenv("TIMETRACE_EMBEDDING_MODEL", "").strip()
+        if not model:
+            return None  # No default — without explicit model env the worker stays off
+        dim = int(os.getenv("TIMETRACE_EMBEDDING_DIM", "768"))
+        return cls(base_url=base_url, api_key=api_key, model=model, dim=dim)
+
+
+@dataclass
 class WorkerConfig:
     """Tunable parameters for the analysis worker."""
 
@@ -149,6 +188,7 @@ class AppConfig:
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     worker: WorkerConfig = field(default_factory=WorkerConfig)
     vlm: VLMConfig | None = field(default_factory=VLMConfig.from_env)
+    embedding: EmbeddingConfig | None = field(default_factory=EmbeddingConfig.from_env)
     auth: AuthConfig = field(default_factory=AuthConfig.from_env)
     api_host: str = "127.0.0.1"
     api_port: int = 8765

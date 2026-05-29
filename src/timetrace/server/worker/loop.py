@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import structlog
 from PIL import Image
 
+from timetrace.server.embedding.client import EmbeddingClient, EmbeddingError
 from timetrace.server.vlm.client import VLMClient, VLMError, format_description
 from timetrace.server.vlm.health import VLMHealthGate
 
@@ -43,6 +44,7 @@ class AnalysisWorker:
         gate: VLMHealthGate | None = None,
         cfg: WorkerConfig | None = None,
         storage_cfg: StorageConfig | None = None,
+        embedding: EmbeddingClient | None = None,
     ) -> None:
         self._db = db
         self._vlm = vlm
@@ -51,6 +53,10 @@ class AnalysisWorker:
 
         self._cfg = cfg or _WorkerConfig()
         self._storage_cfg = storage_cfg
+        # Optional — when None, _embed_and_save short-circuits silently. Worker
+        # NEVER blocks vlm_done on embedding success; embedding is best-effort,
+        # fillable by a separate backfill sweep (Phase 2).
+        self._embedding = embedding
 
     async def run(self) -> None:
         if self._vlm is None or self._gate is None:
@@ -126,6 +132,38 @@ class AnalysisWorker:
             worker_id=worker_id,
             record_id=record_id,
             chars=len(text),
+        )
+        # Best-effort embedding stage. Failure → log + skip; vlm_done remains
+        # the durable state. Phase 2 backfill sweeps any rows that landed
+        # here with NULL embedding (worker down / endpoint down / etc).
+        await self._embed_and_save(record_id, text, worker_id)
+
+    async def _embed_and_save(self, record_id: str, text: str, worker_id: int) -> None:
+        if self._embedding is None or not text:
+            return
+        try:
+            vec_bytes = await self._embedding.embed(text)
+        except EmbeddingError as exc:
+            logger.warning(
+                "worker.embedding_failed",
+                worker_id=worker_id,
+                record_id=record_id,
+                error=str(exc),
+            )
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "worker.embedding_unexpected",
+                worker_id=worker_id,
+                record_id=record_id,
+            )
+            return
+        await self._db.save_text_embedding(record_id, vec_bytes, self._embedding.model)
+        logger.info(
+            "worker.embedding_done",
+            worker_id=worker_id,
+            record_id=record_id,
+            bytes=len(vec_bytes),
         )
 
     async def _fail(self, record_id: str, retry_count: int, error_msg: str) -> None:
