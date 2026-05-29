@@ -12,6 +12,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
 from timetrace.server.api.deps import require_session
+from timetrace.server.api.mcp_auth import BearerOnlyMiddleware
 from timetrace.server.api.routes import auth as auth_routes
 from timetrace.server.api.routes import feedback, ingest, records, search, thumbs
 from timetrace.server.auth import make_bearer_dependency
@@ -135,9 +136,14 @@ def create_app(
 
     # MCP server: exposes activity context as tools to external AI agents
     # (Claude Code / Desktop). Mounted at /mcp, streamable-HTTP transport.
-    # Phase 3 will wrap this with a starlette BearerOnlyMiddleware. Until then
-    # the public proxy stays disabled at frpc, so the mount stays open for
-    # loopback / SSH-tunnel use.
-    app.mount("/mcp", mcp_server.streamable_http_app())
+    # Phase 3 (login system): when a ServerAuth is configured, wrap the
+    # sub-app in BearerOnlyMiddleware so the mount only honors valid bearer
+    # tokens — cookies / sessions don't apply here (MCP clients aren't
+    # browsers). The wrap MUST happen before ``mount`` because starlette
+    # freezes the middleware stack of a mounted app.
+    mcp_app = mcp_server.streamable_http_app()
+    if auth is not None:
+        mcp_app = BearerOnlyMiddleware(mcp_app, auth)
+    app.mount("/mcp", mcp_app)
 
     return app
