@@ -1,20 +1,22 @@
 import { useQuery } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { apiFetch } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
 import { dayRange, toDateParam } from '@/lib/dateUtils'
+import type { ApiRecord, RecordsResponse } from '@/types/api'
 
 const MAX_PAGES = 20  // 上限 10000 条，防止异常 cursor 导致无限循环
 
-async function fetchAllRecords(start: number, end: number): Promise<import('@/types/api').ApiRecord[]> {
-  const items: import('@/types/api').ApiRecord[] = []
+async function fetchAllRecords(start: number, end: number): Promise<ApiRecord[]> {
+  const items: ApiRecord[] = []
   let cursor: string | null = null
   let pages = 0
   do {
     const p = new URLSearchParams({ start: String(start), end: String(end), limit: '500' })
     if (cursor) p.set('cursor', cursor)
-    const res = await fetch(`/v1/records?${p}`)
-    if (!res.ok) throw new Error(`GET /v1/records failed: ${res.status} ${res.statusText}`)
-    const page = await res.json() as import('@/types/api').RecordsResponse
+    // Via apiFetch so a mid-session 401 throws UnauthorizedError + broadcasts
+    // the cross-tab kick (and the QueryClient onError redirects this tab),
+    // rather than surfacing as an opaque error on a stuck authed page.
+    const page = await apiFetch<RecordsResponse>(`/v1/records?${p}`)
     items.push(...page.items)
     cursor = page.next_cursor
     pages++

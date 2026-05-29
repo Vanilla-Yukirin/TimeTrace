@@ -93,11 +93,19 @@ def verify_password(plaintext: str, hashed: str) -> bool:
         return False
 
 
+# bcrypt (the C lib, 4.x/5.x) refuses passwords longer than 72 BYTES — 5.x
+# raises ValueError outright. Cap explicitly in validation so an over-long
+# password fails as a clean InvalidPasswordError ("too long") instead of
+# bubbling bcrypt's raw internal message out of a generic except ValueError.
+# Note: bytes, not chars — ~25 emoji already exceed 72 bytes.
+_BCRYPT_MAX_BYTES = 72
+
+
 def validate_new_password(plaintext: str) -> None:
     """Enforce password complexity. Raise :class:`InvalidPasswordError` on rejection.
 
     Rules (single-user, public-internet but rate-limited):
-      - 8+ characters
+      - 8+ characters, at most 72 bytes (bcrypt's hard limit)
       - contains at least one letter AND one digit
 
     Special characters are not required — the rate-limit + bcrypt + 30-day
@@ -106,10 +114,22 @@ def validate_new_password(plaintext: str) -> None:
     """
     if len(plaintext) < 8:
         raise InvalidPasswordError("password must be at least 8 characters")
+    if len(plaintext.encode("utf-8")) > _BCRYPT_MAX_BYTES:
+        raise InvalidPasswordError(
+            f"password must be at most {_BCRYPT_MAX_BYTES} bytes "
+            "(note: non-ASCII characters count as multiple bytes)"
+        )
     if not any(c.isalpha() for c in plaintext):
         raise InvalidPasswordError("password must contain at least one letter")
     if not any(c.isdigit() for c in plaintext):
         raise InvalidPasswordError("password must contain at least one digit")
+
+
+# Fixed bcrypt hash of a random throwaway string, computed once at import. Used
+# to spend the SAME ~bcrypt cost on the unknown-username path as on the
+# wrong-password path, so login latency doesn't leak whether a username exists
+# (timing oracle). The plaintext is random and never matches any real password.
+_DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
 
 
 class _LoginRateLimiter:
@@ -181,11 +201,25 @@ class UserStore:
             hash_password(self._cfg.admin_initial_password),
             must_change=True,
         )
-        logger.info(
-            "auth.admin_seeded",
-            username=self._cfg.admin_username,
-            initial_password=self._cfg.admin_initial_password,
-        )
+        # Log the seeded password ONLY when it's a randomly-minted one the
+        # operator otherwise has no way to learn (public deploy, no env). Never
+        # log the literal "admin" default (pointless) and never log an
+        # operator-supplied password (they already know it). journal/syslog
+        # persists, so we gate the one case where logging is both necessary and
+        # acceptable.
+        if self._cfg.admin_password_is_default:
+            logger.warning(
+                "auth.admin_seeded",
+                username=self._cfg.admin_username,
+                password="admin (default — change on first login)",
+            )
+        else:
+            logger.warning(
+                "auth.admin_seeded",
+                username=self._cfg.admin_username,
+                initial_password=self._cfg.admin_initial_password,
+                note="randomly minted — copy now, change on first login",
+            )
         return True
 
     # -------------------------------------------------------------- #
@@ -208,7 +242,16 @@ class UserStore:
         """
         self._rate.check(ip)
         user = await self._db.get_user(username)
-        if user is None or not verify_password(password, user["password_hash"]):
+        # Always run a bcrypt verification — against the real hash if the user
+        # exists, else against a fixed dummy hash — so the unknown-username path
+        # costs the same ~bcrypt time as the wrong-password path. Without this,
+        # `user is None` short-circuits before bcrypt and a fast 401 leaks
+        # "username doesn't exist" (timing oracle), defeating the deliberately
+        # identical "invalid username or password" message.
+        password_ok = verify_password(
+            password, user["password_hash"] if user is not None else _DUMMY_HASH
+        )
+        if user is None or not password_ok:
             self._rate.record_failure(ip)
             raise PermissionError("invalid credentials")
         self._rate.record_success(ip)
@@ -222,6 +265,9 @@ class UserStore:
             user_agent=user_agent,
             ip=ip,
         )
+        # Cap concurrent sessions: evict the oldest beyond the limit so a 30-day
+        # session set can't grow unbounded and a stale captured session ages out.
+        await self._db.prune_sessions_over_cap(username, self._cfg.max_sessions_per_user)
         return CookiePrincipal(
             username=username,
             session_id=session_id,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import structlog
 from fastapi import Depends, FastAPI
@@ -11,7 +12,10 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
-from timetrace.server.api.deps import require_principal, require_session
+from timetrace.server.api.deps import (
+    require_principal,
+    require_session_password_set,
+)
 from timetrace.server.api.mcp_auth import BearerOnlyMiddleware
 from timetrace.server.api.routes import admin as admin_routes
 from timetrace.server.api.routes import auth as auth_routes
@@ -130,7 +134,7 @@ def create_app(
     if users is not None:
 
         @app.get("/openapi.json", include_in_schema=False)
-        async def protected_openapi(_=Depends(require_session)) -> JSONResponse:
+        async def protected_openapi(_=Depends(require_session_password_set)) -> JSONResponse:
             return JSONResponse(
                 get_openapi(
                     title=app.title,
@@ -141,7 +145,7 @@ def create_app(
             )
 
         @app.get("/docs", include_in_schema=False)
-        async def protected_docs(_=Depends(require_session)):
+        async def protected_docs(_=Depends(require_session_password_set)):
             return get_swagger_ui_html(
                 openapi_url="/openapi.json",
                 title=app.title + " – Swagger UI",
@@ -158,5 +162,31 @@ def create_app(
     if auth is not None:
         mcp_app = BearerOnlyMiddleware(mcp_app, auth)
     app.mount("/mcp", mcp_app)
+
+    # CSRF defense-in-depth (only in secure/public mode): SameSite=Lax already
+    # blocks the classic cross-SITE POST, but a same-SITE sibling subdomain
+    # (e.g. evil.yukirin.me) is treated as same-site and would still send the
+    # cookie on a cross-subdomain forged POST. Reject any cookie-authenticated
+    # mutating request whose Origin host doesn't match the served Host.
+    # Skipped entirely in dev (cookie_secure=False) because the Vite proxy
+    # rewrites Host while the browser Origin stays :5173, which would false-403.
+    # Bearer requests (no cookie) and login (no cookie yet) are unaffected.
+    if auth_cfg is not None and auth_cfg.cookie_secure:
+        _cookie_name = auth_cfg.cookie_name
+        _mutating = {"POST", "PUT", "PATCH", "DELETE"}
+
+        @app.middleware("http")
+        async def csrf_origin_guard(request, call_next):
+            if request.method in _mutating and request.cookies.get(_cookie_name):
+                origin = request.headers.get("origin")
+                if origin:
+                    origin_host = urlparse(origin).netloc
+                    host = request.headers.get("host", "")
+                    if origin_host and origin_host != host:
+                        return JSONResponse(
+                            {"detail": "cross-origin request refused"},
+                            status_code=403,
+                        )
+            return await call_next(request)
 
     return app

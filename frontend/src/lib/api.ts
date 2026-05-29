@@ -23,24 +23,43 @@ export class UnauthorizedError extends Error {
   }
 }
 
-/** Broadcast a 401 to other tabs via localStorage; the value is just a
- *  timestamp so two close-in-time kicks both fire the storage event. */
-function broadcastKick(): void {
+// Monotonic counter so each broadcast writes a DISTINCT value. A 'storage'
+// event only fires when the stored value actually CHANGES, so two kicks in the
+// same millisecond would otherwise collide (the 2nd setItem = no-op, no event).
+let _kickSeq = 0
+
+/** Broadcast a logout/401 to OTHER tabs via a localStorage 'storage' event so
+ *  they clear their auth state too. Exported so the explicit logout flow can
+ *  fire it (a 204 logout doesn't go through the 401 path). Note: the writing
+ *  tab never receives its own 'storage' event — it must clear state locally. */
+export function broadcastKick(): void {
   try {
-    localStorage.setItem('tt_auth_kicked', String(Date.now()))
+    localStorage.setItem('tt_auth_kicked', `${Date.now()}-${++_kickSeq}`)
   } catch {
     // localStorage can be unavailable (private mode iframe); not fatal.
   }
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+/** The ONE fetch wrapper every API call must go through. Centralizes:
+ *  - credentials:'include' (send the HttpOnly session cookie)
+ *  - 401 → broadcastKick() + UnauthorizedError (so AuthContext/RequireAuth
+ *    can react uniformly; see the QueryClient onError handler in App.tsx)
+ *  - JSON Content-Type ONLY for string bodies (FormData must set its own
+ *    multipart boundary — never force application/json on it)
+ *  Exported so data hooks (useRecords/useApps/useSearchQuery) participate in
+ *  the same 401-recovery path instead of hand-rolling raw fetch().
+ */
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const isStringBody = typeof init?.body === 'string'
+  const baseHeaders: Record<string, string> = isStringBody
+    ? { 'Content-Type': 'application/json' }
+    : {}
   const res = await fetch(path, {
-    // Send the HttpOnly tt_session cookie on every request. Same-origin in
-    // production (front + back at timetrace.yukirin.me), Vite proxy in dev
-    // (5173 → 8765 — proxy forwards cookies natively).
+    // Same-origin in prod (front + back at timetrace.yukirin.me), Vite proxy
+    // in dev (5173 → 8765 — proxy forwards cookies natively).
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     ...init,
+    headers: { ...baseHeaders, ...(init?.headers ?? {}) },
   })
   if (res.status === 401) {
     broadcastKick()

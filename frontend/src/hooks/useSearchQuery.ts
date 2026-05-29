@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { apiFetch } from '@/lib/api'
 import type {
   ApiRecord,
   ChannelStatus,
@@ -63,9 +64,12 @@ async function searchByImage(p: SearchParams): Promise<SearchState> {
   if (p.categories.length) fd.append('categories', p.categories.join(','))
   fd.append('limit', String(p.limit))
 
-  const res = await fetch('/v1/search/by-image', { method: 'POST', body: fd })
-  if (!res.ok) throw new Error(`POST /v1/search/by-image failed: ${res.status}`)
-  const body = (await res.json()) as SearchByImageResponse
+  // apiFetch leaves FormData's Content-Type alone (multipart boundary) and
+  // routes 401 through the shared kick/redirect path.
+  const body = await apiFetch<SearchByImageResponse>('/v1/search/by-image', {
+    method: 'POST',
+    body: fd,
+  })
   return {
     items: body.items,
     total: body.total,
@@ -83,9 +87,7 @@ async function searchByRecords(p: SearchParams): Promise<SearchState> {
   if (p.apps.length) sp.set('apps', p.apps.join(','))
   if (p.categories.length) sp.set('categories', p.categories.join(','))
 
-  const res = await fetch(`/v1/records?${sp}`)
-  if (!res.ok) throw new Error(`GET /v1/records failed: ${res.status}`)
-  const body = (await res.json()) as RecordsResponse
+  const body = await apiFetch<RecordsResponse>(`/v1/records?${sp}`)
   // Records are returned ts_start asc — flip so newest first in search view
   const items = [...body.items].reverse().map(recordToResult)
   return {

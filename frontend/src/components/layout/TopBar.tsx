@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { LogOut } from 'lucide-react'
 import { toast } from 'sonner'
-import { api } from '@/lib/api'
+import { api, broadcastKick } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 
 export function TopBar() {
@@ -20,6 +20,10 @@ export function TopBar() {
     // app off a stale cached user ("退出闪烁" bug). Don't rely on an async /me
     // refetch here — that's what caused the flicker.
     setUser(null)
+    // A 204 logout doesn't trip apiFetch's 401 broadcast, so kick other tabs
+    // explicitly — otherwise they'd keep showing authed UI against the now-
+    // revoked cookie until their next window-focus.
+    broadcastKick()
     toast.success('已退出登录')
     navigate('/login', { replace: true })
   }

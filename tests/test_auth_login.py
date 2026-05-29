@@ -377,8 +377,21 @@ def test_docs_requires_session(client):
     assert r2.status_code == 401
 
 
+def test_docs_must_change_is_403(client):
+    """A must-change session can't view /docs until the password is changed."""
+    client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
+    assert client.get("/docs").status_code == 403
+    assert client.get("/openapi.json").status_code == 403
+
+
 def test_docs_visible_after_login(client):
     client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
+    # Clear the forced-change flag first — /docs is gated by
+    # require_session_password_set (must-change → 403).
+    client.post(
+        "/v1/auth/change-password",
+        json={"old_password": "admin", "new_password": "newpass123"},
+    )
     r = client.get("/docs")
     assert r.status_code == 200
     assert "Swagger UI" in r.text or "swagger" in r.text.lower()

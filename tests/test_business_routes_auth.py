@@ -93,12 +93,29 @@ def test_business_route_no_auth_is_401(client, method, path, body):
 
 
 @pytest.mark.parametrize("method,path,body", GATED_ENDPOINTS)
-def test_business_route_with_cookie_passes(client, method, path, body):
+def test_business_route_must_change_cookie_is_403(client, method, path, body):
+    """A raw admin/admin (must-change) cookie session is 403 on data routes —
+    the forced password change is enforced server-side, not just in the SPA."""
     client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
     r = _call(client, method, path, body)
+    assert r.status_code == 403, f"{method} {path} expected 403 got {r.status_code}"
+
+
+@pytest.mark.parametrize("method,path,body", GATED_ENDPOINTS)
+def test_business_route_with_cookie_passes(client, method, path, body):
+    # Activate the session (clear must-change) so the cookie genuinely grants
+    # access rather than 403-ing on the password-change gate.
+    client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
+    client.post(
+        "/v1/auth/change-password",
+        json={"old_password": "admin", "new_password": "newpass123"},
+    )
+    r = _call(client, method, path, body)
     # The endpoint may return 422 (validation), 200 (success), 404 (missing
-    # record) etc., but NOT 401 — that's the only thing the gate decides.
-    assert r.status_code != 401, f"{method} {path} expected non-401 got {r.status_code}"
+    # record) etc., but NOT 401/403 — the gate let the request through.
+    assert r.status_code not in (401, 403), (
+        f"{method} {path} expected non-401/403 got {r.status_code}"
+    )
 
 
 @pytest.mark.parametrize("method,path,body", GATED_ENDPOINTS)

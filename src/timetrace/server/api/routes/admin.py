@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from timetrace.server.api.deps import require_session
+from timetrace.server.api.deps import require_session_password_set
 
 if TYPE_CHECKING:
     from timetrace.server.auth import ServerAuth
@@ -56,7 +56,7 @@ def _auth(request: Request) -> ServerAuth:
 @router.get("/tokens", response_model=list[TokenSummary])
 async def list_tokens(
     request: Request,
-    _user: CookiePrincipal = Depends(require_session),
+    _user: CookiePrincipal = Depends(require_session_password_set),
 ) -> list[TokenSummary]:
     auth = _auth(request)
     return [TokenSummary(label=t.label, created_at=t.created_at) for t in auth.tokens]
@@ -66,7 +66,7 @@ async def list_tokens(
 async def create_token(
     body: CreateTokenRequest,
     request: Request,
-    _user: CookiePrincipal = Depends(require_session),
+    _user: CookiePrincipal = Depends(require_session_password_set),
 ) -> TokenCreated:
     auth = _auth(request)
     try:
@@ -81,7 +81,7 @@ async def create_token(
 async def revoke_token(
     label: str,
     request: Request,
-    _user: CookiePrincipal = Depends(require_session),
+    _user: CookiePrincipal = Depends(require_session_password_set),
 ):
     auth = _auth(request)
     if not auth.revoke_token(label):

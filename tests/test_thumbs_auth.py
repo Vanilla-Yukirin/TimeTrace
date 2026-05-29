@@ -90,13 +90,31 @@ def client(app):
 # --------------------------------------------------------------------- #
 
 
+def _login_activated(client):
+    """admin/admin login + clear forced-change so the cookie can reach gated
+    routes (a raw must-change session is 403 on /thumbs by design)."""
+    client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
+    r = client.post(
+        "/v1/auth/change-password",
+        json={"old_password": "admin", "new_password": "newpass123"},
+    )
+    assert r.status_code == 204
+
+
 def test_thumb_no_auth_is_401(client):
     r = client.get("/thumbs/hello.jpg")
     assert r.status_code == 401
 
 
-def test_thumb_with_cookie_after_login(client):
+def test_thumb_must_change_cookie_is_403(client):
+    """A must-change cookie session can't read thumbnails until the password
+    is changed — 403, not 200."""
     client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
+    assert client.get("/thumbs/hello.jpg").status_code == 403
+
+
+def test_thumb_with_cookie_after_login(client):
+    _login_activated(client)
     r = client.get("/thumbs/hello.jpg")
     assert r.status_code == 200
     assert r.content == b"\xff\xd8\xff-fake-jpeg"
@@ -135,7 +153,7 @@ def test_thumb_cookie_takes_precedence_over_bad_bearer(client):
     Real-world scenario: a logged-in browser somehow has a stale Authorization
     header injected (e.g. an extension). Cookie should win.
     """
-    client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
+    _login_activated(client)
     r = client.get(
         "/thumbs/hello.jpg",
         headers={"Authorization": "Bearer tt_live_ghost"},

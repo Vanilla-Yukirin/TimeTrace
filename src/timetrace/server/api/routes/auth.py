@@ -50,15 +50,22 @@ class ChangePasswordRequest(BaseModel):
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort source IP for rate-limit keying.
+    """Trusted source IP for rate-limit keying.
 
-    Trusts ``X-Forwarded-For`` if set (nginx sets it for public requests).
-    For loopback requests there's no XFF; falls back to peer address.
+    SECURITY: do NOT trust ``X-Forwarded-For``. nginx forwards it with
+    ``$proxy_add_x_forwarded_for`` which APPENDS the real peer to whatever the
+    client sent, so its left-most value is fully attacker-controlled — an
+    attacker rotating XFF per request gets a fresh rate-limit bucket every time
+    and the lockout never trips (brute-force bypass).
+
+    Instead trust ``X-Real-IP``, which the nginx vhost sets to ``$remote_addr``
+    (OVERWRITE, not append) — the actual TCP peer nginx sees, which the client
+    cannot forge. Fall back to the direct ASGI peer for loopback / dev
+    (single-process, SSH tunnel) where there's no nginx in front.
     """
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        # XFF is "client, proxy1, proxy2" — left-most is the original client.
-        return xff.split(",", 1)[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
     client = request.client
     return client.host if client else "unknown"
 

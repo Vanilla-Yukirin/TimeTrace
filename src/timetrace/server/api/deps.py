@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import Cookie, Header, HTTPException, Request, status
+from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 
 from timetrace.server.auth import BearerPrincipal
 from timetrace.server.users import CookiePrincipal
@@ -65,16 +65,22 @@ def _resolve_bearer(request: Request, token: str) -> BearerPrincipal | None:
     return BearerPrincipal(token_label=label)
 
 
+# Detail string returned (403) when a session whose user still has the forced
+# password-change flag tries to reach a gated route. Surfaced so the frontend /
+# a script gets a clear reason instead of a generic 401.
+_MUST_CHANGE_DETAIL = "password change required before accessing this resource"
+
+
 async def require_session(
     request: Request,
     tt_session: str | None = Cookie(default=None),
 ) -> CookiePrincipal:
-    """Cookie-only — 401 if missing or invalid.
+    """Cookie-only — 401 if missing or invalid. Allows a must-change session.
 
-    Used by /v1/auth/me, /logout, /change-password, /admin/* and the protected
-    /docs entry. Sets the constraint that these routes can only be performed
-    interactively by the logged-in user, not by a script holding a bearer
-    token.
+    Used by the auth-self routes /v1/auth/me, /logout, /change-password — these
+    MUST stay reachable while ``password_must_change`` is set so the user can
+    actually change their password. Routes that should be BLOCKED until the
+    password is changed use :func:`require_session_password_set` instead.
     """
     if not tt_session:
         raise HTTPException(
@@ -90,6 +96,20 @@ async def require_session(
     return user
 
 
+async def require_session_password_set(
+    user: CookiePrincipal = Depends(require_session),
+) -> CookiePrincipal:
+    """Cookie session whose user has ALREADY changed the default password.
+
+    Used by /v1/admin/* and /docs — admin operations a still-default account
+    must not perform. A must-change session gets 403 (not 401: it IS
+    authenticated, it's just gated until the password is changed).
+    """
+    if user.must_change_password:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_MUST_CHANGE_DETAIL)
+    return user
+
+
 async def require_principal(
     request: Request,
     tt_session: str | None = Cookie(default=None),
@@ -101,14 +121,20 @@ async def require_principal(
       1. Cookie session (cheaper for the common browser path).
       2. Bearer token (machine path).
 
-    The first one that resolves wins; nothing further is checked. Routes
-    receive either a :class:`CookiePrincipal` or a :class:`BearerPrincipal`
-    (Python's structural type-narrowing via ``isinstance`` lets the route
-    branch by channel when it cares).
+    SECURITY: a cookie session whose user still has ``password_must_change``
+    set is REJECTED with 403 here — otherwise the forced first-login password
+    change would be a frontend-only redirect that any non-browser client
+    (curl / script) skips, letting default admin/admin credentials read all
+    data and mint bearer tokens before the password is ever changed. Bearer
+    principals are machine tokens with no must-change concept and pass through.
     """
     if tt_session:
         user = await _resolve_cookie(request, tt_session)
         if user is not None:
+            if user.must_change_password:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail=_MUST_CHANGE_DETAIL
+                )
             return user
 
     token = _extract_bearer(authorization)

@@ -14,7 +14,12 @@ export function LoginPage() {
   const { user, refetch } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const from = (location.state as LocationState | null)?.from ?? '/'
+  const rawFrom = (location.state as LocationState | null)?.from ?? '/'
+  // Never bounce a freshly-logged-in user back onto an auth route. If they hit
+  // /login/change-password while unauthenticated, RequireAuth stashes that as
+  // `from`; landing a normal (must_change=false) user there post-login shows
+  // the change-password form unexpectedly. Normalize any /login* → '/'.
+  const from = rawFrom.startsWith('/login') ? '/' : rawFrom
 
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')

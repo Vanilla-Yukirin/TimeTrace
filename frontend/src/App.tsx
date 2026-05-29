@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { MainLayout } from './components/layout/AppShell'
@@ -6,6 +6,8 @@ import { RequireAuth } from './components/RequireAuth'
 import { AuthProvider } from './contexts/AuthContext'
 import { Sidebar } from './components/layout/Sidebar'
 import { TopBar } from './components/layout/TopBar'
+import { UnauthorizedError } from './lib/api'
+import { queryKeys } from './lib/queryKeys'
 import { ChangePasswordPage } from './pages/ChangePasswordPage'
 import { LoginPage } from './pages/LoginPage'
 import { TimelinePage } from './pages/TimelinePage'
@@ -13,6 +15,19 @@ import { SearchPage } from './pages/SearchPage'
 import { SettingsPage } from './pages/SettingsPage'
 
 const queryClient = new QueryClient({
+  // Global 401 recovery for the CURRENT tab: a 'storage' event never fires in
+  // the tab that wrote it, so broadcastKick() (in apiFetch) only kicks OTHER
+  // tabs. Any query that throws UnauthorizedError here clears the cached auth
+  // principal, which flips AuthContext.user → null → RequireAuth redirects
+  // THIS tab to /login. Without this, a mid-session 401 on a data query left
+  // the tab stuck on a protected page until the next window-focus refetch.
+  queryCache: new QueryCache({
+    onError: (error) => {
+      if (error instanceof UnauthorizedError) {
+        queryClient.setQueryData(queryKeys.authMe(), null)
+      }
+    },
+  }),
   defaultOptions: {
     queries: {
       retry: 1,

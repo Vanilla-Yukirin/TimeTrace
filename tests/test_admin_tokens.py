@@ -64,8 +64,16 @@ def client(app):
 
 
 def _login(client):
+    """Log in as admin/admin AND clear the forced-change flag, so the resulting
+    cookie session can reach the gated admin routes. (A raw must-change session
+    is now 403 on admin/business/thumbs by design — see test_must_change_*.)"""
     r = client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
     assert r.status_code == 200
+    r = client.post(
+        "/v1/auth/change-password",
+        json={"old_password": "admin", "new_password": "newpass123"},
+    )
+    assert r.status_code == 204
 
 
 # --------------------------------------------------------------------- #
@@ -81,6 +89,18 @@ def test_bearer_does_not_unlock_admin(client):
     # Even a VALID bearer can't manage tokens — admin is interactive-only.
     r = client.get("/v1/admin/tokens", headers={"Authorization": "Bearer tt_live_seed"})
     assert r.status_code == 401
+
+
+def test_must_change_session_is_403_on_admin(client):
+    """A freshly-logged-in admin/admin session (password_must_change=1) must NOT
+    be able to manage tokens until the password is changed — 403, not 200."""
+    r = client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
+    assert r.status_code == 200
+    assert r.json()["must_change_password"] is True
+    # List + create + revoke all gated behind the password change.
+    assert client.get("/v1/admin/tokens").status_code == 403
+    assert client.post("/v1/admin/tokens", json={"label": "x"}).status_code == 403
+    assert client.delete("/v1/admin/tokens/seed").status_code == 403
 
 
 def test_list_tokens_after_login(client):

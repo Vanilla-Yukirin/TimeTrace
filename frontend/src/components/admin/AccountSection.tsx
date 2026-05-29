@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { KeyRound, LogOut } from 'lucide-react'
 import { toast } from 'sonner'
-import { api } from '@/lib/api'
+import { api, broadcastKick } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 
 /** Settings → Account: who am I, change password, log out. */
@@ -16,6 +16,7 @@ export function AccountSection() {
       // ignore — we clear local state below regardless
     }
     setUser(null) // synchronous clear → no stale-user bounce/flicker
+    broadcastKick() // kick other tabs (204 logout doesn't trip the 401 path)
     toast.success('已退出登录')
     navigate('/login', { replace: true })
   }

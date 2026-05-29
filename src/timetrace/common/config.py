@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -170,12 +171,38 @@ class AuthConfig:
     login_rate_threshold: int = 5
     # Lockout duration after the threshold is hit.
     login_lockout_s: int = 30 * 60       # 30 min
+    # Cap on concurrent live sessions per user; on the (N+1)th login the oldest
+    # session row is evicted. Bounds unbounded 30-day-session accumulation and
+    # the blast radius of a single captured session.
+    max_sessions_per_user: int = 10
+    # Whether the seeded initial password was the literal insecure default
+    # "admin" (True) vs an operator-provided / randomly-minted one (False).
+    # Drives the first-start banner + a public-deploy safety check.
+    admin_password_is_default: bool = True
 
     @classmethod
     def from_env(cls) -> AuthConfig:
+        secure = not _env_truthy(os.getenv("TIMETRACE_INSECURE_COOKIE"))
+        explicit_pw = os.getenv("TIMETRACE_ADMIN_INITIAL_PASSWORD", "").strip()
+        if explicit_pw:
+            initial_pw = explicit_pw
+            is_default = False
+        elif secure:
+            # Public/HTTPS deploy with no explicit seed password → mint a random
+            # one. A fresh PUBLIC instance must never ship with guessable
+            # admin/admin (the seeded password is logged once at first start so
+            # the operator can read it from the journal). Local dev (insecure
+            # cookie = loopback only) keeps the convenient "admin" default.
+            initial_pw = "tt-init-" + secrets.token_urlsafe(12)
+            is_default = False
+        else:
+            initial_pw = "admin"
+            is_default = True
         return cls(
             admin_username=os.getenv("TIMETRACE_ADMIN_USERNAME", "admin").strip() or "admin",
-            cookie_secure=not _env_truthy(os.getenv("TIMETRACE_INSECURE_COOKIE")),
+            admin_initial_password=initial_pw,
+            admin_password_is_default=is_default,
+            cookie_secure=secure,
         )
 
 

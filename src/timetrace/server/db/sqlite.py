@@ -1381,6 +1381,30 @@ class SqliteDatabase:
             await self.conn.commit()
             return cur.rowcount or 0
 
+    async def prune_sessions_over_cap(self, username: str, keep_newest: int) -> int:
+        """Keep only the ``keep_newest`` most-recent sessions for ``username``.
+
+        Called after each login so a single user's 30-day sessions can't grow
+        unbounded (and a stale captured session ages out faster). Ranks by
+        ``created_at`` desc and deletes everything past the cap. Returns # deleted.
+        """
+        if keep_newest <= 0:
+            return 0
+        async with self._lock:
+            cur = await self.conn.execute(
+                """DELETE FROM auth_sessions
+                   WHERE username = ?
+                     AND id NOT IN (
+                       SELECT id FROM auth_sessions
+                       WHERE username = ?
+                       ORDER BY created_at DESC
+                       LIMIT ?
+                     )""",
+                (username, username, keep_newest),
+            )
+            await self.conn.commit()
+            return cur.rowcount or 0
+
     async def close(self) -> None:
         async with self._lock:
             if self._conn:
