@@ -21,18 +21,24 @@
 # Runner does NOT clone the repo. It only:
 #   1) holds the SSH key,
 #   2) opens an ssh control channel to the home box,
-#   3) tells the home box to `curl ... deploy/deploy.sh | bash`.
+#   3) tells the home box to refresh deploy/deploy.sh from its OWN clone via
+#      git, then run it.
 #
-# Why: keep "runner only knows SSH credentials, target does everything else".
-# The big payloads (git clone of repo + uv sync of PyPI) happen on the home
-# box over its own broadband, never round-tripping the runner. This also
-# means `ssh GTi13-Ultra-2v4G 'curl ... | bash'` from your laptop reproduces
-# CI behavior byte-for-byte for local debugging.
+# Why git, not `curl raw`: this repo is PRIVATE → raw.githubusercontent.com
+# 404s for unauthenticated requests, and the box's curl has no GitHub auth, so
+# the old `curl raw | bash` never worked here. The box's git clone DOES have
+# stored credentials (its `git fetch` works), and `git fetch <ref>` is immune
+# to the slash-in-branch-name ambiguity that breaks raw URLs for refs like
+# `feature/refactor-split`. The big payloads (git fetch + uv sync) still happen
+# on the home box over its own broadband, never round-tripping the runner.
+# `ssh GTi13-Ultra 'cd ~/Github/TimeTrace && git fetch origin <ref> &&
+# git checkout FETCH_HEAD -- deploy/deploy.sh && bash deploy/deploy.sh'`
+# reproduces CI behavior for local debugging.
 #
-# Tradeoff: deploy.sh must exist at the given ref on GitHub raw. If you push
-# a new deploy.sh to a branch, the next `gh workflow run --ref <branch>` uses
-# THAT version (good). If you want to pin to a specific tested deploy.sh,
-# pass `--ref <commit-SHA>` instead of a branch name.
+# Tradeoff: the repo must already be cloned on the box (true after first
+# manual clone — a private repo's first clone needs auth setup anyway). The
+# ref's version of deploy.sh is used (git checkout FETCH_HEAD), so pushing a
+# new deploy.sh + `gh workflow run --ref <branch>` runs THAT version.
 #
 # === Trigger ==================================================================
 # workflow_dispatch only — no push/tag automation in v1. Run from the GH
@@ -121,31 +127,42 @@ jobs:
 
       # The one and only deploy step.
       #
-      # On the remote bash:
-      #   1. set -o pipefail so a curl failure is not masked by bash's exit 0.
-      #   2. export TIMETRACE_BRANCH=<ref> so deploy.sh fetches+resets to it.
-      #   3. curl deploy.sh from GitHub raw at exactly that ref, pipe to bash.
+      # The target box bootstraps deploy.sh from its OWN already-cloned,
+      # git-authenticated repo (NOT from raw.githubusercontent.com): this repo
+      # is PRIVATE, and raw 404s for unauthenticated requests, so the old
+      # `curl raw | bash` could never have worked from the target. git over the
+      # box's stored credentials works, and `git fetch <ref>` is also immune to
+      # the slash-in-branch-name ambiguity that breaks raw URLs for
+      # `feature/refactor-split`.
       #
-      # `${REF}` is interpolated on the runner (bash on ubuntu-latest), so the
-      # remote box just sees an already-substituted command string.
-      - name: Deploy via SSH (target self-fetches deploy.sh)
+      # On the remote bash:
+      #   1. set -o pipefail so a mid-pipe failure isn't masked.
+      #   2. cd into the existing clone (first-ever deploy still needs a manual
+      #      `git clone` once — a private repo's first clone needs auth setup
+      #      anyway; deploy.sh's own clone path is the public-repo fallback).
+      #   3. git fetch the requested ref → checkout just deploy/deploy.sh from
+      #      it (so we run the ref's version of the script, not a stale local).
+      #   4. export TIMETRACE_BRANCH=<ref> + run deploy.sh (it does the real
+      #      fetch + reset --hard + uv sync + restart + healthz).
+      #
+      # `${REF}` is interpolated on the runner, so the box sees a substituted
+      # command string.
+      - name: Deploy via SSH (target self-fetches deploy.sh via git)
         env:
           TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
           TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
           REF: ${{ github.event.inputs.ref }}
         run: |
           set -euo pipefail
-          DEPLOY_URL="https://raw.githubusercontent.com/Vanilla-Yukirin/TimeTrace/${REF}/deploy/deploy.sh"
           echo "Target  : ${TARGET}:${TARGET_PORT}"
           echo "Ref     : ${REF}"
-          echo "Script  : ${DEPLOY_URL}"
           echo ""
           ssh \
             -p "${TARGET_PORT}" \
             -o ServerAliveInterval=15 \
             -o StrictHostKeyChecking=yes \
             "${TARGET}" \
-            "set -o pipefail; export TIMETRACE_BRANCH='${REF}'; curl -fsSL '${DEPLOY_URL}' | bash"
+            "set -o pipefail; cd \"\$HOME/Github/TimeTrace\" && git fetch origin '${REF}' && git checkout FETCH_HEAD -- deploy/deploy.sh && export TIMETRACE_BRANCH='${REF}' && bash deploy/deploy.sh"
 
       - name: Summary
         if: always()
