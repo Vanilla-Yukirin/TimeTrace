@@ -34,20 +34,19 @@ def test_rrf_empty_lists():
 
 
 def test_rrf_weights_bias_channel():
-    """Weighting the keyword channel heavier should pull its #1 above a
-    vector-only #1."""
-    fts = ["k"]            # keyword channel top
-    vec = ["v", "k"]       # vector channel top is v, k is 2nd
-    # Equal weights: v=1/60, k=1/60+1/61 → k wins anyway. Use a case where
-    # weighting flips the result: give vector more items so v's lead is real.
-    fts = ["k", "a", "b", "c"]
-    vec = ["v", "a", "b", "c"]
+    """Weighting one channel heavier flips which channel's #1 wins the tie.
+
+    Each channel has a single distinct top item. Unweighted both score 1/60 →
+    tie broken by id-asc ('k' < 'v') → 'k' first. Weighting the vector
+    channel 2x makes v=2/60 beat k=1/60 → 'v' first.
+    """
+    fts = ["k"]
+    vec = ["v"]
     unweighted = reciprocal_rank_fusion([fts, vec])
-    # k and v both rank #1 in their channel → tie at 1/60; broken by id asc → k
-    assert unweighted[0][0] == "k"
-    # Weight vector channel 2x → v's 1/60*2 beats k's 1/60*1
+    assert unweighted[0][0] == "k"  # tie at 1/60, id-asc → k
+
     weighted = reciprocal_rank_fusion([fts, vec], weights=[1.0, 2.0])
-    assert weighted[0][0] == "v"
+    assert weighted[0][0] == "v"  # v: 2/60 > k: 1/60
 
 
 def test_rrf_weights_length_mismatch_raises():
