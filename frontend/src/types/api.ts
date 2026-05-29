@@ -118,3 +118,24 @@ export interface SearchByImageResponse {
   visual_channel: ChannelStatus
   semantic_channel: ChannelStatus
 }
+
+/** Auth — the cookie-session principal returned by /v1/auth/me. */
+export interface AuthMe {
+  username: string
+  must_change_password: boolean
+}
+
+export interface LoginRequest {
+  username: string
+  password: string
+}
+
+export interface LoginResponse {
+  username: string
+  must_change_password: boolean
+}
+
+export interface ChangePasswordRequest {
+  old_password: string
+  new_password: string
+}
