@@ -58,6 +58,17 @@ set -euo pipefail
 : "${TIMETRACE_HEALTHZ_URL:=http://127.0.0.1:8765/healthz}"
 : "${TIMETRACE_HEALTHZ_TIMEOUT_S:=15}"
 
+# --- Step 0.1: PATH hardening (non-login shell) -----------------------------
+# Both the GH Actions runner (`ssh target 'curl ... | bash'`) and a manual
+# `ssh host 'bash deploy.sh'` run in a NON-login, NON-interactive shell, which
+# does NOT source ~/.profile / ~/.bashrc. The uv installer puts its binary in
+# ~/.local/bin and relies on those rc files to add it to PATH — so a bare `uv`
+# call below fails with "uv: command not found" in exactly this context (it
+# works fine in an interactive ssh because that DOES source the rc files).
+# Prepend the standard uv install dir so `uv` resolves regardless of shell type.
+# Idempotent + harmless if uv lives elsewhere already on PATH.
+export PATH="${TIMETRACE_HOME}/.local/bin:${PATH}"
+
 # Make the resolved values visible in CI logs — debugging deploy failures
 # starts from "what was the script actually trying to do".
 echo "[deploy] resolved knobs:"
