@@ -107,6 +107,119 @@ async def test_save_text_embedding_idempotent_overwrite(db):
     assert row["text_embedding_model"] == "m2"
 
 
+async def test_fetch_rows_needing_text_embedding(db):
+    """Returns vlm_done rows with a desc but no embedding; excludes already-
+    embedded rows and respects exclude_ids."""
+    import numpy as np
+
+    # Row A: has desc, no embedding → candidate
+    a = await db.insert_record(
+        CaptureContext(app_name="A", process_name="a", window_title="w"), reason="h"
+    )
+    await db.mark_pending(a)
+    await db.save_description(a, "desc A")
+
+    # Row B: has desc + embedding → not a candidate
+    b = await db.insert_record(
+        CaptureContext(app_name="B", process_name="b", window_title="w"), reason="h"
+    )
+    await db.mark_pending(b)
+    await db.save_description(b, "desc B")
+    await db.save_text_embedding(b, np.asarray([1.0], dtype=np.float32).tobytes(), "m")
+
+    # Row C: no desc → not a candidate
+    c = await db.insert_record(
+        CaptureContext(app_name="C", process_name="c", window_title="w"), reason="h"
+    )
+    await db.mark_pending(c)
+
+    rows = await db.fetch_rows_needing_text_embedding(limit=10)
+    ids = {r["record_id"] for r in rows}
+    assert ids == {a}
+
+    # exclude_ids drops A → empty
+    rows2 = await db.fetch_rows_needing_text_embedding(limit=10, exclude_ids={a})
+    assert rows2 == []
+
+
+async def test_vector_search_ranks_by_cosine(db):
+    """vector_search returns record_ids sorted by cosine sim to the query."""
+    import numpy as np
+
+    def vec(xs):
+        return np.asarray(xs, dtype=np.float32).tobytes()
+
+    # query points along +x. r1 identical, r2 45°, r3 opposite.
+    r1 = await db.insert_record(
+        CaptureContext(app_name="r1", process_name="p", window_title="w"), reason="h"
+    )
+    await db.mark_pending(r1)
+    await db.save_description(r1, "d")
+    await db.save_text_embedding(r1, vec([1.0, 0.0]), "m")
+
+    r2 = await db.insert_record(
+        CaptureContext(app_name="r2", process_name="p", window_title="w"), reason="h"
+    )
+    await db.mark_pending(r2)
+    await db.save_description(r2, "d")
+    await db.save_text_embedding(r2, vec([1.0, 1.0]), "m")
+
+    r3 = await db.insert_record(
+        CaptureContext(app_name="r3", process_name="p", window_title="w"), reason="h"
+    )
+    await db.mark_pending(r3)
+    await db.save_description(r3, "d")
+    await db.save_text_embedding(r3, vec([-1.0, 0.0]), "m")
+
+    results = await db.vector_search(vec([1.0, 0.0]), limit=10)
+    ids = [rid for rid, _ in results]
+    assert ids == [r1, r2, r3]  # 1.0 > 0.707 > -1.0
+    scores = dict(results)
+    assert scores[r1] == pytest.approx(1.0)
+    assert scores[r3] == pytest.approx(-1.0)
+
+
+async def test_vector_search_skips_null_embeddings(db):
+    import numpy as np
+
+    r1 = await db.insert_record(
+        CaptureContext(app_name="r1", process_name="p", window_title="w"), reason="h"
+    )
+    await db.mark_pending(r1)
+    await db.save_description(r1, "d")
+    await db.save_text_embedding(r1, np.asarray([1.0], dtype=np.float32).tobytes(), "m")
+
+    # r2 has no embedding → must not appear
+    r2 = await db.insert_record(
+        CaptureContext(app_name="r2", process_name="p", window_title="w"), reason="h"
+    )
+    await db.mark_pending(r2)
+    await db.save_description(r2, "d")
+
+    results = await db.vector_search(np.asarray([1.0], dtype=np.float32).tobytes(), limit=10)
+    assert [rid for rid, _ in results] == [r1]
+
+
+async def test_vector_search_respects_time_window(db):
+    import numpy as np
+
+    rid = await db.insert_record(
+        CaptureContext(app_name="r", process_name="p", window_title="w"), reason="h"
+    )
+    await db.mark_pending(rid)
+    await db.save_description(rid, "d")
+    await db.save_text_embedding(rid, np.asarray([1.0], dtype=np.float32).tobytes(), "m")
+
+    # Window entirely in the future → no rows
+    results = await db.vector_search(
+        np.asarray([1.0], dtype=np.float32).tobytes(),
+        limit=10,
+        start_ms=9_000_000_000_000,
+        end_ms=9_999_999_999_999,
+    )
+    assert results == []
+
+
 async def test_mark_error_final(db):
     ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
     record_id = await db.insert_record(ctx, reason="heartbeat")

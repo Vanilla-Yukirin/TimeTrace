@@ -995,6 +995,82 @@ class SqliteDatabase:
                 "database.save_text_embedding.not_found", record_id=record_id
             )
 
+    async def fetch_rows_needing_text_embedding(
+        self, limit: int, exclude_ids: set[str] | None = None
+    ) -> list[dict]:
+        """Backfill candidates: have a non-empty vlm_desc but no text_embedding.
+
+        ``exclude_ids`` lets the worker's backfill sweep skip poison rows that
+        already failed this run so they don't re-block the queue head. The set
+        is expected to stay tiny (real failures are rare), so the NOT IN clause
+        is cheap.
+        """
+        clause = "vlm_desc IS NOT NULL AND vlm_desc != '' AND text_embedding IS NULL"
+        params: list[Any] = []
+        if exclude_ids:
+            placeholders = ",".join("?" * len(exclude_ids))
+            clause += f" AND record_id NOT IN ({placeholders})"
+            params.extend(exclude_ids)
+        params.append(limit)
+        async with self._lock:
+            async with self.conn.execute(
+                f"SELECT record_id, vlm_desc FROM analysis_results "
+                f"WHERE {clause} LIMIT ?",
+                params,
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def vector_search(
+        self,
+        query_vec: bytes,
+        limit: int,
+        start_ms: int = 0,
+        end_ms: int = 9_999_999_999_999,
+    ) -> list[tuple[str, float]]:
+        """Cosine-rank records by text_embedding similarity to ``query_vec``.
+
+        Returns ``[(record_id, score), ...]`` sorted by score desc (most
+        similar first), capped at ``limit``. Only rows with a non-NULL
+        text_embedding within the time window participate.
+
+        Pure numpy over the BLOB column — no embedding client needed here; the
+        caller embeds the query text and passes the packed float32 bytes. At
+        our scale (hundreds–thousands of rows × 768 dims) the full scan is
+        sub-10ms, so no ANN index yet.
+        """
+        import numpy as np  # noqa: PLC0415 — localized; keeps DB module import-light
+
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT a.record_id, a.text_embedding "
+                "FROM analysis_results a "
+                "JOIN records r ON r.id = a.record_id "
+                "WHERE a.text_embedding IS NOT NULL "
+                "  AND r.ts_start BETWEEN ? AND ?",
+                (start_ms, end_ms),
+            ) as cur:
+                rows = await cur.fetchall()
+        if not rows:
+            return []
+
+        q = np.frombuffer(query_vec, dtype=np.float32)
+        qn = float(np.linalg.norm(q))
+        if qn == 0.0:
+            return []
+        scored: list[tuple[str, float]] = []
+        for r in rows:
+            v = np.frombuffer(r["text_embedding"], dtype=np.float32)
+            if v.shape != q.shape:
+                # dim mismatch (model changed mid-DB) — skip rather than crash
+                continue
+            vn = float(np.linalg.norm(v))
+            if vn == 0.0:
+                continue
+            scored.append((r["record_id"], float(np.dot(q, v) / (qn * vn))))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:limit]
+
     async def transition(self, record_id: str, new_status: str) -> None:
         now = _now_ms()
         async with self._lock:

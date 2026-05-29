@@ -295,3 +295,103 @@ async def test_worker_without_embedding_client_short_circuits(db, tmp_path):
         row = await cur.fetchone()
     assert row["status"] == "vlm_done"
     assert row["text_embedding"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Embedding backfill sweep                                                      #
+# --------------------------------------------------------------------------- #
+
+
+async def _seed_vlm_done_without_embedding(db: Database, desc: str) -> str:
+    """Create a record already at vlm_done with a description but no embedding."""
+    ctx = CaptureContext(app_name="App", process_name="app", window_title="t")
+    rid = await db.insert_record(ctx, reason="heartbeat")
+    await db.mark_pending(rid)
+    await db.save_description(rid, desc)
+    await db.transition(rid, "vlm_done")
+    return rid
+
+
+async def test_backfill_embeds_all_null_rows(db, tmp_path):
+    ids = [await _seed_vlm_done_without_embedding(db, f"desc {i}") for i in range(3)]
+    vlm = _StubVLM(payload={"keywords": [], "summary": "", "description": ""})
+    embedding = _StubEmbedding(vec_bytes=b"\x01\x02\x03\x04")
+    worker = _make_worker(db, vlm, tmp_path)
+    worker._embedding = embedding
+
+    await worker._backfill_embeddings()
+
+    assert embedding.calls == 3
+    for rid in ids:
+        async with db.conn.execute(
+            "SELECT text_embedding FROM analysis_results WHERE record_id=?", (rid,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["text_embedding"] == b"\x01\x02\x03\x04"
+
+
+async def test_backfill_noop_when_all_embedded(db, tmp_path):
+    rid = await _seed_vlm_done_without_embedding(db, "desc")
+    await db.save_text_embedding(rid, b"\xaa\xbb", "m")
+    vlm = _StubVLM(payload={"keywords": [], "summary": "", "description": ""})
+    embedding = _StubEmbedding()
+    worker = _make_worker(db, vlm, tmp_path)
+    worker._embedding = embedding
+
+    await worker._backfill_embeddings()
+    assert embedding.calls == 0  # nothing left to do
+
+
+async def test_backfill_aborts_after_consecutive_failures(db, tmp_path):
+    """Endpoint-down simulation: every embed fails → abort after threshold,
+    don't spin forever on the same NULL rows."""
+    from timetrace.server.embedding.client import EmbeddingError
+
+    for i in range(10):
+        await _seed_vlm_done_without_embedding(db, f"desc {i}")
+    vlm = _StubVLM(payload={"keywords": [], "summary": "", "description": ""})
+    embedding = _StubEmbedding(error=EmbeddingError("endpoint down"))
+    worker = _make_worker(db, vlm, tmp_path)
+    worker._embedding = embedding
+
+    await worker._backfill_embeddings()
+
+    # Stops at the consecutive-failure threshold (5), doesn't try all 10.
+    assert embedding.calls == 5
+    async with db.conn.execute(
+        "SELECT COUNT(*) AS n FROM analysis_results WHERE text_embedding IS NOT NULL"
+    ) as cur:
+        assert (await cur.fetchone())["n"] == 0
+
+
+async def test_backfill_skips_poison_row_continues_rest(db, tmp_path):
+    """A single failing row doesn't starve healthy rows behind it."""
+    from timetrace.server.embedding.client import EmbeddingError
+
+    poison = await _seed_vlm_done_without_embedding(db, "POISON")
+    good = [await _seed_vlm_done_without_embedding(db, f"good {i}") for i in range(3)]
+
+    class _SelectiveEmbedding(_StubEmbedding):
+        async def embed(self, text: str) -> bytes:
+            self.calls += 1
+            if text == "POISON":
+                raise EmbeddingError("bad row")
+            return b"\x09\x09"
+
+    embedding = _SelectiveEmbedding()
+    vlm = _StubVLM(payload={"keywords": [], "summary": "", "description": ""})
+    worker = _make_worker(db, vlm, tmp_path)
+    worker._embedding = embedding
+
+    await worker._backfill_embeddings()
+
+    # poison stays NULL, all good rows embedded
+    async with db.conn.execute(
+        "SELECT text_embedding FROM analysis_results WHERE record_id=?", (poison,)
+    ) as cur:
+        assert (await cur.fetchone())["text_embedding"] is None
+    for rid in good:
+        async with db.conn.execute(
+            "SELECT text_embedding FROM analysis_results WHERE record_id=?", (rid,)
+        ) as cur:
+            assert (await cur.fetchone())["text_embedding"] == b"\x09\x09"

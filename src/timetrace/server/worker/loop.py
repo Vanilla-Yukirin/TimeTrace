@@ -22,6 +22,8 @@ logger = structlog.get_logger(__name__)
 
 _POLL_INTERVAL_S = 1.0
 _DISABLED_IDLE_INTERVAL_S = 30.0
+_BACKFILL_BATCH = 32
+_BACKFILL_MAX_CONSECUTIVE_FAILS = 5  # run of failures w/o success → endpoint down, abort
 
 
 class AnalysisWorker:
@@ -59,18 +61,96 @@ class AnalysisWorker:
         self._embedding = embedding
 
     async def run(self) -> None:
-        if self._vlm is None or self._gate is None:
-            logger.info("analysis_worker.disabled", reason="no_vlm_client")
-            while True:
-                await asyncio.sleep(_DISABLED_IDLE_INTERVAL_S)
+        coros: list = []
+        # Embedding backfill is independent of VLM — runs whenever an embedding
+        # client is configured, even if VLM is off. One-shot: drains the
+        # backlog of vlm_done-but-not-embedded rows then the coro returns;
+        # gather keeps awaiting the (infinite) consume / idle coros.
+        if self._embedding is not None:
+            coros.append(self._backfill_embeddings())
+            logger.info("analysis_worker.backfill_scheduled")
 
-        n = max(1, self._cfg.vlm_concurrency)
-        logger.info("analysis_worker.started", concurrency=n)
+        if self._vlm is None or self._gate is None:
+            logger.info("analysis_worker.vlm_disabled", reason="no_vlm_client")
+            coros.append(self._idle_forever())
+        else:
+            n = max(1, self._cfg.vlm_concurrency)
+            logger.info("analysis_worker.started", concurrency=n)
+            coros.extend(self._consume_loop(i) for i in range(n))
+
         try:
-            await asyncio.gather(*(self._consume_loop(i) for i in range(n)))
+            await asyncio.gather(*coros)
         except asyncio.CancelledError:
             logger.info("analysis_worker.cancelled")
             raise
+
+    async def _idle_forever(self) -> None:
+        while True:
+            await asyncio.sleep(_DISABLED_IDLE_INTERVAL_S)
+
+    async def _backfill_embeddings(self) -> None:
+        """One-shot sweep: embed every vlm_done row that has a description but
+        no text_embedding yet (rows created before the embedding stage landed,
+        or rows whose live embedding call failed).
+
+        Best-effort, with two distinct failure modes:
+
+        - **Per-row failure** (empty text / dim mismatch / a single oversized
+          desc): that row's id goes into ``skipped`` so the next ``fetch``
+          excludes it, then we continue. Without this a poison row at the
+          front of the queue would abort the sweep on every restart and
+          starve every healthy row behind it.
+        - **Endpoint down**: surfaces as a run of consecutive failures. After
+          ``_BACKFILL_MAX_CONSECUTIVE_FAILS`` in a row with no success between,
+          we assume the endpoint is unreachable and stop; the next worker
+          restart retries from where it left off (skipped set resets, so
+          previously-skipped poison rows get one more chance each restart —
+          cheap, bounded).
+        """
+        if self._embedding is None:
+            return
+        total = 0
+        skipped: set[str] = set()
+        consecutive_fails = 0
+        while True:
+            try:
+                batch = await self._db.fetch_rows_needing_text_embedding(
+                    limit=_BACKFILL_BATCH, exclude_ids=skipped
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("worker.backfill_fetch_failed")
+                return
+            if not batch:
+                break
+            for row in batch:
+                try:
+                    vec = await self._embedding.embed(row["vlm_desc"])
+                except Exception as exc:  # noqa: BLE001  (EmbeddingError + anything unexpected)
+                    skipped.add(row["record_id"])
+                    consecutive_fails += 1
+                    logger.warning(
+                        "worker.backfill_embed_failed",
+                        record_id=row["record_id"],
+                        error=str(exc),
+                        consecutive_fails=consecutive_fails,
+                        embedded_so_far=total,
+                    )
+                    if consecutive_fails >= _BACKFILL_MAX_CONSECUTIVE_FAILS:
+                        logger.warning(
+                            "worker.backfill_aborted_endpoint_down",
+                            embedded=total,
+                            skipped=len(skipped),
+                        )
+                        return
+                    continue
+                consecutive_fails = 0
+                await self._db.save_text_embedding(
+                    row["record_id"], vec, self._embedding.model
+                )
+                total += 1
+            logger.info("worker.backfill_progress", embedded=total, skipped=len(skipped))
+        if total or skipped:
+            logger.info("worker.backfill_complete", embedded=total, skipped=len(skipped))
 
     async def _consume_loop(self, worker_id: int) -> None:
         while True:
