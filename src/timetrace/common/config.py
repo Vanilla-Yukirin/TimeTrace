@@ -104,6 +104,43 @@ class PrivacyConfig:
 
 
 @dataclass
+class AuthConfig:
+    """Login-system tunables (cookie session + admin seed).
+
+    Bearer-token auth (``ServerAuth`` in ``server/auth.py``) is a separate
+    channel and not configured here — its tokens live in ``tokens.json`` and
+    are managed by the admin via Web UI / CLI.
+    """
+
+    # Username of the seeded admin on first start. ``username`` is PRIMARY KEY
+    # in ``auth_users`` so this can't be changed post-seed without manual SQL —
+    # picking it up at first boot via env lets the machine-owner avoid having
+    # to log in as a generic ``admin`` and rename.
+    admin_username: str = "admin"
+    # Default password for the seeded admin. Forced-change on first login.
+    admin_initial_password: str = "admin"
+    # Cookie ``Secure`` flag. Must be False over plain HTTP (local dev), True
+    # over HTTPS (public deploy). Toggled via ``TIMETRACE_INSECURE_COOKIE=1``.
+    cookie_secure: bool = True
+    # Cookie name (kept short, prefixed so it's grep-able in browser devtools).
+    cookie_name: str = "tt_session"
+    # Session lifetime; reflected both in cookie ``Max-Age`` and ``auth_sessions.expires_at``.
+    session_ttl_s: int = 30 * 24 * 3600  # 30 days
+    # Login failure rate-limit window (seconds) and threshold (failures).
+    login_rate_window_s: int = 15 * 60   # 15 min
+    login_rate_threshold: int = 5
+    # Lockout duration after the threshold is hit.
+    login_lockout_s: int = 30 * 60       # 30 min
+
+    @classmethod
+    def from_env(cls) -> AuthConfig:
+        return cls(
+            admin_username=os.getenv("TIMETRACE_ADMIN_USERNAME", "admin").strip() or "admin",
+            cookie_secure=not _env_truthy(os.getenv("TIMETRACE_INSECURE_COOKIE")),
+        )
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration."""
 
@@ -112,5 +149,6 @@ class AppConfig:
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     worker: WorkerConfig = field(default_factory=WorkerConfig)
     vlm: VLMConfig | None = field(default_factory=VLMConfig.from_env)
+    auth: AuthConfig = field(default_factory=AuthConfig.from_env)
     api_host: str = "127.0.0.1"
     api_port: int = 8765

@@ -21,6 +21,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiosqlite>=0.20.0",
     "openai>=1.30.0",                  # VLM client (OpenAI-compatible chat)
+    "bcrypt>=4.0.0",                   # admin password hashing (login system, P-auth)
     # === Windows-only (capture client) ===
     # Platform markers let `uv sync` succeed on Linux without these failing
     # to resolve. On Windows they install normally.

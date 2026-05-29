@@ -1,6 +1,6 @@
 # TimeTrace 滚动 TODO / Plan
 
-**最后更新：** 2026-05-27（晚间 sprint Day 0：核心链路全部跑通）
+**最后更新：** 2026-05-28（凌晨：公网部署 + 公网暴露止血 + 登录系统设计）
 
 > 滚动文档，不是历史快照。完成的事项移到 devlog archive 归档，这里只留"未完成"和"未决策"。
 >
@@ -21,6 +21,43 @@
 | Claude Code 接入：`.mcp.json` + skill | ✅ commit `e5a2c44` | 项目级 auto-discover；skill 含决策树 + 反模式 |
 
 **累计当晚 commit：** 6 个 feature commit + 全程 270+ 测试绿。代码主体已 demo-ready。
+
+---
+
+## **🔐 公网部署引出的紧急轨道（2026-05-28 启动，与 demo prep 并行）**
+
+**触发**：5/27 夜 frps + nginx + Let's Encrypt + frpc tunnel 全打通 → `https://timetrace.yukirin.me/v1/records` 等 5 个浏览器/AI 路由（含 `/thumbs/*`）公开裸奔 → 所有 records / VLM 描述 / 缩略图对公网暴露。
+
+**临时止血（已完成）**：注释 home frpc `[[proxies]] timetrace-api` 段并重启 `frpc@xcy.service`。公网回 502。`nginx` / DNS / LE 证书 / frps 全保留。备份在 `~/.config/frp/xcy.toml.bak.20260528-034614`。
+
+**永久方案**：建多用户登录系统（admin/admin → 强制改密 → 单用户）。设计完整定稿在 [`devlogs/infra/archive-202605280400-login-system-design.md`](infra/archive-202605280400-login-system-design.md)。摘要：
+
+| 决策 | 选择 |
+|---|---|
+| Session 存储 | HttpOnly Cookie + `auth_sessions` DB 表（可即时 revoke、改密一键踢所有设备） |
+| Bearer 通道 | 保留并扩展（继承 `ServerAuth` + `tokens.json`），admin 在 Web UI 创建/管理 token；给 MCP 客户端 / capture client 用 |
+| 浏览器路由 | `/v1/records` 等接受 **cookie 或 bearer 任一** |
+| `/mcp` | starlette `BearerOnlyMiddleware` 包裹后再 mount（解决 `app.mount` 不传 `Depends`） |
+| `/thumbs` | `StaticFiles.mount` → `FileResponse` 自定义路由 + path-traversal 防护 + auth |
+| 数据分区 | **不做**（单用户，所有数据归 admin） |
+| 浏览器配 VLM key | **不做**（你能 SSH 编 `.env`，避免 secret 加密存储争议） |
+| 本地 dev | `TIMETRACE_INSECURE_COOKIE=1` env var 切 Cookie `Secure` flag |
+
+**实施顺序**（每步可工作不留半成品）：
+
+| Phase | 内容 | 估时 |
+|---|---|---|
+| 1 | 后端 auth 核心：2 表 migration + bcrypt + login/logout/me/change-pw + cookie session middleware + admin seed | 0.5d |
+| 2 | `/thumbs` 改造 | 0.5d |
+| 3 | `/mcp` middleware | 0.5d |
+| 4 | 业务路由 auth 接入 | 0.5d |
+| 5 | 前端 LoginPage + ChangePasswordPage + AuthContext + RequireAuth + 401 cross-tab | 0.75d |
+| 6 | 前端 Settings：Account + TokenManager + TokenCreatedDialog（含 `.mcp.json` 模板） | 0.5d |
+| 7 | e2e + 恢复 frpc 公网 proxy | 0.75d |
+
+**总：4-5 天**（顺利 4d，含 corner case 反复 5d）。
+
+**和 demo 并行的依据**：周三 demo 走 `ssh -L 8765` 隧道，**不依赖公网**。本轨道不抢 demo 资源，demo 后再合并到 main。
 
 ---
 

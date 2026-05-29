@@ -32,6 +32,7 @@ from timetrace.server.auth import ServerAuth
 from timetrace.server.db import Database
 from timetrace.server.phash_index.index import PHashIndex
 from timetrace.server.storage.blob import LocalBlobStorage
+from timetrace.server.users import UserStore
 from timetrace.server.vlm.client import VLMClient
 from timetrace.server.vlm.health import VLMHealthGate
 from timetrace.server.worker.loop import AnalysisWorker
@@ -49,6 +50,7 @@ class ServerComponents:
     phash_index: PHashIndex
     blob_storage: LocalBlobStorage
     auth: ServerAuth
+    users: UserStore
     vlm_client: VLMClient | None
     worker: AnalysisWorker
     app: object  # FastAPI; loose-typed to avoid pulling fastapi into the dataclass
@@ -80,6 +82,19 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
             value=generated.value,
         )
 
+    # Login-system: seed admin/admin (or env-configured username) on first
+    # start. ``ensure_admin_seeded`` is idempotent and a no-op once a row
+    # exists, so subsequent boots are cheap.
+    users = UserStore(db, config.auth)
+    seeded = await users.ensure_admin_seeded()
+    if seeded:
+        logger.warning(
+            "auth.admin_seed.first_start",
+            username=config.auth.admin_username,
+            initial_password=config.auth.admin_initial_password,
+            note="change immediately via Web UI / change-password on first login",
+        )
+
     worker = AnalysisWorker(
         db,
         vlm=vlm_client,
@@ -96,6 +111,8 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
         blob_storage=blob_storage,
         auth=auth,
         vlm_cfg=config.vlm,
+        users=users,
+        auth_cfg=config.auth,
     )
     app.state.api_host = config.api_host
     app.state.api_port = config.api_port
@@ -105,6 +122,7 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
         phash_index=phash_index,
         blob_storage=blob_storage,
         auth=auth,
+        users=users,
         vlm_client=vlm_client,
         worker=worker,
         app=app,
@@ -147,6 +165,11 @@ async def serve(
         while True:
             await asyncio.sleep(_STALE_TASK_RECLAIM_INTERVAL_S)
             await components.db.reclaim_stale_tasks()
+            # Cheap; sweeps expired browser sessions so the table doesn't grow
+            # unbounded. Per-request resolve_session() already lazy-rejects them.
+            purged = await components.db.purge_expired_sessions()
+            if purged:
+                logger.info("auth.sessions_purged", count=purged)
 
     try:
         async with asyncio.TaskGroup() as tg:

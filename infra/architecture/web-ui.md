@@ -4,6 +4,19 @@
 
 ---
 
+## **⚠️ 2026-05-28 起加入登录态（公网部署引出）**
+
+本页未覆盖登录系统改造。设计与决策见 [`devlogs/infra/archive-202605280400-login-system-design.md`](../../devlogs/infra/archive-202605280400-login-system-design.md)。
+
+要点：
+- **新增页面**：`/login`（admin/admin 默认）、`/login/change-password`（首次强制改密）
+- **新增 React 设施**：`contexts/AuthContext.tsx`、`components/RequireAuth.tsx`（路由守卫）
+- **`lib/api.ts` 改造**：`credentials: 'include'` 发送 cookie + 401 拦截自动跳登录 + cross-tab 退出同步（一个 tab logout 其他 tab 也踢）
+- **Settings 页面新增两区**：Account（改密 + 退出）+ API Tokens（CRUD；新建 token 弹窗内置可复制的 `.mcp.json` 模板供 Claude Code 接入）
+- **单用户模型**：无注册、无用户管理、无 role —— 唯一用户 = admin
+
+---
+
 ## 职责
 
 - **时间轴回放**：日历选择、缩放/滚动、多轨道渲染

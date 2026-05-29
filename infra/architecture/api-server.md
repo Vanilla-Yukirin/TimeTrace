@@ -13,6 +13,20 @@
 - `timetrace-server` 独立入口；`bootstrap.py` 共享单 / 双进程装配；CLI 子命令 `info` / `tokens list/add/revoke`
 - 监听仍是 `127.0.0.1:8765`（loopback only）—— 公网访问由 SSH `-L` 隧道或前置 Caddy/nginx 反代承担
 
+## **⚠️ 2026-05-28 起加入登录系统 + 双通道 auth（公网部署引出）**
+
+本页"鉴权策略"段已陈旧。设计与决策见 [`devlogs/infra/archive-202605280400-login-system-design.md`](../../devlogs/infra/archive-202605280400-login-system-design.md)。
+
+要点：
+- **双通道 auth 并存**：Cookie session（浏览器、密码登录换）+ Bearer token（MCP / capture client / 脚本）
+- 浏览器路由（`/v1/records` / `/search` / `/feedback` / `/categories` / `/runtime-info`）从公开 → **cookie 或 bearer 任一**
+- `/v1/ingest/*` **仍只 bearer**（机器对机器）
+- `/mcp/*` **仅 bearer**，通过 starlette `BearerOnlyMiddleware` 包裹后再 mount（解决 `app.mount` 不传 FastAPI `Depends` 的陷阱）
+- `/thumbs/*` 从 `StaticFiles.mount` → 自定义 `FileResponse` 路由 + path-traversal 防护 + auth（同上陷阱）
+- 新增 7 条路由：`/v1/auth/{login,logout,me,change-password}` + `/v1/admin/tokens` CRUD（cookie only）
+- 新增 2 张表：`auth_users` / `auth_sessions`（不动现有 8 张业务表，单用户无 `user_id` 分区）
+- 默认 admin/admin + 首次登录强制改密；session 30 天 HttpOnly cookie + DB-backed 可即时 revoke
+
 **当前事实**：
 - 代码：[`src/timetrace/server/api/`](../../src/timetrace/server/api/)、[`server/auth.py`](../../src/timetrace/server/auth.py)、[`server/admin_cmd.py`](../../src/timetrace/server/admin_cmd.py)、[`server/bootstrap.py`](../../src/timetrace/server/bootstrap.py)
 - 设计：[`devlogs/infra/archive-202605151200-client-server-split-kickoff.md`](../../devlogs/infra/archive-202605151200-client-server-split-kickoff.md) P3a/P3b 段

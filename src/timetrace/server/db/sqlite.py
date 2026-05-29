@@ -154,6 +154,31 @@ CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
     vlm_desc,
     tokenize='trigram'
 );
+
+-- Login-system: admin user + browser sessions. Bearer tokens for
+-- machine-to-machine live separately in ``~/.config/timetrace-server/tokens.json``
+-- via ``ServerAuth`` (server/auth.py). Single-user by design — no ``role``
+-- column, no ``user_id`` foreign keys elsewhere. See devlogs/infra/
+-- archive-202605280400-login-system-design.md for the design rationale.
+CREATE TABLE IF NOT EXISTS auth_users (
+    username             TEXT PRIMARY KEY,
+    password_hash        TEXT NOT NULL,
+    password_must_change INTEGER NOT NULL DEFAULT 0,
+    created_at           INTEGER NOT NULL,
+    updated_at           INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id            TEXT PRIMARY KEY,
+    username      TEXT NOT NULL REFERENCES auth_users(username),
+    created_at    INTEGER NOT NULL,
+    last_seen_at  INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL,
+    user_agent    TEXT,
+    ip            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_username ON auth_sessions(username);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires  ON auth_sessions(expires_at);
 """
 
 # Minimum keyword length where trigram FTS5 can match. Below this, we fall back
@@ -1101,6 +1126,134 @@ class SqliteDatabase:
             result = dict(row)
             result["screenshots"] = await self._get_screenshots_for_record_unlocked(record_id)
         return result
+
+    # ------------------------------------------------------------------ #
+    # Login-system: users + sessions                                       #
+    # ------------------------------------------------------------------ #
+    #
+    # These are intentionally typed as low-level CRUD methods, NOT a UserStore
+    # facade — same shape as ``insert_record`` etc.. The auth logic
+    # (bcrypt verify, rate limiting, session minting) lives in
+    # ``server/users.py`` so each layer is independently testable.
+
+    async def get_user(self, username: str) -> dict | None:
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT username, password_hash, password_must_change, "
+                "created_at, updated_at FROM auth_users WHERE username=?",
+                (username,),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def count_users(self) -> int:
+        async with self._lock:
+            async with self.conn.execute("SELECT COUNT(*) FROM auth_users") as cur:
+                return (await cur.fetchone())[0]
+
+    async def insert_user(
+        self,
+        username: str,
+        password_hash: str,
+        *,
+        must_change: bool,
+    ) -> None:
+        now = _now_ms()
+        async with self._lock:
+            await self.conn.execute(
+                "INSERT INTO auth_users (username, password_hash, "
+                "password_must_change, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (username, password_hash, 1 if must_change else 0, now, now),
+            )
+            await self.conn.commit()
+
+    async def update_user_password(
+        self,
+        username: str,
+        password_hash: str,
+        *,
+        must_change: bool,
+    ) -> None:
+        now = _now_ms()
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE auth_users SET password_hash=?, password_must_change=?, "
+                "updated_at=? WHERE username=?",
+                (password_hash, 1 if must_change else 0, now, username),
+            )
+            await self.conn.commit()
+
+    async def insert_session(
+        self,
+        session_id: str,
+        username: str,
+        *,
+        expires_at: int,
+        user_agent: str | None,
+        ip: str | None,
+    ) -> None:
+        now = _now_ms()
+        async with self._lock:
+            await self.conn.execute(
+                "INSERT INTO auth_sessions (id, username, created_at, last_seen_at, "
+                "expires_at, user_agent, ip) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_id, username, now, now, expires_at, user_agent, ip),
+            )
+            await self.conn.commit()
+
+    async def get_session(self, session_id: str) -> dict | None:
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT id, username, created_at, last_seen_at, expires_at, "
+                "user_agent, ip FROM auth_sessions WHERE id=?",
+                (session_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def touch_session(self, session_id: str) -> None:
+        """Bump ``last_seen_at`` on each authenticated request (cheap audit trail)."""
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE auth_sessions SET last_seen_at=? WHERE id=?",
+                (_now_ms(), session_id),
+            )
+            await self.conn.commit()
+
+    async def delete_session(self, session_id: str) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                "DELETE FROM auth_sessions WHERE id=?", (session_id,)
+            )
+            await self.conn.commit()
+
+    async def delete_sessions_except(self, username: str, keep_session_id: str) -> int:
+        """Revoke every session for ``username`` except the given one. Returns # deleted.
+
+        Called after a password change so other devices get kicked while the
+        device that just changed the password stays logged in.
+        """
+        async with self._lock:
+            cur = await self.conn.execute(
+                "DELETE FROM auth_sessions WHERE username=? AND id<>?",
+                (username, keep_session_id),
+            )
+            await self.conn.commit()
+            return cur.rowcount or 0
+
+    async def purge_expired_sessions(self) -> int:
+        """Drop sessions whose ``expires_at`` has passed. Returns # purged.
+
+        Called periodically from the reclaim loop. Lazy-check in ``get_session``
+        still rejects expired ones in the request path so this is cleanup, not
+        a security gate.
+        """
+        async with self._lock:
+            cur = await self.conn.execute(
+                "DELETE FROM auth_sessions WHERE expires_at < ?", (_now_ms(),)
+            )
+            await self.conn.commit()
+            return cur.rowcount or 0
 
     async def close(self) -> None:
         async with self._lock:
