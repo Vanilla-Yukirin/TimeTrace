@@ -11,7 +11,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
-from timetrace.server.api.deps import require_session
+from timetrace.server.api.deps import require_principal, require_session
 from timetrace.server.api.mcp_auth import BearerOnlyMiddleware
 from timetrace.server.api.routes import auth as auth_routes
 from timetrace.server.api.routes import feedback, ingest, records, search, thumbs
@@ -87,18 +87,25 @@ def create_app(
     app.state.api_host = "127.0.0.1"
     app.state.api_port = 8765
 
-    # Phase 1 (login system): cookie-session routes. Phase 4 will gate the
-    # business routes below with require_principal; today records/search/
-    # feedback remain unauthenticated and the public proxy stays blocked via
-    # frpc until Phase 7.
+    # Phase 1 (login system): cookie-session routes.
     if users is not None and auth_cfg is not None:
         app.include_router(auth_routes.router, prefix="/v1")
-    app.include_router(records.router, prefix="/v1")
-    app.include_router(search.router, prefix="/v1")
-    app.include_router(feedback.router, prefix="/v1")
-    # Phase 2 (login system): /thumbs is the first business route to actually
-    # gate. It's behind cookie-or-bearer so the browser and MCP / capture
-    # clients can both render images.
+
+    # Phase 4 (login system): business routes (records / search / feedback)
+    # gated with require_principal (cookie OR bearer). Skipped when ``users``
+    # is None — legacy test fixtures that pass ``create_app(db)`` with no
+    # auth wiring still want the unauthenticated behavior, matching the
+    # ``auth=None → ingest open`` pattern below.
+    business_deps = (
+        [Depends(require_principal)] if users is not None else []
+    )
+    app.include_router(records.router, prefix="/v1", dependencies=business_deps)
+    app.include_router(search.router, prefix="/v1", dependencies=business_deps)
+    app.include_router(feedback.router, prefix="/v1", dependencies=business_deps)
+
+    # Phase 2 (login system): /thumbs is its own route module because the
+    # FileResponse path-traversal logic doesn't belong on records/etc. — but
+    # the auth model is the same (cookie OR bearer).
     if storage_cfg is not None:
         app.include_router(thumbs.router)
     if auth is not None:
