@@ -139,3 +139,15 @@ export interface ChangePasswordRequest {
   old_password: string
   new_password: string
 }
+
+/** Admin tokens — bearer tokens for MCP / capture clients. */
+export interface TokenSummary {
+  label: string
+  created_at: number | null
+}
+
+export interface TokenCreated {
+  label: string
+  value: string
+  created_at: number | null
+}

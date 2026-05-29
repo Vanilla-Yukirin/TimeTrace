@@ -9,6 +9,8 @@ import type {
   LoginResponse,
   RecordsResponse,
   RuntimeInfo,
+  TokenCreated,
+  TokenSummary,
 } from '@/types/api'
 
 /** Returned by ``apiFetch`` when the server says 401. Callers in
@@ -110,5 +112,20 @@ export const api = {
     apiFetch<void>('/v1/auth/change-password', {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  // ---- admin tokens (Phase 6) ------------------------------------------
+  listTokens: () =>
+    apiFetch<TokenSummary[]>('/v1/admin/tokens'),
+
+  createToken: (label: string) =>
+    apiFetch<TokenCreated>('/v1/admin/tokens', {
+      method: 'POST',
+      body: JSON.stringify({ label }),
+    }),
+
+  revokeToken: (label: string) =>
+    apiFetch<void>(`/v1/admin/tokens/${encodeURIComponent(label)}`, {
+      method: 'DELETE',
     }),
 }

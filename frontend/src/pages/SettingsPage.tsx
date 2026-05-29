@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
+import { AccountSection } from '@/components/admin/AccountSection'
+import { TokenManager } from '@/components/admin/TokenManager'
 
 export function SettingsPage() {
   const { data: info, isLoading, error } = useQuery({
@@ -8,32 +10,16 @@ export function SettingsPage() {
     queryFn: () => api.getRuntimeInfo(),
   })
 
-  if (isLoading) {
-    return (
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: 'var(--text-muted)',
-      }}>
-        加载中...
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div style={{ padding: 24, color: 'var(--text-secondary)' }}>
-        <div style={{ color: '#ef4444', marginBottom: 16 }}>
-          加载失败：{(error as Error).message}
-        </div>
-      </div>
-    )
-  }
-
+  // Account + Tokens render regardless of the runtime-info probe; only the
+  // backend-status block below depends on it (so a slow /runtime-info doesn't
+  // hide the auth controls).
   return (
-    <div style={{ padding: 24, maxWidth: 600 }}>
+    <div style={{ padding: 24, maxWidth: 600, display: 'flex', flexDirection: 'column', gap: 32 }}>
+      <AccountSection />
+
+      <TokenManager />
+
+      <div>
       <h2 style={{
         fontSize: 16,
         fontWeight: 600,
@@ -42,6 +28,18 @@ export function SettingsPage() {
       }}>
         后端状态
       </h2>
+
+      {isLoading && (
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>加载中...</div>
+      )}
+      {error && (
+        <div style={{ fontSize: 13, color: '#ef4444' }}>
+          加载失败：{(error as Error).message}
+        </div>
+      )}
+      {info && (
+      <>
+
 
       {/* Version */}
       <div style={{
@@ -95,21 +93,8 @@ export function SettingsPage() {
           {info?.api_host}:{info?.api_port}
         </div>
       </div>
-
-      {/* Placeholder for Phase 1.5 */}
-      <div style={{
-        padding: 16,
-        background: 'var(--bg-raised)',
-        borderRadius: 8,
-        border: '1px solid var(--bg-border)',
-        marginTop: 24,
-      }}>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
-          ℹ 提示
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-          Phase 1.5 将支持在此页编辑配置
-        </div>
+      </>
+      )}
       </div>
     </div>
   )

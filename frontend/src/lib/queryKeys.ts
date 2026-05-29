@@ -4,4 +4,5 @@ export const queryKeys = {
   categories: () => ['categories'] as const,
   runtimeInfo: () => ['runtime-info'] as const,
   authMe: () => ['auth', 'me'] as const,
+  adminTokens: () => ['admin', 'tokens'] as const,
 }

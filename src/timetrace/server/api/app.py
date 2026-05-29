@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from timetrace.server.api.deps import require_principal, require_session
 from timetrace.server.api.mcp_auth import BearerOnlyMiddleware
+from timetrace.server.api.routes import admin as admin_routes
 from timetrace.server.api.routes import auth as auth_routes
 from timetrace.server.api.routes import feedback, ingest, records, search, thumbs
 from timetrace.server.auth import make_bearer_dependency
@@ -90,6 +91,11 @@ def create_app(
     # Phase 1 (login system): cookie-session routes.
     if users is not None and auth_cfg is not None:
         app.include_router(auth_routes.router, prefix="/v1")
+    # Phase 6 (login system): admin tokens CRUD. Cookie-only (require_session
+    # baked into the router). Needs both a UserStore (for the cookie gate) and
+    # a ServerAuth (the thing it mutates).
+    if users is not None and auth is not None:
+        app.include_router(admin_routes.router, prefix="/v1")
 
     # Phase 4 (login system): business routes (records / search / feedback)
     # gated with require_principal (cookie OR bearer). Skipped when ``users``

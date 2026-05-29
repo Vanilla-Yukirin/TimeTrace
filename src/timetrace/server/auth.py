@@ -85,9 +85,15 @@ class BearerPrincipal:
 class ServerAuth:
     """In-memory token validator with disk-backed persistence."""
 
-    def __init__(self, tokens: list[TokenEntry]) -> None:
+    def __init__(self, tokens: list[TokenEntry], token_dir: Path | None = None) -> None:
         self._tokens = list(tokens)
         self._token_set = {t.value for t in self._tokens}
+        # Remembered so the Web UI's add/revoke can persist to the SAME file
+        # the instance was loaded from. None → DEFAULT_TOKEN_DIR (matches the
+        # CLI). The CLI path doesn't construct via load_or_generate, so it
+        # keeps using the classmethods; the running server uses these instance
+        # methods for hot mutation.
+        self._token_dir = token_dir
 
     # ------------------------------------------------------------------ #
     # Token-file I/O (the single owner of the on-disk schema)            #
@@ -145,7 +151,7 @@ class ServerAuth:
         (token_dir or DEFAULT_TOKEN_DIR).mkdir(parents=True, exist_ok=True)
         existing = cls.read_tokens(token_dir)
         if existing:
-            return cls(existing), False, None
+            return cls(existing, token_dir=token_dir), False, None
 
         new_token = TokenEntry(
             value=cls.mint_token_value(),
@@ -153,7 +159,7 @@ class ServerAuth:
             created_at=int(time.time() * 1000),
         )
         cls.write_tokens([new_token], token_dir)
-        return cls([new_token]), True, new_token
+        return cls([new_token], token_dir=token_dir), True, new_token
 
     @staticmethod
     def mint_token_value() -> str:
@@ -183,6 +189,43 @@ class ServerAuth:
     @property
     def tokens(self) -> list[TokenEntry]:
         return list(self._tokens)
+
+    # ------------------------------------------------------------------ #
+    # Hot mutation (Web UI admin tokens CRUD) — updates in-memory set AND  #
+    # persists to disk so the change takes effect WITHOUT a server restart #
+    # (unlike the CLI in admin_cmd.py, which writes-then-restart).         #
+    # ------------------------------------------------------------------ #
+
+    def add_token(self, label: str) -> TokenEntry:
+        """Mint + register + persist a new token. Returns the entry (with value).
+
+        Raises ``ValueError`` if the label already exists — labels are the
+        handle the Web UI revokes by, so they must be unique.
+        """
+        if any(t.label == label for t in self._tokens):
+            raise ValueError(f"a token labelled {label!r} already exists")
+        entry = TokenEntry(
+            value=self.mint_token_value(),
+            label=label,
+            created_at=int(time.time() * 1000),
+        )
+        self._tokens.append(entry)
+        self._token_set.add(entry.value)
+        self.write_tokens(self._tokens, self._token_dir)
+        return entry
+
+    def revoke_token(self, label: str) -> bool:
+        """Remove the token with ``label`` from memory + disk.
+
+        Returns True if a token was removed, False if no such label.
+        """
+        target = next((t for t in self._tokens if t.label == label), None)
+        if target is None:
+            return False
+        self._tokens = [t for t in self._tokens if t is not target]
+        self._token_set.discard(target.value)
+        self.write_tokens(self._tokens, self._token_dir)
+        return True
 
 
 def make_bearer_dependency(auth: ServerAuth):
