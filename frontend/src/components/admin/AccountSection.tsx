@@ -1,20 +1,22 @@
 import { useNavigate } from 'react-router-dom'
 import { KeyRound, LogOut } from 'lucide-react'
+import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 
 /** Settings → Account: who am I, change password, log out. */
 export function AccountSection() {
-  const { user, refresh } = useAuth()
+  const { user, setUser } = useAuth()
   const navigate = useNavigate()
 
   async function onLogout() {
     try {
       await api.logout()
     } catch {
-      // ignore — refresh below will bounce us regardless
+      // ignore — we clear local state below regardless
     }
-    refresh()
+    setUser(null) // synchronous clear → no stale-user bounce/flicker
+    toast.success('已退出登录')
     navigate('/login', { replace: true })
   }
 

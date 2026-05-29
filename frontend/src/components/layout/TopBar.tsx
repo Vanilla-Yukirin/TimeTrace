@@ -1,20 +1,26 @@
 import { useNavigate } from 'react-router-dom'
 import { LogOut } from 'lucide-react'
+import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 
 export function TopBar() {
-  const { user, refresh } = useAuth()
+  const { user, setUser } = useAuth()
   const navigate = useNavigate()
 
   async function onLogout() {
     try {
       await api.logout()
     } catch {
-      // Even if logout fails (network / already 401), force the local-state
-      // clear by refreshing /me (which will 401 → user=null → bounce).
+      // Even if the server call fails (network / already-expired), we still
+      // clear local state below so the user isn't stuck "logged in".
     }
-    refresh()
+    // Synchronously clear the cached principal → user becomes null this render,
+    // so /login renders its form immediately instead of bouncing back into the
+    // app off a stale cached user ("退出闪烁" bug). Don't rely on an async /me
+    // refetch here — that's what caused the flicker.
+    setUser(null)
+    toast.success('已退出登录')
     navigate('/login', { replace: true })
   }
 

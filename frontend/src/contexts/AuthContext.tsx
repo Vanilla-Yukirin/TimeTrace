@@ -14,10 +14,20 @@ import type { AuthMe } from '@/types/api'
 interface AuthContextValue {
   /** The current logged-in user, or null if not authed. */
   user: AuthMe | null
-  /** True while the initial /v1/auth/me probe is in flight. */
+  /** True only during the very first /v1/auth/me probe (no data + no error yet). */
   loading: boolean
-  /** Manually re-query /v1/auth/me — call after login / change-password. */
-  refresh: () => void
+  /**
+   * Re-run /v1/auth/me and RESOLVE only after it settles. Callers (login /
+   * change-password) MUST await this before navigating, otherwise the route
+   * guard reads stale auth state and bounces. Returns the fresh user (or null).
+   */
+  refetch: () => Promise<AuthMe | null>
+  /**
+   * Optimistically set the cached auth state without a network round-trip.
+   * Used by logout (→ null) and the cross-tab kick (→ null). Login/change-pw
+   * use refetch() instead because the server is the source of truth there.
+   */
+  setUser: (me: AuthMe | null) => void
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
@@ -26,13 +36,10 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
 
-  // The "am I logged in?" probe. 401 surfaces as a thrown UnauthorizedError
-  // (see lib/api.ts) which react-query treats as a query failure — we then
-  // expose ``user: null`` so RequireAuth can redirect.
-  // - retry: false → don't keep hammering /auth/me on 401
-  // - refetchOnWindowFocus: true → if the user comes back after the session
-  //   silently expired on the server, the next focus refetches and kicks
-  //   them out instead of letting them click around dead UI
+  // The "am I logged in?" probe.
+  // - retry: false → a 401 shouldn't be retried; it's a definitive "logged out".
+  // - refetchOnWindowFocus → catch server-side session expiry when the user
+  //   comes back to the tab.
   const meQuery = useQuery({
     queryKey: queryKeys.authMe(),
     queryFn: api.me,
@@ -41,30 +48,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     staleTime: 30_000,
   })
 
-  const user: AuthMe | null = meQuery.data ?? null
+  // CRITICAL: react-query keeps the last successful `data` even after a later
+  // fetch ERRORS (e.g. the post-logout /me that now 401s). So deriving user
+  // from `data` alone leaves a stale truthy user after logout → the login page
+  // bounces back into the app ("闪烁"). Treat an errored probe as logged-out.
+  const user: AuthMe | null = meQuery.isError ? null : (meQuery.data ?? null)
 
-  const refresh = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.authMe() })
+  const refetch = useCallback(async (): Promise<AuthMe | null> => {
+    // refetchQueries resolves after the query settles; a successful refetch
+    // also CLEARS any prior error status, so a login right after a 401 probe
+    // correctly flips user from null → the new principal.
+    await queryClient.refetchQueries({ queryKey: queryKeys.authMe() })
+    const data = queryClient.getQueryData<AuthMe>(queryKeys.authMe())
+    const state = queryClient.getQueryState(queryKeys.authMe())
+    return state?.status === 'error' ? null : (data ?? null)
   }, [queryClient])
 
+  const setUser = useCallback(
+    (me: AuthMe | null) => {
+      // setQueryData both updates data AND resets the query to a success
+      // status — so a previously-errored probe no longer forces user=null.
+      queryClient.setQueryData(queryKeys.authMe(), me)
+    },
+    [queryClient],
+  )
+
   // Cross-tab logout: another tab caught a 401 and broadcast via
-  // localStorage['tt_auth_kicked']. Re-check our own session state.
+  // localStorage['tt_auth_kicked']. Clear our own auth state so RequireAuth
+  // redirects this tab to /login too.
   useEffect(() => {
     const handler = (e: StorageEvent) => {
-      if (e.key === 'tt_auth_kicked') {
-        // Drop the cached me() so RequireAuth re-evaluates. Don't navigate
-        // here — RequireAuth owns the redirect logic so we stay in one place.
-        queryClient.removeQueries({ queryKey: queryKeys.authMe() })
-        refresh()
-      }
+      if (e.key === 'tt_auth_kicked') setUser(null)
     }
     window.addEventListener('storage', handler)
     return () => window.removeEventListener('storage', handler)
-  }, [queryClient, refresh])
+  }, [setUser])
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, loading: meQuery.isLoading, refresh }),
-    [user, meQuery.isLoading, refresh],
+    () => ({ user, loading: meQuery.isLoading, refetch, setUser }),
+    [user, meQuery.isLoading, refetch, setUser],
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

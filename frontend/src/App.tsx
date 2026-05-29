@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { Toaster } from 'sonner'
 import { MainLayout } from './components/layout/AppShell'
 import { RequireAuth } from './components/RequireAuth'
 import { AuthProvider } from './contexts/AuthContext'
@@ -28,6 +29,7 @@ export function App() {
             coexist with route changes, and inside QueryClientProvider so
             useQuery works in it. */}
         <AuthProvider>
+          <Toaster position="top-center" richColors closeButton theme="dark" />
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route

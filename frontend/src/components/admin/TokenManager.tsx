@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trash2, Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
 import type { TokenCreated } from '@/types/api'
@@ -25,13 +26,16 @@ export function TokenManager() {
       setNewLabel('')
       void queryClient.invalidateQueries({ queryKey: queryKeys.adminTokens() })
     },
+    onError: (e) => toast.error('创建失败', { description: (e as Error).message }),
   })
 
   const revokeMut = useMutation({
     mutationFn: (label: string) => api.revokeToken(label),
-    onSuccess: () => {
+    onSuccess: (_data, label) => {
+      toast.success('已撤销 token', { description: label })
       void queryClient.invalidateQueries({ queryKey: queryKeys.adminTokens() })
     },
+    onError: (e) => toast.error('撤销失败', { description: (e as Error).message }),
   })
 
   const tokens = tokensQuery.data ?? []

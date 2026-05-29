@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate, useLocation, Navigate } from 'react-router-dom'
+import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 
@@ -10,7 +11,7 @@ interface LocationState {
 }
 
 export function LoginPage() {
-  const { user, refresh } = useAuth()
+  const { user, refetch } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const from = (location.state as LocationState | null)?.from ?? '/'
@@ -33,16 +34,23 @@ export function LoginPage() {
     setSubmitting(true)
     try {
       const resp = await api.login({ username, password })
-      refresh()
+      // MUST await: refetch /me with the fresh cookie so AuthContext.user is
+      // populated (and any prior 401-error status cleared) BEFORE we navigate.
+      // Navigating first would let RequireAuth read stale/empty auth state and
+      // bounce us straight back to /login.
+      await refetch()
       navigate(resp.must_change_password ? '/login/change-password' : from, { replace: true })
     } catch (err) {
       // The server returns the same 401 detail for "wrong user" and "wrong
       // password" — we surface its text verbatim so rate-limit (429) messages
       // come through too.
-      setError((err as Error).message)
-    } finally {
+      const msg = (err as Error).message
+      setError(msg)
+      toast.error('登录失败', { description: msg })
       setSubmitting(false)
     }
+    // NOTE: on success we intentionally do NOT clear `submitting` — the page is
+    // navigating away; leaving the button disabled avoids a double-submit flash.
   }
 
   return (

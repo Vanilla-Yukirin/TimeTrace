@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 
@@ -15,7 +16,7 @@ function localValidate(newPassword: string, confirm: string): string | null {
 }
 
 export function ChangePasswordPage() {
-  const { user, refresh } = useAuth()
+  const { user, refetch } = useAuth()
   const navigate = useNavigate()
   const [oldPassword, setOldPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -36,11 +37,18 @@ export function ChangePasswordPage() {
     setSubmitting(true)
     try {
       await api.changePassword({ old_password: oldPassword, new_password: newPassword })
-      refresh()
+      // Backend keeps THIS session (revokes the others) and clears the
+      // must_change flag. MUST await refetch so AuthContext sees
+      // must_change_password=false BEFORE we navigate to '/', otherwise
+      // RequireAuth reads the stale must_change=true and redirects right back
+      // here ("改密后不跳转" bug).
+      toast.success('密码已修改', { description: '其他设备的登录已失效' })
+      await refetch()
       navigate('/', { replace: true })
     } catch (err) {
-      setError((err as Error).message)
-    } finally {
+      const msg = (err as Error).message
+      setError(msg)
+      toast.error('修改失败', { description: msg })
       setSubmitting(false)
     }
   }
