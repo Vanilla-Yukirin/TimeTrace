@@ -24,7 +24,7 @@ from timetrace.server.users import (
 
 if TYPE_CHECKING:
     from timetrace.common.config import AuthConfig
-    from timetrace.server.users import SessionUser, UserStore
+    from timetrace.server.users import CookiePrincipal, UserStore
 
 router = APIRouter(tags=["auth"], prefix="/auth")
 
@@ -126,7 +126,7 @@ async def login(
 async def logout(
     request: Request,
     response: Response,
-    user: SessionUser = Depends(require_session),
+    user: CookiePrincipal = Depends(require_session),
 ) -> Response:
     users: UserStore = request.app.state.users
     cfg: AuthConfig = request.app.state.auth_cfg
@@ -137,7 +137,7 @@ async def logout(
 
 
 @router.get("/me", response_model=MeResponse)
-async def me(user: SessionUser = Depends(require_session)) -> MeResponse:
+async def me(user: CookiePrincipal = Depends(require_session)) -> MeResponse:
     return MeResponse(
         username=user.username,
         must_change_password=user.must_change_password,
@@ -148,7 +148,7 @@ async def me(user: SessionUser = Depends(require_session)) -> MeResponse:
 async def change_password(
     body: ChangePasswordRequest,
     request: Request,
-    user: SessionUser = Depends(require_session),
+    user: CookiePrincipal = Depends(require_session),
 ) -> Response:
     users: UserStore = request.app.state.users
     try:

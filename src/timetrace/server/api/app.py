@@ -10,11 +10,10 @@ from fastapi import Depends, FastAPI
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from timetrace.server.api.deps import require_session
 from timetrace.server.api.routes import auth as auth_routes
-from timetrace.server.api.routes import feedback, ingest, records, search
+from timetrace.server.api.routes import feedback, ingest, records, search, thumbs
 from timetrace.server.auth import make_bearer_dependency
 from timetrace.server.mcp_layer.server import build_mcp_server
 
@@ -75,28 +74,32 @@ def create_app(
     app.state.auth_cfg = auth_cfg
     if storage_cfg is not None:
         app.state.data_dir = str(storage_cfg.data_dir)
-        # Ensure thumbs dir exists before mounting (first-run has no screenshots yet)
+        # Materialise the dir up front (first-run has no screenshots yet);
+        # then expose its Path on app.state for the /thumbs route to read.
         storage_cfg.thumbs_dir.mkdir(parents=True, exist_ok=True)
-        app.mount(
-            "/thumbs",
-            StaticFiles(directory=storage_cfg.thumbs_dir),
-            name="thumbs",
-        )
+        app.state.thumbs_dir = storage_cfg.thumbs_dir
     else:
         app.state.data_dir = ""
+        app.state.thumbs_dir = None
 
     # api_host / api_port default values; overridden by main.py if needed
     app.state.api_host = "127.0.0.1"
     app.state.api_port = 8765
 
     # Phase 1 (login system): cookie-session routes. Phase 4 will gate the
-    # business routes below with require_session_or_bearer; today they remain
-    # unauthenticated and the public proxy stays blocked via frpc until Phase 7.
+    # business routes below with require_principal; today records/search/
+    # feedback remain unauthenticated and the public proxy stays blocked via
+    # frpc until Phase 7.
     if users is not None and auth_cfg is not None:
         app.include_router(auth_routes.router, prefix="/v1")
     app.include_router(records.router, prefix="/v1")
     app.include_router(search.router, prefix="/v1")
     app.include_router(feedback.router, prefix="/v1")
+    # Phase 2 (login system): /thumbs is the first business route to actually
+    # gate. It's behind cookie-or-bearer so the browser and MCP / capture
+    # clients can both render images.
+    if storage_cfg is not None:
+        app.include_router(thumbs.router)
     if auth is not None:
         bearer = make_bearer_dependency(auth)
         app.include_router(ingest.router, prefix="/v1", dependencies=[Depends(bearer)])

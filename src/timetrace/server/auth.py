@@ -66,6 +66,22 @@ class TokenEntry:
     created_at: int | None = None
 
 
+@dataclass(frozen=True)
+class BearerPrincipal:
+    """The subject of an authenticated Bearer-token request.
+
+    Twin of ``users.CookiePrincipal``. ``deps.require_principal`` returns one or
+    the other so routes can audit-distinguish "human at browser" from
+    "machine using API key" without re-parsing headers.
+
+    Carries the token's ``label`` (not its value!) so logs / audit trails can
+    say which integration made a given call ("claude-code", "capture-yuki-win")
+    without ever printing the secret.
+    """
+
+    token_label: str
+
+
 class ServerAuth:
     """In-memory token validator with disk-backed persistence."""
 
@@ -150,6 +166,19 @@ class ServerAuth:
 
     def is_valid(self, token: str) -> bool:
         return token in self._token_set
+
+    def find_label(self, token: str) -> str | None:
+        """Return the label of a matching token, or ``None`` if unknown.
+
+        Used by ``require_principal`` to mint a :class:`BearerPrincipal` with
+        the label set — so subsequent audit logs can name the caller
+        ("which integration is hitting /v1/records?") without ever logging
+        the token value.
+        """
+        for t in self._tokens:
+            if t.value == token:
+                return t.label
+        return None
 
     @property
     def tokens(self) -> list[TokenEntry]:

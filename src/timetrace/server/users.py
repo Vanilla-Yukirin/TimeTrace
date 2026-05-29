@@ -38,8 +38,13 @@ logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
-class SessionUser:
-    """The subject of an authenticated cookie request."""
+class CookiePrincipal:
+    """The subject of an authenticated cookie request.
+
+    Twin of ``auth.BearerPrincipal``. ``deps.require_principal`` returns one or
+    the other so routes can audit-distinguish "human at browser" from "machine
+    using API key" without re-parsing headers.
+    """
 
     username: str
     session_id: str
@@ -194,7 +199,7 @@ class UserStore:
         *,
         ip: str,
         user_agent: str | None,
-    ) -> SessionUser:
+    ) -> CookiePrincipal:
         """Verify creds + mint a session id. Raises on failure.
 
         Failure cases:
@@ -217,13 +222,13 @@ class UserStore:
             user_agent=user_agent,
             ip=ip,
         )
-        return SessionUser(
+        return CookiePrincipal(
             username=username,
             session_id=session_id,
             must_change_password=bool(user["password_must_change"]),
         )
 
-    async def resolve_session(self, session_id: str) -> SessionUser | None:
+    async def resolve_session(self, session_id: str) -> CookiePrincipal | None:
         """Map a cookie id back to a session subject; ``None`` if invalid/expired.
 
         Touches ``last_seen_at`` as a side effect (cheap; audit/telemetry only,
@@ -242,7 +247,7 @@ class UserStore:
             await self._db.delete_session(session_id)
             return None
         await self._db.touch_session(session_id)
-        return SessionUser(
+        return CookiePrincipal(
             username=row["username"],
             session_id=session_id,
             must_change_password=bool(user["password_must_change"]),

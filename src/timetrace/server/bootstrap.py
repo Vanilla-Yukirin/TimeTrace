@@ -88,10 +88,15 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
     users = UserStore(db, config.auth)
     seeded = await users.ensure_admin_seeded()
     if seeded:
+        # NEVER print the plaintext password — journal / syslog persists it
+        # forever, and if someone later wires TIMETRACE_ADMIN_INITIAL_PASSWORD
+        # this would leak it. ``password_default=True`` says "the literal
+        # 'admin' default is in effect"; False would mean the operator
+        # provided their own initial via env / config.
         logger.warning(
             "auth.admin_seed.first_start",
             username=config.auth.admin_username,
-            initial_password=config.auth.admin_initial_password,
+            password_default=config.auth.admin_initial_password == "admin",
             note="change immediately via Web UI / change-password on first login",
         )
 
