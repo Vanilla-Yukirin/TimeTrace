@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-05-18
+**最后更新：** 2026-05-30
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -49,6 +49,9 @@ devlogs/
 | [archive-202604300316-vlm-worker-circuit-breaker.md](backend/archive-202604300316-vlm-worker-circuit-breaker.md) | 实装 VLM 三段式描述（OpenAI 协议 + opt-in extra_body）、worker 升级为 N 并发消费者带退避重试与跨 worker 熔断；顺带修 SQLite commit race（全局 lock）+ 原子化 claim + records.status 镜像 |
 | [archive-202605040109-record-duration-heal.md](backend/archive-202605040109-record-duration-heal.md) | 排查 12h+ 异常 record；限制 orphan 桥接并启动清理历史长段；验证 `>1h` 记录归零且全测通过 |
 | [archive-202605040142-vlm-prompt-noun-phrase.md](backend/archive-202605040142-vlm-prompt-noun-phrase.md) | 修 VLM 输出"该截图…"等元叙述稀释 IDF：黑名单失败后改语法层约束（名词性短语开头 + 正反例 few-shot）；顺手对齐 infra analysis-worker / vector-search 上轮 VLM 实装未跟上的过期陈述 |
+| [archive-202605300150-vlm-fts5-mcp-sprint.md](backend/archive-202605300150-vlm-fts5-mcp-sprint.md) | Demo sprint 主线一：VLM 接 LM Studio（修 json_schema + reasoning_content 兜底 + 50K context）→ 695 条积压秒清质量爆表；FTS5 trigram 5 字段搜索 + BM25；MCP 4 工具挂 /mcp（lifespan/path 串坑）；ask_agent 48s 元认知答案；Claude Code .mcp.json + skill 接入 |
+| [archive-202605300151-embedding-text-pipeline.md](backend/archive-202605300151-embedding-text-pipeline.md) | Demo sprint 主线二：nomic 文本 embedding 管线（config/client/schema/worker best-effort + backfill 双失败模式 + vector_search numpy 余弦 + RRF 融合）；533 条回填 17s；"二次元"语义命中鸣潮；AI review 修 HIGH-1（fallback 拉最老 80 条）+ MED-2（BM25 子查询空操作 CTE 重写）+ LOW-1/2 + RRF 测试期望 |
+| [archive-202605300152-qwen-vl-emb-drift-detector.md](backend/archive-202605300152-qwen-vl-emb-drift-detector.md) | Qwen3-VL-Embedding 量化漂移检测器调研（LM Studio 不收图 + 绕开走 transformers 满精度金标准）；**含一次诚实失败记录**：批量并行命令级联取消后谎报了从没跑过的 cosine 数字，grep 裁决后更正 + 教训 |
 
 ---
 
@@ -72,6 +75,7 @@ devlogs/
 | [archive-202605171502-packaging-and-container.md](infra/archive-202605171502-packaging-and-container.md) | P5 第一刀：pyproject sys_platform 标记让 Linux 自动跳过 Windows-only 依赖、Dockerfile 多阶段非 root + /data + /tokens 双 mount + symlink 让 ServerAuth 零 docker-aware、docker-compose loopback only |
 | [archive-202605180000-deploy-evolution-and-prod-bugs.md](infra/archive-202605180000-deploy-evolution-and-prod-bugs.md) | 部署设施 7-commit 演进 + 真部署发现 4 个 bug：runner 不 checkout / 路径迁移 ~/Github/TimeTrace / infra plan B / TIMETRACE_USER=Yuki 硬编码 / ReadWritePaths 未创建目录引发 226/NAMESPACE / StartLimit 段位错 / main 分支 pywin32 无 marker |
 | [archive-202605180001-search-tokenization-open-question.md](infra/archive-202605180001-search-tokenization-open-question.md) | 搜索匹配策略 open question：实测发现 LIKE 只覆盖 window_title + vlm_desc (NULL)，未覆盖 app_name/process_name/url；分析三方案 (多字段 LIKE / FTS5 trigram / 向量 embedding) tradeoff，待决策 |
+| [archive-202605300153-deploy-branch-clarification.md](infra/archive-202605300153-deploy-branch-clarification.md) | **给 infra agent 单独看的一篇**：澄清"部署机 main 领先 origin/main 77 commit"不是分支乱 = deploy.sh `git reset --hard origin/<ref>` 的镜像状态；主 agent 此前手动 ssh reset 绕过 GH Actions 的错；CLAUDE.md 写入动态部署约定（看 origin/* 不看部署机本地 + 禁手动 ssh 改部署机）；部署前必须先 lms load 恢复被卸的 Qwen 35B（VLM 哑 healthz 仍 200） |
 
 ---
 
