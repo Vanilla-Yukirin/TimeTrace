@@ -18,6 +18,13 @@ export default defineConfig({
       '/v1': { target: 'http://127.0.0.1:8765', changeOrigin: true },
       '/thumbs': { target: 'http://127.0.0.1:8765', changeOrigin: true },
       '/healthz': { target: 'http://127.0.0.1:8765', changeOrigin: true },
+      // Embedding server (timetrace-embserver) is a separate local process on
+      // 8766. Strip the /emb prefix so /emb/admin/* -> 8766/admin/*.
+      '/emb': {
+        target: 'http://127.0.0.1:8766',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/emb/, ''),
+      },
     },
   },
   build: {
