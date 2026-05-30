@@ -15,10 +15,32 @@ interface RecordDetailPanelProps {
   recordId: string | null
   onClose: () => void
   onZoom?: (recordId: string) => void
+  /** Mobile: render as a full-screen overlay instead of a fixed side column. */
+  isMobile?: boolean
 }
 
-/** Outer shell shared by every panel state — keeps width/border/scroll uniform. */
-function Shell({ children }: { children: React.ReactNode }) {
+/** Outer shell shared by every panel state. Desktop = fixed side column;
+ *  mobile = full-screen overlay (fixed inset 0) so it doesn't squeeze the
+ *  timeline into an unusable sliver. */
+function Shell({ children, isMobile }: { children: React.ReactNode; isMobile?: boolean }) {
+  if (isMobile) {
+    return (
+      <aside
+        className="tt-fade"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 50,
+          background: 'var(--bg-surface)',
+          display: 'flex',
+          flexDirection: 'column',
+          overflowY: 'auto',
+        }}
+      >
+        {children}
+      </aside>
+    )
+  }
   return (
     <aside
       style={{
@@ -53,7 +75,7 @@ function Centered({ children }: { children: React.ReactNode }) {
   )
 }
 
-export function RecordDetailPanel({ recordId, onClose, onZoom }: RecordDetailPanelProps) {
+export function RecordDetailPanel({ recordId, onClose, onZoom, isMobile = false }: RecordDetailPanelProps) {
   const { data: record, isLoading, error } = useRecord(recordId)
   const feedback = useFeedback()
   const { reset: resetFeedback } = feedback
@@ -63,9 +85,11 @@ export function RecordDetailPanel({ recordId, onClose, onZoom }: RecordDetailPan
     resetFeedback()
   }, [recordId, resetFeedback])
 
+  // Mobile: nothing selected → render nothing (no empty side column / overlay).
   if (!recordId) {
+    if (isMobile) return null
     return (
-      <Shell>
+      <Shell isMobile={isMobile}>
         <Centered>
           <div>
             <CatMascot size={76} float style={{ margin: '0 auto', opacity: 0.9 }} />
@@ -83,7 +107,7 @@ export function RecordDetailPanel({ recordId, onClose, onZoom }: RecordDetailPan
 
   if (isLoading) {
     return (
-      <Shell>
+      <Shell isMobile={isMobile}>
         <div style={{ padding: 16 }}>
           <div className="tt-fade" style={{ height: 150, background: 'var(--bg-raised)', borderRadius: 'var(--radius-lg)', marginBottom: 16 }} />
           <div className="tt-fade" style={{ height: 16, background: 'var(--bg-raised)', borderRadius: 6, marginBottom: 8, width: '70%' }} />
@@ -95,7 +119,7 @@ export function RecordDetailPanel({ recordId, onClose, onZoom }: RecordDetailPan
 
   if (error || !record) {
     return (
-      <Shell>
+      <Shell isMobile={isMobile}>
         <Centered>
           <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
             <div style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>活动不存在</div>
@@ -109,7 +133,7 @@ export function RecordDetailPanel({ recordId, onClose, onZoom }: RecordDetailPan
   const accent = categoryColor(record.category_final)
 
   return (
-    <Shell>
+    <Shell isMobile={isMobile}>
       <div className="tt-fade" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

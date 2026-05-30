@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import { AccountSection } from '@/components/admin/AccountSection'
 import { TokenManager } from '@/components/admin/TokenManager'
 import { EmbeddingDiagnostics } from '@/components/admin/EmbeddingDiagnostics'
 
 export function SettingsPage() {
+  const isMobile = useIsMobile()
   const { data: info, isLoading, error } = useQuery({
     queryKey: queryKeys.runtimeInfo(),
     queryFn: () => api.getRuntimeInfo(),
@@ -15,7 +17,7 @@ export function SettingsPage() {
   // backend-status block below depends on it (so a slow /runtime-info doesn't
   // hide the auth controls).
   return (
-    <div style={{ padding: '24px 28px 48px', maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 30 }}>
+    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: isMobile ? '18px 14px 48px' : '24px 28px 48px', maxWidth: 640, width: '100%', display: 'flex', flexDirection: 'column', gap: 30 }}>
       <AccountSection />
 
       <TokenManager />

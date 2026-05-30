@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Search as SearchIcon } from 'lucide-react'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import { CatMascot } from '@/components/brand/CatMascot'
 import { ImageDropzone } from '@/components/search/ImageDropzone'
 import { FilterPanel } from '@/components/search/FilterPanel'
@@ -21,6 +22,7 @@ export function SearchPage() {
 
   // Committed params (only changes on Submit — avoids querying on every keystroke)
   const [submitted, setSubmitted] = useState<SearchParams | null>(null)
+  const isMobile = useIsMobile()
 
   const { data, isFetching, error } = useSearchQuery(submitted)
 
@@ -99,7 +101,7 @@ export function SearchPage() {
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '20px 24px',
+          padding: isMobile ? '16px 14px 32px' : '20px 24px',
           maxWidth: 960,
           width: '100%',
           margin: '0 auto',

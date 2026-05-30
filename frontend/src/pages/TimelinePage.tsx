@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
-import { CalendarDays } from 'lucide-react'
+import { CalendarDays, SlidersHorizontal } from 'lucide-react'
 import { format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import { useRecords } from '@/hooks/useRecords'
 import { TimelineCanvas } from '@/components/timeline/TimelineCanvas'
 import { CategoryFilter, UNCATEGORIZED } from '@/components/timeline/CategoryFilter'
@@ -24,6 +25,10 @@ export function TimelinePage() {
 
   // null = 全部; otherwise a category_final value (or UNCATEGORIZED sentinel).
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
+
+  const isMobile = useIsMobile()
+  // Mobile only: the calendar + quick-filters live in a collapsible panel.
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
 
   const { data: records } = useRecords(selectedDate)
   const allRecords = useMemo(() => records ?? [], [records])
@@ -110,6 +115,88 @@ export function TimelinePage() {
     return () => window.removeEventListener('popstate', handler)
   }, [])
 
+  const filtersPanel = (
+    <>
+      <DatePicker value={selectedDate} onChange={handleDateChange} />
+      <div style={{ height: 1, background: 'var(--bg-border)' }} />
+      <CategoryFilter records={allRecords} selected={categoryFilter} onSelect={setCategoryFilter} />
+    </>
+  )
+
+  const detail = (
+    <RecordDetailPanel
+      isMobile={isMobile}
+      recordId={selectedRecordId}
+      onClose={() => setSelectedRecordId(null)}
+      onZoom={handleZoom}
+    />
+  )
+
+  const lightbox = (
+    <ImageLightbox
+      items={lightboxItems}
+      index={lightboxIndex >= 0 ? Math.min(lightboxIndex, lightboxItems.length - 1) : 0}
+      onIndexChange={handleLightboxIndexChange}
+      open={lightboxIndex >= 0 && lightboxItems.length > 0}
+      onOpenChange={handleLightboxOpenChange}
+    />
+  )
+
+  // ---- Mobile: single column, filters collapsible, detail as overlay ----
+  if (isMobile) {
+    return (
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          padding: '14px 14px 48px',
+          minWidth: 0,
+          overflowY: 'auto',
+        }}
+      >
+        <TimelineHeader
+          date={selectedDate}
+          count={shownRecords.length}
+          totalMs={totalMs}
+          onToday={handleGoToday}
+          isMobile
+          filtersOpen={mobileFiltersOpen}
+          onToggleFilters={() => setMobileFiltersOpen((o) => !o)}
+        />
+        {mobileFiltersOpen && (
+          <div
+            className="tt-fade"
+            style={{
+              marginTop: 12,
+              padding: 14,
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--bg-border)',
+              borderRadius: 'var(--radius-lg)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+            }}
+          >
+            {filtersPanel}
+          </div>
+        )}
+        <div style={{ marginTop: 16 }}>
+          <TimelineCanvas
+            records={shownRecords}
+            date={selectedDate}
+            selectedRecordId={selectedRecordId}
+            onSelectRecord={handleSelectRecord}
+            onGoToday={handleGoToday}
+          />
+        </div>
+        {detail}
+        {lightbox}
+      </div>
+    )
+  }
+
+  // ---- Desktop: three columns ----
   return (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
       {/* Left: calendar + quick filters */}
@@ -126,13 +213,7 @@ export function TimelinePage() {
           gap: 18,
         }}
       >
-        <DatePicker value={selectedDate} onChange={handleDateChange} />
-        <div style={{ height: 1, background: 'var(--bg-border)' }} />
-        <CategoryFilter
-          records={allRecords}
-          selected={categoryFilter}
-          onSelect={setCategoryFilter}
-        />
+        {filtersPanel}
       </aside>
 
       {/* Center: header + timeline */}
@@ -164,19 +245,9 @@ export function TimelinePage() {
       </div>
 
       {/* Right: detail panel */}
-      <RecordDetailPanel
-        recordId={selectedRecordId}
-        onClose={() => setSelectedRecordId(null)}
-        onZoom={handleZoom}
-      />
+      {detail}
 
-      <ImageLightbox
-        items={lightboxItems}
-        index={lightboxIndex >= 0 ? Math.min(lightboxIndex, lightboxItems.length - 1) : 0}
-        onIndexChange={handleLightboxIndexChange}
-        open={lightboxIndex >= 0 && lightboxItems.length > 0}
-        onOpenChange={handleLightboxOpenChange}
-      />
+      {lightbox}
     </div>
   )
 }
@@ -186,18 +257,24 @@ function TimelineHeader({
   count,
   totalMs,
   onToday,
+  isMobile = false,
+  filtersOpen = false,
+  onToggleFilters,
 }: {
   date: Date
   count: number
   totalMs: number
   onToday: () => void
+  isMobile?: boolean
+  filtersOpen?: boolean
+  onToggleFilters?: () => void
 }) {
   const isToday = format(date, 'yyyy-MM-dd') === format(new Date(), 'yyyy-MM-dd')
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 }}>
-      <div>
+      <div style={{ minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: 'var(--text-primary)' }}>
+          <h1 style={{ margin: 0, fontSize: isMobile ? 20 : 22, fontWeight: 800, color: 'var(--text-primary)' }}>
             {format(date, 'M月d日', { locale: zhCN })}
           </h1>
           <span style={{ fontSize: 14, color: 'var(--text-secondary)', fontWeight: 500 }}>
@@ -224,28 +301,56 @@ function TimelineHeader({
         </div>
       </div>
 
-      {!isToday && (
-        <button
-          onClick={onToday}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '7px 13px',
-            borderRadius: 'var(--radius-md)',
-            background: 'var(--bg-surface)',
-            border: '1px solid var(--bg-border)',
-            color: 'var(--text-secondary)',
-            fontSize: 13,
-            fontWeight: 500,
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
-        >
-          <CalendarDays size={14} />
-          回到今天
-        </button>
-      )}
+      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+        {isMobile && onToggleFilters && (
+          <button
+            onClick={onToggleFilters}
+            aria-expanded={filtersOpen}
+            aria-label="日期与筛选"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              minWidth: 44,
+              height: 38,
+              padding: '0 12px',
+              borderRadius: 'var(--radius-md)',
+              background: filtersOpen ? 'var(--accent-subtle)' : 'var(--bg-surface)',
+              border: '1px solid var(--bg-border)',
+              color: filtersOpen ? 'var(--accent)' : 'var(--text-secondary)',
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: 'pointer',
+            }}
+          >
+            <SlidersHorizontal size={15} aria-hidden="true" />
+            日期
+          </button>
+        )}
+        {!isToday && (
+          <button
+            onClick={onToday}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              minHeight: isMobile ? 38 : undefined,
+              padding: '7px 13px',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--bg-border)',
+              color: 'var(--text-secondary)',
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: 'pointer',
+            }}
+          >
+            <CalendarDays size={14} aria-hidden="true" />
+            {isMobile ? '今天' : '回到今天'}
+          </button>
+        )}
+      </div>
     </div>
   )
 }
