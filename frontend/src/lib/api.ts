@@ -17,8 +17,12 @@ import type {
  *  ``AuthContext`` listen for this so they can clear local state +
  *  redirect to /login + broadcast the kick across browser tabs. */
 export class UnauthorizedError extends Error {
-  constructor(public readonly path: string) {
+  // Plain field + explicit assignment instead of a constructor parameter
+  // property — the latter is disallowed under tsconfig `erasableSyntaxOnly`.
+  readonly path: string
+  constructor(path: string) {
     super(`401 unauthorized: ${path}`)
+    this.path = path
     this.name = 'UnauthorizedError'
   }
 }

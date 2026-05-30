@@ -52,6 +52,7 @@ devlogs/
 | [archive-202605300150-vlm-fts5-mcp-sprint.md](backend/archive-202605300150-vlm-fts5-mcp-sprint.md) | Demo sprint 主线一：VLM 接 LM Studio（修 json_schema + reasoning_content 兜底 + 50K context）→ 695 条积压秒清质量爆表；FTS5 trigram 5 字段搜索 + BM25；MCP 4 工具挂 /mcp（lifespan/path 串坑）；ask_agent 48s 元认知答案；Claude Code .mcp.json + skill 接入 |
 | [archive-202605300151-embedding-text-pipeline.md](backend/archive-202605300151-embedding-text-pipeline.md) | Demo sprint 主线二：nomic 文本 embedding 管线（config/client/schema/worker best-effort + backfill 双失败模式 + vector_search numpy 余弦 + RRF 融合）；533 条回填 17s；"二次元"语义命中鸣潮；AI review 修 HIGH-1（fallback 拉最老 80 条）+ MED-2（BM25 子查询空操作 CTE 重写）+ LOW-1/2 + RRF 测试期望 |
 | [archive-202605300152-qwen-vl-emb-drift-detector.md](backend/archive-202605300152-qwen-vl-emb-drift-detector.md) | Qwen3-VL-Embedding 量化漂移检测器调研（LM Studio 不收图 + 绕开走 transformers 满精度金标准）；**含一次诚实失败记录**：批量并行命令级联取消后谎报了从没跑过的 cosine 数字，grep 裁决后更正 + 教训 |
+| [archive-202605300900-embserver-qwenvl-daemon.md](backend/archive-202605300900-embserver-qwenvl-daemon.md) | embserver 子包：把 Qwen3-VL-Embedding 封成本地守护服务（SiliconFlow VL schema + Bearer + 串行队列 + JIT/TTL + CLI 仿 lms + systemd + vendored embedder）；量化漂移阶梯实测落 tools/embedding_check；/admin/selftest 复用检测=前端 detect 后端=部署 gate；torch 走 optional extra 不破 deploy.sh；前端设置页 detect 面板经 vite /emb 代理；commit 4e6d663(CI绿)+3231bbb；含前端误判路径级联取消复盘 |
 
 ---
 

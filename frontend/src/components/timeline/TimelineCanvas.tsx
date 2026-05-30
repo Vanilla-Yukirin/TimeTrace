@@ -103,7 +103,7 @@ export function TimelineCanvas({
             }
           }}
           onMouseUp={e => onMouseUp(e.nativeEvent)}
-          onMouseLeave={e => {
+          onMouseLeave={() => {
             onMouseLeave()
             setTooltipPos(null)
           }}
