@@ -79,6 +79,7 @@ devlogs/
 | [archive-202605300220-public-deploy-vps-nginx-frp.md](infra/archive-202605300220-public-deploy-vps-nginx-frp.md) | 公网部署搭建：选香草云 HK VPS（CN2 GIA 38ms）+ Cloudflare DNS-only 子域名 + nginx 两阶段 certbot 签证书 + frpc 加 18765→8765 隧道，端到端 152ms 打通；随即发现 5 路由公网裸奔真实泄露截图/记录，注释 frpc timetrace-api 段止血（保留 nginx/证书） |
 | [archive-202605300221-login-system-impl-phase1-6.md](infra/archive-202605300221-login-system-impl-phase1-6.md) | 登录系统实现 Phase 1-6：auth_users/sessions 表 + bcrypt + UserStore + cookie/bearer 双通道（CookiePrincipal\|BearerPrincipal）+ /thumbs(FileResponse) /mcp(纯 ASGI middleware) 业务路由全 gate + 前端登录流/守卫/401 跨 tab + admin tokens CRUD(.mcp.json 弹窗)；顺手修 .gitignore `lib/` 吞掉 frontend/src/lib 的大坑；373 passed |
 | [archive-202605300222-phase7-deploy-qwen-restore.md](infra/archive-202605300222-phase7-deploy-qwen-restore.md) | Phase 7 部署：Qwen 35B 恢复踩 `--ttl 99999999` bug（去掉即好，无 TTL 永久驻留）+ 纠正 GPU 实为 RTX 3080 20GB 非 4090D；gh workflow run 404（deploy.yml 不在默认分支 main，GH Actions 部署路径从未可用）+ deploy.sh 被 guardrail 拦 → 用户授权手动部署 + 提议 main FF |
+| [archive-202605300855-auth-bugfix-audit-public-launch.md](infra/archive-202605300855-auth-bugfix-audit-public-launch.md) | 登录系统正式上线：修退出闪烁+改密不跳转两 bug（根因 react-query 401 保留 stale data）+ sonner toast；多 agent 对抗审计 23→13 确认，揪出 2 HIGH（must_change 后端零强制、XFF 伪造击穿限流）全修；nginx 托管 SPA + frp 隧道开公网，admin 密码经 sqlite3 直 UPDATE 重置，公网 e2e 全绿 |
 
 ---
 
