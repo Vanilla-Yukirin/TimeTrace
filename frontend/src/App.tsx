@@ -4,6 +4,7 @@ import { Toaster } from 'sonner'
 import { MainLayout } from './components/layout/AppShell'
 import { RequireAuth } from './components/RequireAuth'
 import { AuthProvider } from './contexts/AuthContext'
+import { ThemeProvider, useTheme } from './contexts/ThemeContext'
 import { Sidebar } from './components/layout/Sidebar'
 import { TopBar } from './components/layout/TopBar'
 import { UnauthorizedError } from './lib/api'
@@ -36,16 +37,23 @@ const queryClient = new QueryClient({
   },
 })
 
+/** Toaster that follows the active theme (must live inside ThemeProvider). */
+function ThemedToaster() {
+  const { theme } = useTheme()
+  return <Toaster position="top-center" richColors closeButton theme={theme} />
+}
+
 export function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        {/* AuthProvider must live inside the router so its 401 broadcast can
-            coexist with route changes, and inside QueryClientProvider so
-            useQuery works in it. */}
-        <AuthProvider>
-          <Toaster position="top-center" richColors closeButton theme="dark" />
-          <Routes>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          {/* AuthProvider must live inside the router so its 401 broadcast can
+              coexist with route changes, and inside QueryClientProvider so
+              useQuery works in it. */}
+          <AuthProvider>
+            <ThemedToaster />
+            <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route
               path="/login/change-password"
@@ -69,10 +77,11 @@ export function App() {
                 </RequireAuth>
               }
             />
-          </Routes>
-        </AuthProvider>
-      </BrowserRouter>
-    </QueryClientProvider>
+            </Routes>
+          </AuthProvider>
+        </BrowserRouter>
+      </QueryClientProvider>
+    </ThemeProvider>
   )
 }
 
