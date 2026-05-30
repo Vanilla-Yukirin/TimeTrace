@@ -12,9 +12,9 @@ import {
 const DTYPES = ['bfloat16', 'float16', 'int8', 'int4'] as const
 
 function cosColor(c: number): string {
-  if (c >= 0.999) return '#16a34a'
-  if (c >= 0.99) return '#ca8a04'
-  return '#dc2626'
+  if (c >= 0.999) return 'var(--success)'
+  if (c >= 0.99) return 'var(--warning)'
+  return 'var(--error)'
 }
 
 export function EmbeddingDiagnostics() {
@@ -66,7 +66,7 @@ export function EmbeddingDiagnostics() {
         style={{
           padding: 16,
           background: 'var(--bg-surface)',
-          borderRadius: 8,
+          borderRadius: 'var(--radius-lg)',
           border: '1px solid var(--bg-border)',
           display: 'flex',
           flexDirection: 'column',
@@ -75,6 +75,7 @@ export function EmbeddingDiagnostics() {
       >
         <input
           type="password"
+          aria-label="嵌入服务 API Key"
           value={key}
           onChange={(e) => saveKey(e.target.value)}
           placeholder="嵌入服务 API Key（tt_emb_…，本机保存）"
@@ -107,21 +108,27 @@ export function EmbeddingDiagnostics() {
           >
             <Activity size={14} /> {detect.isPending ? '检测中…' : '检测'}
           </button>
-          {stage && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{stage}</span>}
-          {errMsg && <span style={{ color: '#dc2626', fontSize: 13 }}>{errMsg}</span>}
+          <span
+            role="status"
+            aria-live="polite"
+            style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}
+          >
+            {stage && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{stage}</span>}
+            {errMsg && <span style={{ color: 'var(--error)', fontSize: 13 }}>{errMsg}</span>}
+          </span>
         </div>
 
         {result && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div role="status" aria-live="polite" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span
                 style={{
                   padding: '2px 10px',
-                  borderRadius: 999,
+                  borderRadius: 'var(--radius-pill)',
                   fontSize: 12,
                   fontWeight: 600,
-                  color: '#fff',
-                  background: result.verdict === 'PASS' ? '#16a34a' : '#dc2626',
+                  color: 'var(--accent-contrast)',
+                  background: result.verdict === 'PASS' ? 'var(--success)' : 'var(--error)',
                 }}
               >
                 {result.verdict}
@@ -150,7 +157,7 @@ export function EmbeddingDiagnostics() {
                     padding: '5px 10px',
                     background: 'var(--bg-raised)',
                     border: '1px solid var(--bg-border)',
-                    borderRadius: 6,
+                    borderRadius: 'var(--radius-md)',
                     fontSize: 13,
                   }}
                 >
@@ -173,7 +180,7 @@ const inputStyle: React.CSSProperties = {
   padding: '8px 12px',
   background: 'var(--bg-raised)',
   border: '1px solid var(--bg-border)',
-  borderRadius: 6,
+  borderRadius: 'var(--radius-md)',
   color: 'var(--text-primary)',
   fontSize: 13,
   outline: 'none',
@@ -184,10 +191,10 @@ const primaryButton: React.CSSProperties = {
   alignItems: 'center',
   gap: 6,
   padding: '8px 14px',
-  background: '#2563eb',
-  color: '#fff',
+  background: 'var(--grad-accent)',
+  color: 'var(--accent-contrast)',
   border: 'none',
-  borderRadius: 6,
+  borderRadius: 'var(--radius-md)',
   fontSize: 13,
   cursor: 'pointer',
 }
