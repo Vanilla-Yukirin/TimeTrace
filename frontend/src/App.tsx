@@ -6,8 +6,6 @@ import { RequireAuth } from './components/RequireAuth'
 import { AuthProvider } from './contexts/AuthContext'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext'
 import { SakuraPetals } from './components/brand/SakuraPetals'
-import { Sidebar } from './components/layout/Sidebar'
-import { TopBar } from './components/layout/TopBar'
 import { UnauthorizedError } from './lib/api'
 import { queryKeys } from './lib/queryKeys'
 import { ChangePasswordPage } from './pages/ChangePasswordPage'
@@ -69,7 +67,7 @@ export function App() {
               path="/*"
               element={
                 <RequireAuth>
-                  <MainLayout sidebar={<Sidebar />} topbar={<TopBar />}>
+                  <MainLayout>
                     <Routes>
                       <Route path="/" element={<TimelinePage />} />
                       <Route path="/search" element={<SearchPage />} />

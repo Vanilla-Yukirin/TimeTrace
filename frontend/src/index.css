@@ -60,6 +60,21 @@
   --radius-xl: 22px;
   --radius-pill: 999px;
 
+  /* spacing + type scale (theme-independent; available for new code — existing
+     components keep their inline values, no mass migration) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+
   /* category accents (shared semantic palette) */
   --cat-blue: #5b9dff;
   --cat-green: #4ade80;

@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { Clock, Search, Settings, Sparkles } from 'lucide-react'
 import { Logo } from '@/components/brand/Logo'
@@ -9,34 +10,43 @@ const NAV = [
   { to: '/settings', icon: Settings, label: '设置' },
 ]
 
-export function Sidebar() {
+interface SidebarProps {
+  isMobile?: boolean
+  open?: boolean
+  onClose?: () => void
+}
+
+export function Sidebar({ isMobile = false, open = false, onClose }: SidebarProps) {
   const { pathname } = useLocation()
 
-  return (
-    <aside
-      className="flex flex-col h-full shrink-0"
-      style={{
-        width: 216,
-        borderRight: '1px solid var(--bg-border)',
-        background: 'var(--bg-surface)',
-      }}
-    >
-      {/* Brand */}
+  // Mobile drawer: Escape closes it.
+  useEffect(() => {
+    if (!isMobile || !open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose?.()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isMobile, open, onClose])
+
+  const content = (
+    <>
       <div style={{ padding: '18px 16px 14px' }}>
         <Logo size={32} withWordmark tagline="记录时间 · 追踪生活" />
       </div>
 
-      {/* Nav */}
-      <nav style={{ padding: '4px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <nav aria-label="主导航" style={{ padding: '4px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
         {NAV.map(({ to, icon: Icon, label }) => {
           const active = pathname === to
           return (
             <Link
               key={to}
               to={to}
+              aria-current={active ? 'page' : undefined}
+              onClick={isMobile ? onClose : undefined}
               className="relative flex items-center gap-2.5 transition-colors"
               style={{
-                padding: '9px 12px',
+                padding: '11px 12px',
                 borderRadius: 'var(--radius-md)',
                 fontSize: 13.5,
                 fontWeight: active ? 600 : 500,
@@ -45,9 +55,9 @@ export function Sidebar() {
                 textDecoration: 'none',
               }}
             >
-              {/* active rail */}
               {active && (
                 <span
+                  aria-hidden="true"
                   style={{
                     position: 'absolute',
                     left: -10,
@@ -60,16 +70,15 @@ export function Sidebar() {
                   }}
                 />
               )}
-              <Icon size={16} />
+              <Icon size={16} aria-hidden="true" />
               {label}
             </Link>
           )
         })}
       </nav>
 
-      <div style={{ flex: 1 }} />
+      <div style={{ flex: 1, minHeight: 16 }} />
 
-      {/* Mascot foot — pure atmosphere */}
       <div
         style={{
           position: 'relative',
@@ -80,16 +89,11 @@ export function Sidebar() {
           border: '1px solid var(--bg-border)',
           overflow: 'hidden',
           textAlign: 'center',
+          flexShrink: 0,
         }}
       >
-        <Sparkles
-          size={13}
-          style={{ position: 'absolute', top: 12, right: 16, color: 'var(--accent)', opacity: 0.7 }}
-        />
-        <Sparkles
-          size={9}
-          style={{ position: 'absolute', top: 30, left: 18, color: 'var(--accent)', opacity: 0.5 }}
-        />
+        <Sparkles size={13} aria-hidden="true" style={{ position: 'absolute', top: 12, right: 16, color: 'var(--accent)', opacity: 0.7 }} />
+        <Sparkles size={9} aria-hidden="true" style={{ position: 'absolute', top: 30, left: 18, color: 'var(--accent)', opacity: 0.5 }} />
         <CatMascot size={88} float style={{ display: 'block', margin: '0 auto' }} />
         <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--text-secondary)', fontWeight: 500 }}>
           今天也在好好记录
@@ -98,6 +102,60 @@ export function Sidebar() {
           本地优先 · 隐私自持
         </div>
       </div>
-    </aside>
+    </>
+  )
+
+  // Desktop: static column.
+  if (!isMobile) {
+    return (
+      <aside
+        className="flex flex-col h-full shrink-0"
+        style={{ width: 216, borderRight: '1px solid var(--bg-border)', background: 'var(--bg-surface)' }}
+      >
+        {content}
+      </aside>
+    )
+  }
+
+  // Mobile: slide-in drawer + backdrop.
+  return (
+    <>
+      <div
+        aria-hidden="true"
+        onClick={onClose}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0, 0, 0, 0.5)',
+          zIndex: 40,
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? 'auto' : 'none',
+          transition: 'opacity 0.2s ease',
+        }}
+      />
+      <aside
+        className="flex flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-label="导航菜单"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          bottom: 0,
+          width: 268,
+          maxWidth: '82vw',
+          zIndex: 41,
+          background: 'var(--bg-surface)',
+          borderRight: '1px solid var(--bg-border)',
+          boxShadow: open ? 'var(--shadow-lg)' : 'none',
+          transform: open ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+          overflowY: 'auto',
+        }}
+      >
+        {content}
+      </aside>
+    </>
   )
 }

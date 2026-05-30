@@ -1,5 +1,5 @@
 import { useNavigate, useLocation, Link } from 'react-router-dom'
-import { Clock, LogOut, Search, Settings } from 'lucide-react'
+import { Clock, LogOut, Menu, Search, Settings } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, broadcastKick } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
@@ -12,7 +12,7 @@ const TITLES: Record<string, { icon: typeof Clock; label: string }> = {
   '/settings': { icon: Settings, label: '设置' },
 }
 
-export function TopBar() {
+export function TopBar({ isMobile = false, onMenu }: { isMobile?: boolean; onMenu?: () => void }) {
   const { user, setUser } = useAuth()
   const navigate = useNavigate()
   const { pathname } = useLocation()
@@ -52,8 +52,29 @@ export function TopBar() {
         backdropFilter: 'blur(10px)',
       }}
     >
-      {/* Left: current page */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+      {/* Left: hamburger (mobile) + current page */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+        {isMobile && onMenu && (
+          <button
+            onClick={onMenu}
+            aria-label="打开菜单"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 38,
+              height: 38,
+              marginLeft: -6,
+              borderRadius: 'var(--radius-md)',
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+            }}
+          >
+            <Menu size={20} />
+          </button>
+        )}
         <span
           style={{
             display: 'inline-flex',
@@ -64,11 +85,12 @@ export function TopBar() {
             borderRadius: 'var(--radius-md)',
             background: 'var(--accent-subtle)',
             color: 'var(--accent)',
+            flexShrink: 0,
           }}
         >
           <TitleIcon size={15} />
         </span>
-        <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
+        <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
           {title.label}
         </span>
       </div>
@@ -79,11 +101,14 @@ export function TopBar() {
           <Link
             to="/search"
             title="搜索活动"
+            aria-label="搜索活动"
             style={{
               display: 'inline-flex',
               alignItems: 'center',
+              justifyContent: 'center',
               gap: 7,
-              padding: '0 12px',
+              padding: isMobile ? 0 : '0 12px',
+              width: isMobile ? 34 : undefined,
               height: 34,
               borderRadius: 'var(--radius-md)',
               background: 'var(--bg-raised)',
@@ -94,7 +119,7 @@ export function TopBar() {
             }}
           >
             <Search size={14} />
-            <span>搜索…</span>
+            {!isMobile && <span>搜索…</span>}
           </Link>
 
           <ThemeToggle />
