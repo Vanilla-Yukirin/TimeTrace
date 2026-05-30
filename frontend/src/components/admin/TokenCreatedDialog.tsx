@@ -54,17 +54,18 @@ export function TokenCreatedDialog({ token, origin, onClose }: Props) {
           padding: 24,
           background: 'var(--bg-surface)',
           border: '1px solid var(--bg-border)',
-          borderRadius: 12,
+          borderRadius: 'var(--radius-xl)',
+          boxShadow: 'var(--shadow-lg)',
           display: 'flex',
           flexDirection: 'column',
           gap: 16,
         }}
       >
         <div>
-          <h2 style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
             Token 已创建：{token.label}
           </h2>
-          <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 6 }}>
+          <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 6 }}>
             ⚠ 此 token 仅显示这一次，请立即复制保存。关闭后无法再次查看。
           </div>
         </div>
@@ -85,13 +86,15 @@ export function TokenCreatedDialog({ token, origin, onClose }: Props) {
           onClick={onClose}
           style={{
             alignSelf: 'flex-end',
-            padding: '8px 16px',
-            background: '#2563eb',
+            padding: '9px 18px',
+            background: 'var(--grad-accent)',
             color: '#fff',
             border: 'none',
-            borderRadius: 6,
+            borderRadius: 'var(--radius-md)',
             fontSize: 14,
+            fontWeight: 600,
             cursor: 'pointer',
+            boxShadow: 'var(--shadow-glow)',
           }}
         >
           我已保存
@@ -138,11 +141,11 @@ function CopyBlock({ label, text, mono, multiline }: CopyBlockProps) {
             display: 'inline-flex',
             alignItems: 'center',
             gap: 4,
-            padding: '2px 8px',
+            padding: '3px 9px',
             background: 'transparent',
-            color: copied ? '#22c55e' : 'var(--text-secondary)',
+            color: copied ? 'var(--success)' : 'var(--text-secondary)',
             border: '1px solid var(--bg-border)',
-            borderRadius: 4,
+            borderRadius: 'var(--radius-md)',
             fontSize: 11,
             cursor: 'pointer',
           }}
@@ -157,7 +160,7 @@ function CopyBlock({ label, text, mono, multiline }: CopyBlockProps) {
           padding: 12,
           background: 'var(--bg-raised)',
           border: '1px solid var(--bg-border)',
-          borderRadius: 6,
+          borderRadius: 'var(--radius-md)',
           fontSize: mono ? 12 : 13,
           fontFamily: mono ? 'JetBrains Mono, monospace' : 'inherit',
           color: 'var(--text-primary)',

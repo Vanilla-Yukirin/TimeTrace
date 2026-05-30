@@ -1,6 +1,7 @@
 import { Navigate, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
+import { CatMascot } from '@/components/brand/CatMascot'
 
 interface Props {
   children: ReactNode
@@ -30,12 +31,15 @@ export function RequireAuth({ children, allowMustChange = false }: Props) {
         style={{
           minHeight: '100vh',
           display: 'flex',
+          flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
+          gap: 12,
           color: 'var(--text-muted)',
         }}
       >
-        加载中...
+        <CatMascot size={72} float />
+        <span style={{ fontSize: 13 }}>加载中…</span>
       </div>
     )
   }
