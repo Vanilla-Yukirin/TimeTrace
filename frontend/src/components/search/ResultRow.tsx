@@ -77,6 +77,7 @@ export function ResultRow({ item, onZoom }: ResultRowProps) {
           <button
             type="button"
             onClick={handleThumbClick}
+            aria-label={`放大查看 ${item.app_name} 的截图`}
             title="点击放大查看"
             style={{
               width: 80,
@@ -190,6 +191,7 @@ export function ResultRow({ item, onZoom }: ResultRowProps) {
             <button
               type="button"
               onClick={() => onZoom?.()}
+              aria-label={`放大查看 ${item.app_name} 的截图`}
               title="点击放大查看"
               style={{
                 width: '100%',

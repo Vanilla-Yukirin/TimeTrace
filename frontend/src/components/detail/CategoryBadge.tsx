@@ -35,7 +35,9 @@ export function CategoryBadge({ category, confidence }: CategoryBadgeProps) {
         borderRadius: 'var(--radius-pill)',
         fontSize: 11.5,
         background: `color-mix(in srgb, ${color} 16%, transparent)`,
-        color,
+        // Label uses readable text color (the category hue is carried by the
+        // dot + border); saturated hues as text fail AA on the light surface.
+        color: 'var(--text-primary)',
         border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
         fontWeight: 600,
       }}>

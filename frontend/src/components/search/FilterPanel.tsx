@@ -81,6 +81,7 @@ export function FilterPanel(props: FilterPanelProps) {
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
               <input
                 type="date"
+                aria-label="开始日期"
                 value={props.startDate ?? ''}
                 onChange={(e) => props.onStartDate(e.target.value || null)}
                 style={inputStyle}
@@ -88,6 +89,7 @@ export function FilterPanel(props: FilterPanelProps) {
               <span style={{ color: 'var(--text-muted)' }}>至</span>
               <input
                 type="date"
+                aria-label="结束日期"
                 value={props.endDate ?? ''}
                 onChange={(e) => props.onEndDate(e.target.value || null)}
                 style={inputStyle}

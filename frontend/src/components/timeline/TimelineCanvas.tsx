@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import type { ApiRecord } from '@/types/api'
 import { useTimelineState } from '@/hooks/useTimelineState'
 import { useTheme } from '@/contexts/ThemeContext'
+import { formatTime } from '@/lib/dateUtils'
 import { renderTimeline, CANVAS_H, TIMELINE_PALETTES } from './useCanvasRenderer'
 import { useCanvasEvents } from './useCanvasEvents'
 import { TimelineTooltip } from './TimelineTooltip'
@@ -105,6 +106,8 @@ export function TimelineCanvas({
       >
         <canvas
           ref={canvasRef}
+          role="img"
+          aria-label={`活动时间轴，共 ${records.length} 条活动。键盘用户可用下方列表逐条查看。`}
           style={{ display: 'block', userSelect: 'none' }}
           onMouseDown={e => onMouseDown(e.nativeEvent)}
           onMouseMove={e => {
@@ -140,17 +143,47 @@ export function TimelineCanvas({
           boxShadow: 'var(--shadow-sm)',
         }}
       >
-        <button title="缩小" onClick={() => zoom(1.5, viewport.canvasWidth / 2)} style={iconBtn}>−</button>
+        <button aria-label="缩小" title="缩小" onClick={() => zoom(1.5, viewport.canvasWidth / 2)} style={iconBtn}>−</button>
         <button onClick={() => goToday(viewport.canvasWidth)} style={textBtn}>整天</button>
         <button onClick={onGoToday} style={textBtn}>今天</button>
-        <button title="放大" onClick={() => zoom(0.67, viewport.canvasWidth / 2)} style={iconBtn}>+</button>
+        <button aria-label="放大" title="放大" onClick={() => zoom(0.67, viewport.canvasWidth / 2)} style={iconBtn}>+</button>
       </div>
+
+      {/* Keyboard / screen-reader path into the canvas: the <canvas> itself is
+          mouse-only, so mirror each activity as a focusable button that drives
+          the same selection (→ populates the detail panel). Visually hidden but
+          in the tab order (WCAG 2.1.1). */}
+      <ul style={srOnly}>
+        {records.map((rec) => (
+          <li key={rec.id}>
+            <button
+              type="button"
+              onClick={() => onSelectRecord(rec.id)}
+            >
+              {`${formatTime(rec.ts_start)} ${rec.app_name}${rec.window_title ? ' — ' + rec.window_title : ''}`}
+            </button>
+          </li>
+        ))}
+      </ul>
 
       {hoverRecord && tooltipPos && (
         <TimelineTooltip record={hoverRecord} x={tooltipPos.x} y={tooltipPos.y} />
       )}
     </div>
   )
+}
+
+/** Visually hidden but still focusable/announced — standard sr-only pattern. */
+const srOnly: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
 }
 
 const iconBtn: React.CSSProperties = {

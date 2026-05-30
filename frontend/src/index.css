@@ -23,10 +23,10 @@
   --bg-border: #272d3e;       /* hairline borders */
   --bg-border-strong: #38415a;
 
-  /* text */
+  /* text — muted bumped to clear WCAG AA on dark surfaces (~5:1) */
   --text-primary: #e7ebf4;
   --text-secondary: #9aa6bd;
-  --text-muted: #616c84;
+  --text-muted: #7e8aa6;
 
   /* accent (indigo-periwinkle) */
   --accent: #7c8cff;
@@ -101,7 +101,9 @@
 
   --text-primary: #1d2235;
   --text-secondary: #545d77;
-  --text-muted: #8a93ab;
+  /* muted bumped to clear WCAG AA on white (~4.7:1) while staying lighter
+     than --text-secondary so the hierarchy holds */
+  --text-muted: #6b7488;
 
   --accent: #5b6ef5;
   --accent-hover: #4452da;
@@ -115,7 +117,9 @@
 
   --success: #16a34a;
   --success-bg: rgba(22, 163, 74, 0.10);
-  --warning: #d97706;
+  /* amber-700 for warning TEXT to clear AA on white (~5:1); dark theme keeps
+     the brighter #fbbf24 which already has high contrast on dark surfaces */
+  --warning: #b45309;
   --error: #dc2626;
   --error-bg: rgba(220, 38, 38, 0.08);
 

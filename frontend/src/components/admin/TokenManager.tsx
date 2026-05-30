@@ -54,6 +54,7 @@ export function TokenManager() {
         <input
           value={newLabel}
           onChange={(e) => setNewLabel(e.target.value)}
+          aria-label="新 token 的标签"
           placeholder="标签，如 claude-code"
           style={{
             flex: 1,

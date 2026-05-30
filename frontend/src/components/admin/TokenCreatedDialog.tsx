@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Copy, Check } from 'lucide-react'
 import type { TokenCreated } from '@/types/api'
 
@@ -15,6 +15,20 @@ interface Props {
  *  so this dialog is the single chance to copy it — and we hand the user a
  *  ready-to-paste .mcp.json so they don't have to remember the wiring. */
 export function TokenCreatedDialog({ token, origin, onClose }: Props) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+
+  // Move focus into the dialog on open and let Escape dismiss it — this is the
+  // one-time secret reveal, so it must behave like a real modal for keyboard
+  // users (not a plain overlay).
+  useEffect(() => {
+    dialogRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   const base = (origin ?? window.location.origin).replace(/\/$/, '')
   const mcpJson = JSON.stringify(
     {
@@ -45,6 +59,11 @@ export function TokenCreatedDialog({ token, origin, onClose }: Props) {
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="token-created-title"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         style={{
           width: '100%',
@@ -56,13 +75,14 @@ export function TokenCreatedDialog({ token, origin, onClose }: Props) {
           border: '1px solid var(--bg-border)',
           borderRadius: 'var(--radius-xl)',
           boxShadow: 'var(--shadow-lg)',
+          outline: 'none',
           display: 'flex',
           flexDirection: 'column',
           gap: 16,
         }}
       >
         <div>
-          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+          <h2 id="token-created-title" style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
             Token 已创建：{token.label}
           </h2>
           <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 6 }}>

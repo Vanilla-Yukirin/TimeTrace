@@ -133,6 +133,7 @@ export function SearchPage() {
             <SearchIcon size={17} style={{ color: 'var(--text-muted)' }} />
             <input
               autoFocus
+              aria-label="搜索关键词"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="关键词（标题/应用/进程/URL/画面描述都搜）。中文 ≥3 字走 FTS5 BM25 排序"
