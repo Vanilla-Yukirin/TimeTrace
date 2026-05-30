@@ -3,6 +3,7 @@ import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
 import { AccountSection } from '@/components/admin/AccountSection'
 import { TokenManager } from '@/components/admin/TokenManager'
+import { EmbeddingDiagnostics } from '@/components/admin/EmbeddingDiagnostics'
 
 export function SettingsPage() {
   const { data: info, isLoading, error } = useQuery({
@@ -18,6 +19,8 @@ export function SettingsPage() {
       <AccountSection />
 
       <TokenManager />
+
+      <EmbeddingDiagnostics />
 
       <div>
       <h2 style={{
