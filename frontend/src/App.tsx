@@ -5,6 +5,7 @@ import { MainLayout } from './components/layout/AppShell'
 import { RequireAuth } from './components/RequireAuth'
 import { AuthProvider } from './contexts/AuthContext'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext'
+import { SakuraPetals } from './components/brand/SakuraPetals'
 import { Sidebar } from './components/layout/Sidebar'
 import { TopBar } from './components/layout/TopBar'
 import { UnauthorizedError } from './lib/api'
@@ -52,6 +53,7 @@ export function App() {
               coexist with route changes, and inside QueryClientProvider so
               useQuery works in it. */}
           <AuthProvider>
+            <SakuraPetals />
             <ThemedToaster />
             <Routes>
             <Route path="/login" element={<LoginPage />} />

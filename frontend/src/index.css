@@ -80,10 +80,13 @@
   --timeline-frame: #38bdf8;
   --timeline-frame-sel: #7c8cff;
 
-  /* whole-app atmosphere (faint twin glows) */
+  /* whole-app atmosphere — twin indigo/violet glows + a restrained sakura note */
   --app-glow:
     radial-gradient(1200px 620px at 82% -12%, rgba(124, 140, 255, 0.12), transparent 60%),
+    radial-gradient(820px 460px at 10% -8%, rgba(244, 159, 212, 0.08), transparent 55%),
     radial-gradient(960px 520px at -10% 112%, rgba(139, 92, 246, 0.10), transparent 55%);
+  /* sakura petal tint (decorative SakuraPetals layer) */
+  --sakura: #f7a8cf;
 
   --sonner-theme: dark;
 }
@@ -148,7 +151,9 @@
 
   --app-glow:
     radial-gradient(1100px 560px at 85% -10%, rgba(124, 140, 255, 0.12), transparent 60%),
-    radial-gradient(920px 520px at -8% 110%, rgba(244, 114, 182, 0.10), transparent 55%);
+    radial-gradient(820px 480px at 10% -6%, rgba(249, 168, 212, 0.18), transparent 55%),
+    radial-gradient(920px 520px at -8% 110%, rgba(244, 114, 182, 0.14), transparent 55%);
+  --sakura: #ec77aa;
 
   --sonner-theme: light;
 }
@@ -252,6 +257,32 @@ body {
   50%      { transform: translateY(-5px); }
 }
 .tt-float { animation: tt-float 4.5s ease-in-out infinite; }
+
+/* Sakura — a few petals drifting down (decorative, behind content). The outer
+   wrapper falls; the inner element sways + rotates. Kept low-opacity + sparse
+   so it reads as 氛围, not snowfall. */
+.sakura-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+@keyframes sakura-fall {
+  from { transform: translateY(-12vh); }
+  to   { transform: translateY(112vh); }
+}
+@keyframes sakura-sway {
+  from { transform: translateX(calc(-1 * var(--sway, 10px))) rotate(-25deg); }
+  to   { transform: translateX(var(--sway, 10px)) rotate(25deg); }
+}
+.sakura-fall { animation: sakura-fall var(--fall, 13s) linear infinite; }
+.sakura-sway { animation: sakura-sway var(--swaydur, 4s) ease-in-out infinite alternate; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* purely decorative motion — hide rather than freeze petals off-screen */
+  .sakura-layer { display: none; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
