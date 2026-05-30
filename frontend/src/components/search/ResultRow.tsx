@@ -34,7 +34,7 @@ export function ResultRow({ item, onZoom }: ResultRowProps) {
     <div
       style={{
         border: '1px solid var(--bg-border)',
-        borderRadius: 6,
+        borderRadius: 'var(--radius-lg)',
         background: 'var(--bg-surface)',
         overflow: 'hidden',
       }}
@@ -85,7 +85,7 @@ export function ResultRow({ item, onZoom }: ResultRowProps) {
               padding: 0,
               background: 'var(--bg-raised)',
               border: '1px solid var(--bg-border)',
-              borderRadius: 4,
+              borderRadius: 'var(--radius-md)',
               overflow: 'hidden',
               cursor: onZoom ? 'zoom-in' : 'default',
             }}
@@ -104,7 +104,7 @@ export function ResultRow({ item, onZoom }: ResultRowProps) {
               flexShrink: 0,
               background: 'var(--bg-raised)',
               border: '1px solid var(--bg-border)',
-              borderRadius: 4,
+              borderRadius: 'var(--radius-md)',
               overflow: 'hidden',
             }}
           />
@@ -162,7 +162,7 @@ export function ResultRow({ item, onZoom }: ResultRowProps) {
             padding: '5px 9px',
             background: 'var(--bg-raised)',
             border: '1px solid var(--bg-border)',
-            borderRadius: 4,
+            borderRadius: 'var(--radius-md)',
             color: 'var(--text-secondary)',
             cursor: 'pointer',
             fontSize: 11,
@@ -209,8 +209,8 @@ export function ResultRow({ item, onZoom }: ResultRowProps) {
                   maxHeight: 320,
                   objectFit: 'contain',
                   border: '1px solid var(--bg-border)',
-                  borderRadius: 4,
-                  background: 'black',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'var(--bg-app)',
                   display: 'block',
                 }}
               />
@@ -248,12 +248,12 @@ function ReasonBadge({ text }: { text: string }) {
   return (
     <span
       style={{
-        padding: '1px 6px',
+        padding: '1px 7px',
         fontSize: 10,
-        borderRadius: 8,
+        borderRadius: 'var(--radius-pill)',
         background: 'var(--accent-subtle)',
-        color: 'var(--accent-hover)',
-        fontWeight: 500,
+        color: 'var(--accent)',
+        fontWeight: 600,
       }}
     >
       {text}

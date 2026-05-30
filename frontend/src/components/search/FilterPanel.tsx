@@ -44,7 +44,7 @@ export function FilterPanel(props: FilterPanelProps) {
   }
 
   return (
-    <div style={{ border: '1px solid var(--bg-border)', borderRadius: 6, background: 'var(--bg-surface)' }}>
+    <div style={{ border: '1px solid var(--bg-border)', borderRadius: 'var(--radius-lg)', background: 'var(--bg-surface)' }}>
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -142,9 +142,9 @@ export function FilterPanel(props: FilterPanelProps) {
 const inputStyle: React.CSSProperties = {
   background: 'var(--bg-raised)',
   border: '1px solid var(--bg-border)',
-  borderRadius: 4,
+  borderRadius: 'var(--radius-sm)',
   color: 'var(--text-primary)',
-  padding: '4px 6px',
+  padding: '5px 8px',
   fontSize: 12,
 }
 
@@ -173,12 +173,12 @@ function Chip({
       type="button"
       onClick={onClick}
       style={{
-        padding: '3px 8px',
-        borderRadius: 12,
+        padding: '4px 10px',
+        borderRadius: 'var(--radius-pill)',
         fontSize: 11,
-        border: `1px solid ${selected ? 'var(--accent-hover)' : 'var(--bg-border)'}`,
+        border: `1px solid ${selected ? 'var(--accent-border)' : 'var(--bg-border)'}`,
         background: selected ? 'var(--accent-subtle)' : 'var(--bg-raised)',
-        color: selected ? 'var(--accent-hover)' : 'var(--text-secondary)',
+        color: selected ? 'var(--accent)' : 'var(--text-secondary)',
         cursor: 'pointer',
         display: 'inline-flex',
         alignItems: 'center',

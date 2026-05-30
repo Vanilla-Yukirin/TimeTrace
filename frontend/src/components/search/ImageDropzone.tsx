@@ -68,8 +68,8 @@ export function ImageDropzone({ images, onChange }: ImageDropzoneProps) {
         onFiles(e.dataTransfer.files)
       }}
       style={{
-        border: `1px dashed ${dragging ? 'var(--accent-hover)' : 'var(--bg-border)'}`,
-        borderRadius: 6,
+        border: `1px dashed ${dragging ? 'var(--accent)' : 'var(--bg-border)'}`,
+        borderRadius: 'var(--radius-lg)',
         padding: images.length === 0 ? 16 : 12,
         background: 'var(--bg-surface)',
         transition: 'border-color 0.15s',
@@ -102,7 +102,7 @@ export function ImageDropzone({ images, onChange }: ImageDropzoneProps) {
                 position: 'relative',
                 width: 96,
                 height: 60,
-                borderRadius: 4,
+                borderRadius: 'var(--radius-md)',
                 overflow: 'hidden',
                 border: '1px solid var(--bg-border)',
               }}
@@ -161,7 +161,7 @@ export function ImageDropzone({ images, onChange }: ImageDropzoneProps) {
                 width: 96,
                 height: 60,
                 border: '1px dashed var(--bg-border)',
-                borderRadius: 4,
+                borderRadius: 'var(--radius-md)',
                 background: 'transparent',
                 color: 'var(--text-muted)',
                 cursor: 'pointer',

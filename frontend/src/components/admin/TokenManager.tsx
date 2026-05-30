@@ -57,10 +57,10 @@ export function TokenManager() {
           placeholder="标签，如 claude-code"
           style={{
             flex: 1,
-            padding: '8px 12px',
+            padding: '9px 12px',
             background: 'var(--bg-raised)',
             border: '1px solid var(--bg-border)',
-            borderRadius: 6,
+            borderRadius: 'var(--radius-md)',
             color: 'var(--text-primary)',
             fontSize: 13,
             outline: 'none',
@@ -73,14 +73,15 @@ export function TokenManager() {
             display: 'inline-flex',
             alignItems: 'center',
             gap: 6,
-            padding: '8px 14px',
-            background: '#2563eb',
-            color: '#fff',
+            padding: '9px 16px',
+            background: newLabel ? 'var(--grad-accent)' : 'var(--bg-raised)',
+            color: newLabel ? '#fff' : 'var(--text-muted)',
             border: 'none',
-            borderRadius: 6,
+            borderRadius: 'var(--radius-md)',
             fontSize: 13,
+            fontWeight: 600,
             cursor: newLabel ? 'pointer' : 'default',
-            opacity: !newLabel || createMut.isPending ? 0.6 : 1,
+            opacity: createMut.isPending ? 0.6 : 1,
             whiteSpace: 'nowrap',
           }}
         >
@@ -90,7 +91,7 @@ export function TokenManager() {
       </div>
 
       {createMut.isError && (
-        <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 12 }}>
+        <div style={{ fontSize: 12, color: 'var(--error)', marginBottom: 12 }}>
           {(createMut.error as Error).message}
         </div>
       )}
@@ -99,8 +100,9 @@ export function TokenManager() {
       <div
         style={{
           border: '1px solid var(--bg-border)',
-          borderRadius: 8,
+          borderRadius: 'var(--radius-lg)',
           overflow: 'hidden',
+          background: 'var(--bg-surface)',
         }}
       >
         {tokensQuery.isLoading && (
@@ -143,11 +145,11 @@ export function TokenManager() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 4,
-                padding: '4px 8px',
+                padding: '5px 10px',
                 background: 'transparent',
-                color: '#ef4444',
+                color: 'var(--error)',
                 border: '1px solid var(--bg-border)',
-                borderRadius: 4,
+                borderRadius: 'var(--radius-md)',
                 fontSize: 12,
                 cursor: 'pointer',
               }}

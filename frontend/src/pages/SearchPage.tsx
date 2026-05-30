@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Search as SearchIcon } from 'lucide-react'
+import { CatMascot } from '@/components/brand/CatMascot'
 import { ImageDropzone } from '@/components/search/ImageDropzone'
 import { FilterPanel } from '@/components/search/FilterPanel'
 import { ResultRow } from '@/components/search/ResultRow'
@@ -90,7 +91,7 @@ export function SearchPage() {
         flexDirection: 'column',
         flex: 1,
         overflow: 'hidden',
-        background: 'var(--bg-base)',
+        background: 'transparent',
       }}
     >
       {/* Scrollable body */}
@@ -120,14 +121,16 @@ export function SearchPage() {
               flex: 1,
               display: 'flex',
               alignItems: 'center',
-              gap: 8,
-              padding: '8px 12px',
+              gap: 9,
+              padding: '0 14px',
+              height: 44,
               background: 'var(--bg-surface)',
               border: '1px solid var(--bg-border)',
-              borderRadius: 6,
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-sm)',
             }}
           >
-            <SearchIcon size={16} style={{ color: 'var(--text-muted)' }} />
+            <SearchIcon size={17} style={{ color: 'var(--text-muted)' }} />
             <input
               autoFocus
               value={q}
@@ -147,14 +150,16 @@ export function SearchPage() {
             type="submit"
             disabled={!hasAnyInput || isFetching}
             style={{
-              padding: '8px 16px',
-              background: hasAnyInput ? 'var(--accent-hover)' : 'var(--bg-raised)',
-              color: hasAnyInput ? 'white' : 'var(--text-muted)',
+              padding: '0 20px',
+              height: 44,
+              background: hasAnyInput ? 'var(--grad-accent)' : 'var(--bg-raised)',
+              color: hasAnyInput ? '#fff' : 'var(--text-muted)',
               border: 'none',
-              borderRadius: 6,
+              borderRadius: 'var(--radius-lg)',
               cursor: hasAnyInput ? 'pointer' : 'not-allowed',
-              fontSize: 13,
-              fontWeight: 500,
+              fontSize: 14,
+              fontWeight: 600,
+              boxShadow: hasAnyInput ? 'var(--shadow-glow)' : 'none',
             }}
           >
             {isFetching ? '搜索中…' : '搜索'}
@@ -170,10 +175,10 @@ export function SearchPage() {
             style={{
               display: 'flex',
               gap: 16,
-              padding: '10px 12px',
+              padding: '12px 14px',
               background: 'var(--bg-surface)',
               border: '1px solid var(--bg-border)',
-              borderRadius: 6,
+              borderRadius: 'var(--radius-lg)',
             }}
           >
             <ModeCheckbox
@@ -209,7 +214,26 @@ export function SearchPage() {
         {/* Results */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
           {submitted === null && (
-            <EmptyState text="输入关键词、上传参考图，或选择筛选条件后点「搜索」" />
+            <div
+              style={{
+                marginTop: 28,
+                padding: 32,
+                textAlign: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 6,
+              }}
+            >
+              <CatMascot size={84} float />
+              <div style={{ fontSize: 14, color: 'var(--text-secondary)', fontWeight: 500, marginTop: 6 }}>
+                多模态搜索
+              </div>
+              <div style={{ fontSize: 12.5, color: 'var(--text-muted)', maxWidth: 360, lineHeight: 1.6 }}>
+                输入关键词、上传参考图，或选择筛选条件后点「搜索」。
+                支持关键词 · 以图搜图 · VLM 语义。
+              </div>
+            </div>
           )}
           {error && (
             <EmptyState text={`搜索失败：${(error as Error).message}`} error />
@@ -278,7 +302,7 @@ function ModeCheckbox({
         <div style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 500 }}>{label}</div>
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{hint}</div>
         {warning && (
-          <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>⚠ {warning}</div>
+          <div style={{ fontSize: 10, color: 'var(--warning)', marginTop: 2 }}>⚠ {warning}</div>
         )}
       </div>
     </label>
@@ -291,10 +315,10 @@ function EmptyState({ text, error = false }: { text: string; error?: boolean }) 
       style={{
         padding: 32,
         textAlign: 'center',
-        color: error ? '#ef4444' : 'var(--text-muted)',
+        color: error ? 'var(--error)' : 'var(--text-muted)',
         fontSize: 13,
         border: '1px dashed var(--bg-border)',
-        borderRadius: 6,
+        borderRadius: 'var(--radius-lg)',
         marginTop: 20,
       }}
     >

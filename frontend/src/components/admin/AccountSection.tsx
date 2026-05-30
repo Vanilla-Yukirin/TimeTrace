@@ -30,7 +30,7 @@ export function AccountSection() {
         style={{
           padding: 16,
           background: 'var(--bg-surface)',
-          borderRadius: 8,
+          borderRadius: 'var(--radius-lg)',
           border: '1px solid var(--bg-border)',
           display: 'flex',
           alignItems: 'center',
@@ -51,7 +51,7 @@ export function AccountSection() {
             <KeyRound size={14} />
             修改密码
           </button>
-          <button onClick={onLogout} style={btnStyle('#ef4444')}>
+          <button onClick={onLogout} style={btnStyle('var(--error)')}>
             <LogOut size={14} />
             退出登录
           </button>
@@ -66,11 +66,11 @@ function btnStyle(color: string): React.CSSProperties {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 6,
-    padding: '6px 12px',
+    padding: '7px 13px',
     background: 'transparent',
     color,
     border: '1px solid var(--bg-border)',
-    borderRadius: 6,
+    borderRadius: 'var(--radius-md)',
     fontSize: 13,
     cursor: 'pointer',
   }
