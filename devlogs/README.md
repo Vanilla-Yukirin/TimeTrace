@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-05-30
+**最后更新：** 2026-05-31
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -61,6 +61,7 @@ devlogs/
 | 文件 | 摘要 |
 |------|------|
 | [archive-202604300228-image-lightbox.md](frontend/archive-202604300228-image-lightbox.md) | 基于 Radix Dialog 实装截图放大 Lightbox：弹层放大 + 左右键切换 + 底部信息条 + 动画；处理索引越界、按钮嵌套语义、margin 覆盖等 review 反馈，并同步 `infra/architecture/web-ui.md` |
+| [archive-202605310019-redesign-review-emb-tokenize.md](frontend/archive-202605310019-redesign-review-emb-tokenize.md) | 6 维并行 workflow 评审 infra agent 前端美化重构（双主题/吉祥物/无障碍亮点 + medium/low 清单）；主 agent 修自己份内的 EmbeddingDiagnostics 令牌化 + a11y（high 全清）；樱花"看不见"根因（只在浅色 app-glow、默认深色看不到）；给 infra agent 交接 prompt（移动端适配 + 樱花 + medium/low） |
 
 ---
 
@@ -77,6 +78,7 @@ devlogs/
 | [archive-202605180000-deploy-evolution-and-prod-bugs.md](infra/archive-202605180000-deploy-evolution-and-prod-bugs.md) | 部署设施 7-commit 演进 + 真部署发现 4 个 bug：runner 不 checkout / 路径迁移 ~/Github/TimeTrace / infra plan B / TIMETRACE_USER=Yuki 硬编码 / ReadWritePaths 未创建目录引发 226/NAMESPACE / StartLimit 段位错 / main 分支 pywin32 无 marker |
 | [archive-202605180001-search-tokenization-open-question.md](infra/archive-202605180001-search-tokenization-open-question.md) | 搜索匹配策略 open question：实测发现 LIKE 只覆盖 window_title + vlm_desc (NULL)，未覆盖 app_name/process_name/url；分析三方案 (多字段 LIKE / FTS5 trigram / 向量 embedding) tradeoff，待决策 |
 | [archive-202605300153-deploy-branch-clarification.md](infra/archive-202605300153-deploy-branch-clarification.md) | **给 infra agent 单独看的一篇**：澄清"部署机 main 领先 origin/main 77 commit"不是分支乱 = deploy.sh `git reset --hard origin/<ref>` 的镜像状态；主 agent 此前手动 ssh reset 绕过 GH Actions 的错；CLAUDE.md 写入动态部署约定（看 origin/* 不看部署机本地 + 禁手动 ssh 改部署机）；部署前必须先 lms load 恢复被卸的 Qwen 35B（VLM 哑 healthz 仍 200） |
+| [archive-202605310018-at-commit-history-rewrite.md](infra/archive-202605310018-at-commit-history-rewrite.md) | 修 3 条 commit 标题混入的孤立 `@` 行：根因 = 在 Bash/Git Bash 里用了 PowerShell here-string `@'...'@`；安全改写共享分支历史（`commit-tree` 逐条重建只改 message、tree+身份+双日期不变、临时 ref 5 道门验证、`--force-with-lease=<ref>:<旧SHA>` 推）；含一次"高危操作塞进大并行批次被分类器拦+级联取消"复盘 |
 | [archive-202605300220-public-deploy-vps-nginx-frp.md](infra/archive-202605300220-public-deploy-vps-nginx-frp.md) | 公网部署搭建：选香草云 HK VPS（CN2 GIA 38ms）+ Cloudflare DNS-only 子域名 + nginx 两阶段 certbot 签证书 + frpc 加 18765→8765 隧道，端到端 152ms 打通；随即发现 5 路由公网裸奔真实泄露截图/记录，注释 frpc timetrace-api 段止血（保留 nginx/证书） |
 | [archive-202605300221-login-system-impl-phase1-6.md](infra/archive-202605300221-login-system-impl-phase1-6.md) | 登录系统实现 Phase 1-6：auth_users/sessions 表 + bcrypt + UserStore + cookie/bearer 双通道（CookiePrincipal\|BearerPrincipal）+ /thumbs(FileResponse) /mcp(纯 ASGI middleware) 业务路由全 gate + 前端登录流/守卫/401 跨 tab + admin tokens CRUD(.mcp.json 弹窗)；顺手修 .gitignore `lib/` 吞掉 frontend/src/lib 的大坑；373 passed |
 | [archive-202605300222-phase7-deploy-qwen-restore.md](infra/archive-202605300222-phase7-deploy-qwen-restore.md) | Phase 7 部署：Qwen 35B 恢复踩 `--ttl 99999999` bug（去掉即好，无 TTL 永久驻留）+ 纠正 GPU 实为 RTX 3080 20GB 非 4090D；gh workflow run 404（deploy.yml 不在默认分支 main，GH Actions 部署路径从未可用）+ deploy.sh 被 guardrail 拦 → 用户授权手动部署 + 提议 main FF |
