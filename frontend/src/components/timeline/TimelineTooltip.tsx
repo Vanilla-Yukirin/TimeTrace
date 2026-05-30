@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom'
 import type { ApiRecord } from '@/types/api'
 import { formatTime, formatDurationMs } from '@/lib/dateUtils'
+import { categoryColor } from '@/lib/categories'
 
 interface TimelineTooltipProps {
   record: ApiRecord
@@ -24,13 +25,13 @@ export function TimelineTooltip({ record, x, y }: TimelineTooltipProps) {
         top: y - 10,
         zIndex: 9999,
         pointerEvents: 'none',
-        background: 'var(--bg-raised)',
+        background: 'var(--bg-surface)',
         border: '1px solid var(--bg-border)',
-        borderRadius: 6,
-        padding: '6px 10px',
+        borderRadius: 'var(--radius-md)',
+        padding: '8px 11px',
         minWidth: 160,
         maxWidth: 280,
-        boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+        boxShadow: 'var(--shadow-md)',
       }}
     >
       <div style={{ fontWeight: 600, fontSize: 12, color: 'var(--text-primary)', marginBottom: 3 }}>
@@ -55,11 +56,21 @@ export function TimelineTooltip({ record, x, y }: TimelineTooltipProps) {
       </div>
       {record.category_final && (
         <div style={{
-          marginTop: 4,
+          marginTop: 5,
           fontSize: 11,
-          color: 'var(--accent-hover)',
+          color: 'var(--text-secondary)',
           fontWeight: 500,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
         }}>
+          <span style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: categoryColor(record.category_final),
+            flexShrink: 0,
+          }} />
           {record.category_final}
         </div>
       )}

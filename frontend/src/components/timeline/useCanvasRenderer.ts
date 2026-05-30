@@ -1,15 +1,53 @@
 import type { ApiRecord } from '@/types/api'
 import type { TimelineViewport } from '@/hooks/useTimelineState'
+import type { Theme } from '@/contexts/ThemeContext'
 import { getAppColor } from '@/lib/colorMap'
 import { formatTime } from '@/lib/dateUtils'
 
 const LANE_Y_AXIS = 0       // top of time axis labels
 const AXIS_H = 28
-const ACTIVITY_Y = AXIS_H + 4
-const ACTIVITY_H = 40
-const FRAMES_Y = ACTIVITY_Y + ACTIVITY_H + 10
+const ACTIVITY_Y = AXIS_H + 6
+const ACTIVITY_H = 42
+const FRAMES_Y = ACTIVITY_Y + ACTIVITY_H + 12
 const FRAMES_H = 18
 export const CANVAS_H = FRAMES_Y + FRAMES_H + 16
+
+const BLOCK_RADIUS = 7
+
+/** Canvas can't read CSS vars, so the timeline keeps its own palette per theme.
+ *  Keep these in sync with the --timeline-* tokens in index.css. Selecting by
+ *  the `theme` value (not getComputedStyle) sidesteps effect-ordering races on
+ *  theme flips. */
+export interface TimelinePalette {
+  bg: string
+  grid: string
+  axis: string
+  laneLabel: string
+  selBorder: string
+  frame: string
+  frameSel: string
+}
+
+export const TIMELINE_PALETTES: Record<Theme, TimelinePalette> = {
+  dark: {
+    bg: '#10131d',
+    grid: 'rgba(255, 255, 255, 0.055)',
+    axis: '#5d6781',
+    laneLabel: '#46506a',
+    selBorder: '#e7ebf4',
+    frame: '#38bdf8',
+    frameSel: '#7c8cff',
+  },
+  light: {
+    bg: '#f1f4fc',
+    grid: 'rgba(30, 40, 80, 0.07)',
+    axis: '#94a3b8',
+    laneLabel: '#aab2c6',
+    selBorder: '#1d2235',
+    frame: '#0ea5e9',
+    frameSel: '#5b6ef5',
+  },
+}
 
 interface HitResult {
   record: ApiRecord
@@ -25,18 +63,39 @@ function tickInterval(scaleMs: number): number {
   return 60 * 60_000                           // 1 hour
 }
 
+/** roundRect with a graceful fallback for older canvas impls. */
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number, r: number,
+): void {
+  const rad = Math.min(r, w / 2, h / 2)
+  if (typeof ctx.roundRect === 'function') {
+    ctx.beginPath()
+    ctx.roundRect(x, y, w, h, rad)
+    return
+  }
+  ctx.beginPath()
+  ctx.moveTo(x + rad, y)
+  ctx.arcTo(x + w, y, x + w, y + h, rad)
+  ctx.arcTo(x + w, y + h, x, y + h, rad)
+  ctx.arcTo(x, y + h, x, y, rad)
+  ctx.arcTo(x, y, x + w, y, rad)
+  ctx.closePath()
+}
+
 export function renderTimeline(
   ctx: CanvasRenderingContext2D,
   vp: TimelineViewport,
   records: ApiRecord[],
   hoverRecordId: string | null,
   selectedRecordId: string | null,
+  palette: TimelinePalette,
 ): void {
   const { canvasWidth: w, scaleMs, offsetMs } = vp
   const h = CANVAS_H
 
   // Background
-  ctx.fillStyle = '#141720'
+  ctx.fillStyle = palette.bg
   ctx.fillRect(0, 0, w, h)
 
   // --- Time axis ---
@@ -48,23 +107,23 @@ export function renderTimeline(
   for (let ts = firstTick; ts < offsetMs + w * scaleMs; ts += interval) {
     const x = (ts - offsetMs) / scaleMs
     // Grid line
-    ctx.strokeStyle = '#1e2235'
+    ctx.strokeStyle = palette.grid
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(x, AXIS_H)
     ctx.lineTo(x, h)
     ctx.stroke()
     // Label
-    ctx.fillStyle = '#64748b'
+    ctx.fillStyle = palette.axis
     ctx.fillText(formatTime(ts), x, LANE_Y_AXIS + 14)
   }
 
   // Lane labels
   ctx.textAlign = 'left'
   ctx.font = '10px Inter, system-ui, sans-serif'
-  ctx.fillStyle = '#475569'
-  ctx.fillText('活动', 4, ACTIVITY_Y - 3)
-  ctx.fillText('截图', 4, FRAMES_Y - 3)
+  ctx.fillStyle = palette.laneLabel
+  ctx.fillText('活动', 4, ACTIVITY_Y - 4)
+  ctx.fillText('截图', 4, FRAMES_Y - 4)
 
   // --- Activity lane ---
   for (const rec of records) {
@@ -75,22 +134,41 @@ export function renderTimeline(
     if (x1 > w || x2 < 0) continue
 
     const baseColor = getAppColor(rec.app_name)
+    const selected = rec.id === selectedRecordId
+    const hovered = rec.id === hoverRecordId
+
+    roundRect(ctx, x1, ACTIVITY_Y, w2, ACTIVITY_H, BLOCK_RADIUS)
     ctx.fillStyle = baseColor
-    ctx.globalAlpha = rec.id === selectedRecordId ? 1.0 : rec.id === hoverRecordId ? 0.9 : 0.75
-    ctx.fillRect(x1, ACTIVITY_Y, w2, ACTIVITY_H)
+    ctx.globalAlpha = selected ? 1.0 : hovered ? 0.92 : 0.78
+    ctx.fill()
     ctx.globalAlpha = 1.0
 
-    // Selected: white border
-    if (rec.id === selectedRecordId) {
-      ctx.strokeStyle = '#ffffff'
-      ctx.lineWidth = 2
-      ctx.strokeRect(x1 + 1, ACTIVITY_Y + 1, w2 - 2, ACTIVITY_H - 2)
+    // subtle top sheen for depth (only on blocks wide enough to notice)
+    if (w2 > 10) {
+      roundRect(ctx, x1, ACTIVITY_Y, w2, ACTIVITY_H * 0.5, BLOCK_RADIUS)
+      ctx.fillStyle = 'rgba(255,255,255,0.10)'
+      ctx.globalAlpha = selected ? 0.9 : hovered ? 0.7 : 0.45
+      ctx.fill()
+      ctx.globalAlpha = 1.0
     }
 
     // Hover: lighter overlay
-    if (rec.id === hoverRecordId && rec.id !== selectedRecordId) {
-      ctx.fillStyle = 'rgba(255,255,255,0.15)'
-      ctx.fillRect(x1, ACTIVITY_Y, w2, ACTIVITY_H)
+    if (hovered && !selected) {
+      roundRect(ctx, x1, ACTIVITY_Y, w2, ACTIVITY_H, BLOCK_RADIUS)
+      ctx.fillStyle = 'rgba(255,255,255,0.14)'
+      ctx.fill()
+    }
+
+    // Selected: bright border + glow
+    if (selected) {
+      ctx.save()
+      roundRect(ctx, x1 + 1, ACTIVITY_Y + 1, w2 - 2, ACTIVITY_H - 2, BLOCK_RADIUS - 1)
+      ctx.strokeStyle = palette.selBorder
+      ctx.lineWidth = 2
+      ctx.shadowColor = baseColor
+      ctx.shadowBlur = 10
+      ctx.stroke()
+      ctx.restore()
     }
   }
 
@@ -102,8 +180,8 @@ export function renderTimeline(
 
     const cy = FRAMES_Y + FRAMES_H / 2
     const size = 5
-    ctx.fillStyle = rec.id === selectedRecordId ? '#60a5fa' : '#38bdf8'
-    ctx.globalAlpha = 0.9
+    ctx.fillStyle = rec.id === selectedRecordId ? palette.frameSel : palette.frame
+    ctx.globalAlpha = 0.92
     ctx.beginPath()
     ctx.moveTo(cx, cy - size)
     ctx.lineTo(cx + size, cy)

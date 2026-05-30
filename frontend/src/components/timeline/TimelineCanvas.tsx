@@ -1,7 +1,8 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import type { ApiRecord } from '@/types/api'
 import { useTimelineState } from '@/hooks/useTimelineState'
-import { renderTimeline, CANVAS_H } from './useCanvasRenderer'
+import { useTheme } from '@/contexts/ThemeContext'
+import { renderTimeline, CANVAS_H, TIMELINE_PALETTES } from './useCanvasRenderer'
 import { useCanvasEvents } from './useCanvasEvents'
 import { TimelineTooltip } from './TimelineTooltip'
 
@@ -22,6 +23,8 @@ export function TimelineCanvas({
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null)
 
   const { viewport, setViewport, initViewport, zoom, pan, goToday } = useTimelineState(date)
+  const { theme } = useTheme()
+  const palette = TIMELINE_PALETTES[theme]
 
   // Track whether the canvas has been initialized at least once
   const initializedRef = useRef(false)
@@ -59,9 +62,9 @@ export function TimelineCanvas({
     const dpr = window.devicePixelRatio || 1
     ctx.save()
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    renderTimeline(ctx, viewport, records, hoverRecordId, selectedRecordId)
+    renderTimeline(ctx, viewport, records, hoverRecordId, selectedRecordId, palette)
     ctx.restore()
-  }, [viewport, records, hoverRecordId, selectedRecordId])
+  }, [viewport, records, hoverRecordId, selectedRecordId, palette])
 
   const handleHover = useCallback((id: string | null) => {
     setHoverRecordId(id)
@@ -89,7 +92,17 @@ export function TimelineCanvas({
 
   return (
     <div style={{ position: 'relative', width: '100%' }}>
-      <div ref={containerRef} style={{ width: '100%', cursor: hoverRecordId ? 'pointer' : 'default' }}>
+      <div
+        ref={containerRef}
+        style={{
+          width: '100%',
+          cursor: hoverRecordId ? 'pointer' : 'default',
+          borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--bg-border)',
+          overflow: 'hidden',
+          boxShadow: 'var(--shadow-sm)',
+        }}
+      >
         <canvas
           ref={canvasRef}
           style={{ display: 'block', userSelect: 'none' }}
@@ -110,19 +123,27 @@ export function TimelineCanvas({
         />
       </div>
 
-      {/* Zoom controls */}
+      {/* Zoom controls — floating pill group */}
       <div
-        className="flex items-center gap-1"
-        style={{ position: 'absolute', bottom: -28, right: 8, zIndex: 10 }}
+        style={{
+          position: 'absolute',
+          bottom: -44,
+          right: 0,
+          zIndex: 10,
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 2,
+          padding: 3,
+          borderRadius: 'var(--radius-pill)',
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--bg-border)',
+          boxShadow: 'var(--shadow-sm)',
+        }}
       >
-        <button onClick={() => zoom(1.5, viewport.canvasWidth / 2)}
-          style={btnStyle}>−</button>
-        <button onClick={() => goToday(viewport.canvasWidth)}
-          style={{ ...btnStyle, fontSize: 10, padding: '2px 6px' }}>整天</button>
-        <button onClick={onGoToday}
-          style={{ ...btnStyle, fontSize: 10, padding: '2px 6px' }}>今天</button>
-        <button onClick={() => zoom(0.67, viewport.canvasWidth / 2)}
-          style={btnStyle}>+</button>
+        <button title="缩小" onClick={() => zoom(1.5, viewport.canvasWidth / 2)} style={iconBtn}>−</button>
+        <button onClick={() => goToday(viewport.canvasWidth)} style={textBtn}>整天</button>
+        <button onClick={onGoToday} style={textBtn}>今天</button>
+        <button title="放大" onClick={() => zoom(0.67, viewport.canvasWidth / 2)} style={iconBtn}>+</button>
       </div>
 
       {hoverRecord && tooltipPos && (
@@ -132,13 +153,29 @@ export function TimelineCanvas({
   )
 }
 
-const btnStyle: React.CSSProperties = {
-  background: 'var(--bg-raised)',
-  border: '1px solid var(--bg-border)',
+const iconBtn: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 26,
+  height: 26,
+  background: 'transparent',
+  border: 'none',
   color: 'var(--text-secondary)',
-  borderRadius: 4,
-  padding: '2px 8px',
+  borderRadius: 'var(--radius-pill)',
   cursor: 'pointer',
-  fontSize: 13,
-  lineHeight: '18px',
+  fontSize: 16,
+  lineHeight: 1,
+}
+
+const textBtn: React.CSSProperties = {
+  height: 26,
+  padding: '0 10px',
+  background: 'transparent',
+  border: 'none',
+  color: 'var(--text-secondary)',
+  borderRadius: 'var(--radius-pill)',
+  cursor: 'pointer',
+  fontSize: 12,
+  fontWeight: 500,
 }
