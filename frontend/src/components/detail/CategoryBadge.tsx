@@ -1,22 +1,8 @@
+import { categoryColor } from '@/lib/categories'
+
 interface CategoryBadgeProps {
   category: string | null | undefined
   confidence: number | null | undefined
-}
-
-const CATEGORY_COLORS: Record<string, string> = {
-  work: '#22c55e',
-  development: '#6366f1',
-  communication: '#3b82f6',
-  entertainment: '#f59e0b',
-  social: '#ec4899',
-  productivity: '#8b5cf6',
-  browsing: '#06b6d4',
-  other: '#64748b',
-}
-
-function getCategoryColor(cat: string): string {
-  const key = cat.toLowerCase()
-  return CATEGORY_COLORS[key] ?? '#64748b'
 }
 
 export function CategoryBadge({ category, confidence }: CategoryBadgeProps) {
@@ -24,8 +10,8 @@ export function CategoryBadge({ category, confidence }: CategoryBadgeProps) {
     return (
       <span style={{
         display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: 4,
+        padding: '3px 10px',
+        borderRadius: 'var(--radius-pill)',
         fontSize: 11,
         background: 'var(--bg-raised)',
         color: 'var(--text-muted)',
@@ -36,21 +22,24 @@ export function CategoryBadge({ category, confidence }: CategoryBadgeProps) {
     )
   }
 
-  const color = getCategoryColor(category)
+  const color = categoryColor(category)
   const pct = confidence != null ? Math.round(confidence * 100) : null
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <span style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: 4,
-        fontSize: 11,
-        background: color + '22',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '3px 11px',
+        borderRadius: 'var(--radius-pill)',
+        fontSize: 11.5,
+        background: `color-mix(in srgb, ${color} 16%, transparent)`,
         color,
-        border: `1px solid ${color}55`,
+        border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
         fontWeight: 600,
       }}>
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
         {category}
       </span>
       {pct != null && (

@@ -16,13 +16,12 @@ export function RecordMeta({ record }: RecordMetaProps) {
     <div style={{ fontSize: 13 }}>
       {/* App name */}
       <div style={{
-        fontWeight: 700,
-        fontSize: 14,
+        fontWeight: 800,
+        fontSize: 16,
         color: 'var(--text-primary)',
-        marginBottom: 4,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
+        marginBottom: 5,
+        lineHeight: 1.25,
+        wordBreak: 'break-word',
       }}>
         {record.app_name}
       </div>

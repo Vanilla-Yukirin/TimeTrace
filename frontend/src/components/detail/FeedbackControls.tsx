@@ -51,11 +51,11 @@ export function FeedbackControls({ record, feedback }: FeedbackControlsProps) {
               style={{
                 padding: '4px 10px',
                 fontSize: 11,
-                borderRadius: 4,
+                borderRadius: 'var(--radius-pill)',
                 border: '1px solid var(--bg-border)',
                 background:
                   record.category_final === cat.id
-                    ? 'var(--accent)'
+                    ? 'var(--grad-accent)'
                     : 'var(--bg-raised)',
                 color:
                   record.category_final === cat.id
@@ -151,7 +151,7 @@ export function FeedbackControls({ record, feedback }: FeedbackControlsProps) {
               style={{
                 padding: '4px 10px',
                 fontSize: 11,
-                borderRadius: 4,
+                borderRadius: 'var(--radius-pill)',
                 border: '1px solid var(--bg-border)',
                 background: 'var(--bg-raised)',
                 color: 'var(--text-secondary)',

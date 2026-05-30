@@ -19,11 +19,10 @@ export function ThumbnailView({ screenshots, thumbPath, screenshotCount, onZoom 
         aspectRatio: '16/9',
         background: 'var(--bg-raised)',
         border: '1px dashed var(--bg-border)',
-        borderRadius: 6,
+        borderRadius: 'var(--radius-lg)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        marginBottom: 16,
       }}>
         <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
           <div>无截图</div>
@@ -36,7 +35,7 @@ export function ThumbnailView({ screenshots, thumbPath, screenshotCount, onZoom 
   }
 
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div>
       <button
         type="button"
         onClick={onZoom}
@@ -57,10 +56,11 @@ export function ThumbnailView({ screenshots, thumbPath, screenshotCount, onZoom 
           alt="活动缩略图"
           style={{
             width: '100%',
-            borderRadius: 6,
+            borderRadius: 'var(--radius-lg)',
             border: '1px solid var(--bg-border)',
             background: 'var(--bg-surface)',
             display: 'block',
+            boxShadow: 'var(--shadow-sm)',
           }}
           onError={(e) => {
             // 图片加载失败时显示占位（占位 div 是 button 的下一个兄弟节点）
@@ -78,7 +78,7 @@ export function ThumbnailView({ screenshots, thumbPath, screenshotCount, onZoom 
         aspectRatio: '16/9',
         background: 'var(--bg-raised)',
         border: '1px dashed var(--bg-border)',
-        borderRadius: 6,
+        borderRadius: 'var(--radius-lg)',
         alignItems: 'center',
         justifyContent: 'center',
         textAlign: 'center',
