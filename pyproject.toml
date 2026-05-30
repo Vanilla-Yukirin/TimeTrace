@@ -39,6 +39,9 @@ timetrace = "timetrace.main:main"
 # or deploy server on a remote host and point client.toml at it.
 timetrace-client = "timetrace.client.cli:main"
 timetrace-server = "timetrace.server.cli:main"
+# Local Qwen3-VL multimodal embedding daemon (own process, own port 8766).
+# Needs the `embserver` optional extra + a torch install (see below).
+timetrace-embserver = "timetrace.embserver.cli:main"
 
 # Optional-dependencies are forward-looking buckets that DON'T install
 # today's union (that's already in `dependencies` above). They're for the
@@ -71,6 +74,20 @@ server-s3 = [
 # P6 — headless TUI client (Linux small box without GUI).
 headless = [
     # "psutil>=5.9.0",
+]
+# Local Qwen3-VL multimodal embedding daemon (`timetrace-embserver`).
+# Heavy + opt-in: install ONLY on machines that serve embeddings locally.
+# torch/torchvision are intentionally NOT listed here — install them first
+# from the correct PyTorch index (e.g. cu126), otherwise a stray --extra-index
+# can silently pull a +cpu build. Then: uv sync --extra embserver
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#   (optional, for int8/int4 self-quant) pip install bitsandbytes
+# Deploy safety: deploy.sh runs a plain `uv sync` (no --extra embserver), so the
+# Linux server never tries to resolve these.
+embserver = [
+    "transformers>=4.57.3",
+    "qwen-vl-utils>=0.0.14",
+    "accelerate>=1.0",
 ]
 # Convenience: install every optional adapter at once. Empty until the
 # above buckets get real entries.

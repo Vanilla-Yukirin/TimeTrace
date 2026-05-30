@@ -1,0 +1,30 @@
+[Unit]
+Description=TimeTrace embedding server (local Qwen3-VL multimodal embeddings)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/timetrace-embserver
+# Model dir + precision + auth. PIN the api key (else it regenerates each
+# restart and CLI control subcommands can't authenticate).
+Environment=TIMETRACE_EMBSERVER_MODEL=%h/TimeTraceData/models/Qwen3-VL-Embedding-2B
+Environment=TIMETRACE_EMBSERVER_DTYPE=bfloat16
+Environment=TIMETRACE_EMBSERVER_TTL=900
+# Environment=TIMETRACE_EMBSERVER_API_KEY=tt_emb_xxxxxxxx   # set me (or use an EnvironmentFile)
+Restart=on-failure
+RestartSec=3
+WorkingDirectory=%h
+ReadWritePaths=%h/TimeTraceData
+
+# systemd --user unit. Prerequisites (NOT handled by deploy.sh — embserver is
+# opt-in and intentionally excluded from the plain `uv sync` deploy path):
+#   1. torch+torchvision installed from the right index (CUDA box):
+#        uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#   2. uv sync --extra embserver   (transformers / qwen-vl-utils / accelerate)
+#   3. model downloaded to TIMETRACE_EMBSERVER_MODEL (see embserver/README.md)
+#   4. enable: systemctl --user enable --now timetrace-embserver
+#      + loginctl enable-linger $USER   (survive logout)
+#
+# NOTE: needs a CUDA GPU on the box. Separate port (8766) from the main API
+# (8765) — this is one of several local interfaces TimeTrace can occupy.
