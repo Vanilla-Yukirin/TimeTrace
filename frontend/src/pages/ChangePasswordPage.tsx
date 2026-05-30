@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
+import { AuthCard, AuthField, AuthButton } from '@/components/auth/AuthCard'
 
 /** Mirrors the server's ``validate_new_password`` so we give immediate
  *  feedback instead of bouncing off a 422. Server still enforces; this
@@ -54,42 +55,16 @@ export function ChangePasswordPage() {
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-app)',
-        padding: 24,
-      }}
+    <AuthCard
+      title="修改密码"
+      subtitle={
+        user?.must_change_password
+          ? '首次登录请修改默认密码'
+          : '当前用户：' + (user?.username ?? '')
+      }
     >
-      <form
-        onSubmit={onSubmit}
-        style={{
-          width: '100%',
-          maxWidth: 380,
-          padding: 32,
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--bg-border)',
-          borderRadius: 12,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-        }}
-      >
-        <div style={{ marginBottom: 4 }}>
-          <h1 style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
-            修改密码
-          </h1>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-            {user?.must_change_password
-              ? '首次登录请修改默认密码'
-              : '当前用户：' + (user?.username ?? '')}
-          </div>
-        </div>
-
-        <Field
+      <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <AuthField
           label="当前密码"
           name="old_password"
           type="password"
@@ -98,7 +73,7 @@ export function ChangePasswordPage() {
           autoComplete="current-password"
           autoFocus
         />
-        <Field
+        <AuthField
           label="新密码（≥ 8 字符，含字母 + 数字）"
           name="new_password"
           type="password"
@@ -106,7 +81,7 @@ export function ChangePasswordPage() {
           onChange={setNewPassword}
           autoComplete="new-password"
         />
-        <Field
+        <AuthField
           label="再次输入新密码"
           name="confirm_password"
           type="password"
@@ -116,62 +91,13 @@ export function ChangePasswordPage() {
         />
 
         {(localErr || error) && (
-          <div style={{ fontSize: 12, color: '#ef4444' }}>{localErr ?? error}</div>
+          <div style={{ fontSize: 12, color: 'var(--error)' }}>{localErr ?? error}</div>
         )}
 
-        <button
-          type="submit"
-          disabled={!canSubmit || submitting}
-          style={{
-            padding: '10px 16px',
-            background: submitting ? 'var(--bg-raised)' : '#2563eb',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 6,
-            fontSize: 14,
-            fontWeight: 500,
-            cursor: submitting ? 'wait' : 'pointer',
-            opacity: !canSubmit ? 0.6 : 1,
-          }}
-        >
-          {submitting ? '修改中...' : '修改密码'}
-        </button>
+        <AuthButton disabled={!canSubmit || submitting} busy={submitting}>
+          {submitting ? '修改中…' : '修改密码'}
+        </AuthButton>
       </form>
-    </div>
-  )
-}
-
-interface FieldProps {
-  label: string
-  name: string
-  value: string
-  onChange: (v: string) => void
-  type?: string
-  autoComplete?: string
-  autoFocus?: boolean
-}
-
-function Field({ label, name, value, onChange, type = 'text', autoComplete, autoFocus }: FieldProps) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{label}</span>
-      <input
-        name={name}
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        autoComplete={autoComplete}
-        autoFocus={autoFocus}
-        style={{
-          padding: '8px 12px',
-          background: 'var(--bg-raised)',
-          border: '1px solid var(--bg-border)',
-          borderRadius: 6,
-          color: 'var(--text-primary)',
-          fontSize: 14,
-          outline: 'none',
-        }}
-      />
-    </label>
+    </AuthCard>
   )
 }

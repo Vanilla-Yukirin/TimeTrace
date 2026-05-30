@@ -3,6 +3,7 @@ import { useNavigate, useLocation, Navigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
+import { AuthCard, AuthField, AuthButton } from '@/components/auth/AuthCard'
 
 /** Where to bounce back after login — RequireAuth stashes the original
  *  pathname into ``location.state.from`` when it redirects to /login. */
@@ -59,40 +60,13 @@ export function LoginPage() {
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-app)',
-        padding: 24,
-      }}
+    <AuthCard
+      title="TimeTrace"
+      subtitle="登录后继续 · 记录时间 · 追踪生活"
+      footer="首次登录默认 admin / admin"
     >
-      <form
-        onSubmit={onSubmit}
-        style={{
-          width: '100%',
-          maxWidth: 360,
-          padding: 32,
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--bg-border)',
-          borderRadius: 12,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-        }}
-      >
-        <div style={{ marginBottom: 8 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
-            TimeTrace
-          </h1>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-            登录后继续
-          </div>
-        </div>
-
-        <Field
+      <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <AuthField
           label="用户名"
           name="username"
           value={username}
@@ -100,7 +74,7 @@ export function LoginPage() {
           autoComplete="username"
           autoFocus
         />
-        <Field
+        <AuthField
           label="密码"
           name="password"
           type="password"
@@ -109,74 +83,12 @@ export function LoginPage() {
           autoComplete="current-password"
         />
 
-        {error && (
-          <div style={{ fontSize: 12, color: '#ef4444' }}>{error}</div>
-        )}
+        {error && <div style={{ fontSize: 12, color: 'var(--error)' }}>{error}</div>}
 
-        <button
-          type="submit"
-          disabled={submitting || !username || !password}
-          style={{
-            padding: '10px 16px',
-            background: submitting ? 'var(--bg-raised)' : '#2563eb',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 6,
-            fontSize: 14,
-            fontWeight: 500,
-            cursor: submitting ? 'wait' : 'pointer',
-            opacity: !username || !password ? 0.6 : 1,
-          }}
-        >
-          {submitting ? '登录中...' : '登录'}
-        </button>
-
-        <div
-          style={{
-            fontSize: 11,
-            color: 'var(--text-muted)',
-            textAlign: 'center',
-            marginTop: 4,
-          }}
-        >
-          首次登录默认 admin / admin
-        </div>
+        <AuthButton disabled={submitting || !username || !password} busy={submitting}>
+          {submitting ? '登录中…' : '登录'}
+        </AuthButton>
       </form>
-    </div>
-  )
-}
-
-interface FieldProps {
-  label: string
-  name: string
-  value: string
-  onChange: (v: string) => void
-  type?: string
-  autoComplete?: string
-  autoFocus?: boolean
-}
-
-function Field({ label, name, value, onChange, type = 'text', autoComplete, autoFocus }: FieldProps) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{label}</span>
-      <input
-        name={name}
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        autoComplete={autoComplete}
-        autoFocus={autoFocus}
-        style={{
-          padding: '8px 12px',
-          background: 'var(--bg-raised)',
-          border: '1px solid var(--bg-border)',
-          borderRadius: 6,
-          color: 'var(--text-primary)',
-          fontSize: 14,
-          outline: 'none',
-        }}
-      />
-    </label>
+    </AuthCard>
   )
 }
