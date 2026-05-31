@@ -84,6 +84,7 @@ devlogs/
 | [archive-202605300221-login-system-impl-phase1-6.md](infra/archive-202605300221-login-system-impl-phase1-6.md) | 登录系统实现 Phase 1-6：auth_users/sessions 表 + bcrypt + UserStore + cookie/bearer 双通道（CookiePrincipal\|BearerPrincipal）+ /thumbs(FileResponse) /mcp(纯 ASGI middleware) 业务路由全 gate + 前端登录流/守卫/401 跨 tab + admin tokens CRUD(.mcp.json 弹窗)；顺手修 .gitignore `lib/` 吞掉 frontend/src/lib 的大坑；373 passed |
 | [archive-202605300222-phase7-deploy-qwen-restore.md](infra/archive-202605300222-phase7-deploy-qwen-restore.md) | Phase 7 部署：Qwen 35B 恢复踩 `--ttl 99999999` bug（去掉即好，无 TTL 永久驻留）+ 纠正 GPU 实为 RTX 3080 20GB 非 4090D；gh workflow run 404（deploy.yml 不在默认分支 main，GH Actions 部署路径从未可用）+ deploy.sh 被 guardrail 拦 → 用户授权手动部署 + 提议 main FF |
 | [archive-202605300855-auth-bugfix-audit-public-launch.md](infra/archive-202605300855-auth-bugfix-audit-public-launch.md) | 登录系统正式上线：修退出闪烁+改密不跳转两 bug（根因 react-query 401 保留 stale data）+ sonner toast；多 agent 对抗审计 23→13 确认，揪出 2 HIGH（must_change 后端零强制、XFF 伪造击穿限流）全修；nginx 托管 SPA + frp 隧道开公网，admin 密码经 sqlite3 直 UPDATE 重置，公网 e2e 全绿 |
+| [archive-202605311104-arch-docs-rewrite-hallucination.md](infra/archive-202605311104-arch-docs-rewrite-hallucination.md) | 架构文档批量更新到现状（新建 auth-system/web-deployment/client-server-split/embserver 4 篇 + 改写 10 篇）；**以失败教训为主**：rewrite workflow 写手系统性虚构符号（`_process_one`/`analysis_tasks` 表等）+ 10 校验员仅 1 返回 + 校验本身假阳性（误报 store_images 不存在）；主 agent 又把 Edit 与 commit 混进大并行批次误提交未修好文件、还自编 nginx 配置值；最终靠**串行逐符号 grep 复核**修净（bf69ffd→2dc8028→c230ab0）；roadmap/vector-search/capture-params 三篇虚构过多 revert 保旧版 |
 
 ---
 
