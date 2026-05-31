@@ -150,9 +150,13 @@ export function Sidebar({ isMobile = false, open = false, onClose }: SidebarProp
           borderRight: '1px solid var(--bg-border)',
           boxShadow: open ? 'var(--shadow-lg)' : 'none',
           transform: open ? 'translateX(0)' : 'translateX(-100%)',
-          transition: 'transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+          // visibility:hidden when closed removes the off-screen drawer from the
+          // tab order + a11y tree (transform alone leaves its links focusable).
+          visibility: open ? 'visible' : 'hidden',
+          transition: 'transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.25s',
           overflowY: 'auto',
         }}
+        aria-hidden={!open}
       >
         {content}
       </aside>
