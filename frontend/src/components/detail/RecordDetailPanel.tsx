@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { useRecord } from '@/hooks/useRecord'
 import { useFeedback } from '@/hooks/useFeedback'
@@ -19,26 +20,58 @@ interface RecordDetailPanelProps {
   isMobile?: boolean
 }
 
-/** Outer shell shared by every panel state. Desktop = fixed side column;
- *  mobile = full-screen overlay (fixed inset 0) so it doesn't squeeze the
- *  timeline into an unusable sliver. */
-function Shell({ children, isMobile }: { children: React.ReactNode; isMobile?: boolean }) {
+const srOnly: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+}
+
+/** Outer shell shared by every panel state. Desktop = fixed side column; mobile
+ *  = a Radix Dialog full-screen sheet (focus trap/restore, background inert,
+ *  Escape, body scroll-lock for free — same primitive as ImageLightbox) so it
+ *  doesn't squeeze the timeline into an unusable sliver. */
+function Shell({
+  children,
+  isMobile,
+  onClose,
+}: {
+  children: React.ReactNode
+  isMobile?: boolean
+  onClose?: () => void
+}) {
   if (isMobile) {
     return (
-      <aside
-        className="tt-fade"
-        style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 50,
-          background: 'var(--bg-surface)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflowY: 'auto',
-        }}
-      >
-        {children}
-      </aside>
+      <Dialog.Root open onOpenChange={(o) => { if (!o) onClose?.() }}>
+        <Dialog.Portal>
+          <Dialog.Overlay
+            className="tt-overlay"
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.5)', zIndex: 49 }}
+          />
+          <Dialog.Content
+            className="tt-sheet-content"
+            aria-label="活动详情"
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 50,
+              background: 'var(--bg-surface)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflowY: 'auto',
+              outline: 'none',
+            }}
+          >
+            <Dialog.Title style={srOnly}>活动详情</Dialog.Title>
+            {children}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     )
   }
   return (
@@ -89,7 +122,7 @@ export function RecordDetailPanel({ recordId, onClose, onZoom, isMobile = false 
   if (!recordId) {
     if (isMobile) return null
     return (
-      <Shell isMobile={isMobile}>
+      <Shell isMobile={isMobile} onClose={onClose}>
         <Centered>
           <div>
             <CatMascot size={76} float style={{ margin: '0 auto', opacity: 0.9 }} />
@@ -107,7 +140,7 @@ export function RecordDetailPanel({ recordId, onClose, onZoom, isMobile = false 
 
   if (isLoading) {
     return (
-      <Shell isMobile={isMobile}>
+      <Shell isMobile={isMobile} onClose={onClose}>
         <div style={{ padding: 16 }}>
           <div className="tt-fade" style={{ height: 150, background: 'var(--bg-raised)', borderRadius: 'var(--radius-lg)', marginBottom: 16 }} />
           <div className="tt-fade" style={{ height: 16, background: 'var(--bg-raised)', borderRadius: 6, marginBottom: 8, width: '70%' }} />
@@ -119,7 +152,7 @@ export function RecordDetailPanel({ recordId, onClose, onZoom, isMobile = false 
 
   if (error || !record) {
     return (
-      <Shell isMobile={isMobile}>
+      <Shell isMobile={isMobile} onClose={onClose}>
         <Centered>
           <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
             <div style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>活动不存在</div>
@@ -133,7 +166,7 @@ export function RecordDetailPanel({ recordId, onClose, onZoom, isMobile = false 
   const accent = categoryColor(record.category_final)
 
   return (
-    <Shell isMobile={isMobile}>
+    <Shell isMobile={isMobile} onClose={onClose}>
       <div className="tt-fade" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

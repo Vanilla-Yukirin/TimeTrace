@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import { Link, useLocation } from 'react-router-dom'
 import { Clock, Search, Settings, Sparkles } from 'lucide-react'
 import { Logo } from '@/components/brand/Logo'
@@ -16,18 +16,20 @@ interface SidebarProps {
   onClose?: () => void
 }
 
+const srOnly: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+}
+
 export function Sidebar({ isMobile = false, open = false, onClose }: SidebarProps) {
   const { pathname } = useLocation()
-
-  // Mobile drawer: Escape closes it.
-  useEffect(() => {
-    if (!isMobile || !open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose?.()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [isMobile, open, onClose])
 
   const content = (
     <>
@@ -117,49 +119,37 @@ export function Sidebar({ isMobile = false, open = false, onClose }: SidebarProp
     )
   }
 
-  // Mobile: slide-in drawer + backdrop.
+  // Mobile: Radix Dialog drawer — gives focus trap/restore, background inert,
+  // Escape, and body scroll-lock for free (matches ImageLightbox's pattern).
   return (
-    <>
-      <div
-        aria-hidden="true"
-        onClick={onClose}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(0, 0, 0, 0.5)',
-          zIndex: 40,
-          opacity: open ? 1 : 0,
-          pointerEvents: open ? 'auto' : 'none',
-          transition: 'opacity 0.2s ease',
-        }}
-      />
-      <aside
-        className="flex flex-col"
-        role="dialog"
-        aria-modal="true"
-        aria-label="导航菜单"
-        style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          bottom: 0,
-          width: 268,
-          maxWidth: '82vw',
-          zIndex: 41,
-          background: 'var(--bg-surface)',
-          borderRight: '1px solid var(--bg-border)',
-          boxShadow: open ? 'var(--shadow-lg)' : 'none',
-          transform: open ? 'translateX(0)' : 'translateX(-100%)',
-          // visibility:hidden when closed removes the off-screen drawer from the
-          // tab order + a11y tree (transform alone leaves its links focusable).
-          visibility: open ? 'visible' : 'hidden',
-          transition: 'transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.25s',
-          overflowY: 'auto',
-        }}
-        aria-hidden={!open}
-      >
-        {content}
-      </aside>
-    </>
+    <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose?.() }}>
+      <Dialog.Portal>
+        <Dialog.Overlay
+          className="tt-overlay"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.5)', zIndex: 40 }}
+        />
+        <Dialog.Content
+          className="tt-drawer-content flex flex-col"
+          aria-label="导航菜单"
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            bottom: 0,
+            width: 268,
+            maxWidth: '82vw',
+            zIndex: 41,
+            background: 'var(--bg-surface)',
+            borderRight: '1px solid var(--bg-border)',
+            boxShadow: 'var(--shadow-lg)',
+            overflowY: 'auto',
+            outline: 'none',
+          }}
+        >
+          <Dialog.Title style={srOnly}>导航菜单</Dialog.Title>
+          {content}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }
