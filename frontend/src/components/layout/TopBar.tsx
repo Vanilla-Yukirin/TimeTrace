@@ -1,5 +1,5 @@
 import { useNavigate, useLocation, Link } from 'react-router-dom'
-import { Clock, LogOut, Menu, Search, Settings } from 'lucide-react'
+import { Clock, LogOut, Menu, Search, Settings, MessageCircle, LayoutDashboard } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, broadcastKick } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
@@ -8,6 +8,8 @@ import { ThemeToggle } from '@/components/ui/ThemeToggle'
 /** Per-route title shown on the left of the bar. */
 const TITLES: Record<string, { icon: typeof Clock; label: string }> = {
   '/': { icon: Clock, label: '时间轴' },
+  '/agent': { icon: MessageCircle, label: '问问' },
+  '/dashboard': { icon: LayoutDashboard, label: '看板' },
   '/search': { icon: Search, label: '搜索' },
   '/settings': { icon: Settings, label: '设置' },
 }

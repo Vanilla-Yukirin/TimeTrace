@@ -1,11 +1,13 @@
 import * as Dialog from '@radix-ui/react-dialog'
 import { Link, useLocation } from 'react-router-dom'
-import { Clock, Search, Settings, Sparkles } from 'lucide-react'
+import { Clock, Search, Settings, Sparkles, MessageCircle, LayoutDashboard } from 'lucide-react'
 import { Logo } from '@/components/brand/Logo'
 import { CatMascot } from '@/components/brand/CatMascot'
 
 const NAV = [
   { to: '/', icon: Clock, label: '时间轴' },
+  { to: '/agent', icon: MessageCircle, label: '问问' },
+  { to: '/dashboard', icon: LayoutDashboard, label: '看板' },
   { to: '/search', icon: Search, label: '搜索' },
   { to: '/settings', icon: Settings, label: '设置' },
 ]
