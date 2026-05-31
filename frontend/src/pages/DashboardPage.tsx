@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw, Sparkles } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import { reportsApi, type Report } from '@/lib/agentApi'
 import { CatMascot } from '@/components/brand/CatMascot'
 

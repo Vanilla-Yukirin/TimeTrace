@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Send, Sparkles, Wrench, Square } from 'lucide-react'
+import { Send, Wrench, Square } from 'lucide-react'
 import { streamAgentChat, type AgentEvent, type ChatMessage } from '@/lib/agentApi'
 import { CatMascot } from '@/components/brand/CatMascot'
 
