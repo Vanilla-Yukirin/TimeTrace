@@ -2,7 +2,7 @@ import type { ApiRecord } from '@/types/api'
 import type { TimelineViewport } from '@/hooks/useTimelineState'
 import type { Theme } from '@/contexts/ThemeContext'
 import { getAppColor } from '@/lib/colorMap'
-import { formatTime } from '@/lib/dateUtils'
+import { formatTime, formatHM } from '@/lib/dateUtils'
 
 const LANE_Y_AXIS = 0       // top of time axis labels
 const AXIS_H = 28
@@ -54,13 +54,30 @@ interface HitResult {
   lane: 'activity' | 'frames'
 }
 
-/** Determine the tick interval (in ms) given current scale */
+// "Nice" tick intervals, ascending. The renderer picks the smallest one whose
+// on-screen width clears MIN_TICK_PX, so labels never crowd — when zoomed out
+// (or on a narrow phone) it naturally steps up to coarser intervals (…1h→2h→
+// 3h→6h→12h) instead of cramming every hour together.
+const TICK_INTERVALS_MS = [
+  60_000,            // 1 min
+  5 * 60_000,        // 5 min
+  10 * 60_000,       // 10 min
+  15 * 60_000,       // 15 min
+  30 * 60_000,       // 30 min
+  60 * 60_000,       // 1 h
+  2 * 60 * 60_000,   // 2 h
+  3 * 60 * 60_000,   // 3 h
+  6 * 60 * 60_000,   // 6 h
+  12 * 60 * 60_000,  // 12 h
+]
+const MIN_TICK_PX = 58 // minimum horizontal gap between labeled ticks
+
+/** Smallest "nice" interval whose width ≥ MIN_TICK_PX at the current scale. */
 function tickInterval(scaleMs: number): number {
-  const minsPerPx = scaleMs / 60_000
-  if (minsPerPx <= 0.5)  return 5 * 60_000    // 5 min
-  if (minsPerPx <= 2)    return 15 * 60_000   // 15 min
-  if (minsPerPx <= 5)    return 30 * 60_000   // 30 min
-  return 60 * 60_000                           // 1 hour
+  for (const iv of TICK_INTERVALS_MS) {
+    if (iv / scaleMs >= MIN_TICK_PX) return iv
+  }
+  return TICK_INTERVALS_MS[TICK_INTERVALS_MS.length - 1]
 }
 
 /** roundRect with a graceful fallback for older canvas impls. */
@@ -115,9 +132,9 @@ export function renderTimeline(
     ctx.moveTo(x, AXIS_H)
     ctx.lineTo(x, h)
     ctx.stroke()
-    // Label
+    // Label — drop seconds at minute+ intervals so it stays narrow.
     ctx.fillStyle = palette.axis
-    ctx.fillText(formatTime(ts), x, LANE_Y_AXIS + 14)
+    ctx.fillText(interval < 60_000 ? formatTime(ts) : formatHM(ts), x, LANE_Y_AXIS + 14)
   }
 
   // Lane labels

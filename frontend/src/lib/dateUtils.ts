@@ -9,6 +9,12 @@ export function formatTime(ms: number): string {
   return format(new Date(ms), 'HH:mm:ss')
 }
 
+/** Compact clock without seconds — used for timeline tick labels so they stay
+ *  narrow (and don't show a redundant ":00" at minute+ intervals). */
+export function formatHM(ms: number): string {
+  return format(new Date(ms), 'HH:mm')
+}
+
 export function formatDate(ms: number): string {
   return format(new Date(ms), 'yyyy-MM-dd EEEE', { locale: zhCN })
 }

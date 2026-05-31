@@ -55,6 +55,8 @@ export function TokenManager() {
           value={newLabel}
           onChange={(e) => setNewLabel(e.target.value)}
           aria-label="新 token 的标签"
+          name="tt-token-label"
+          autoComplete="off"
           placeholder="标签，如 claude-code"
           style={{
             flex: 1,
