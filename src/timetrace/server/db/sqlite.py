@@ -308,9 +308,7 @@ class SqliteDatabase:
         async with self._conn.execute("PRAGMA table_info(analysis_results)") as cur:
             ar_cols = {row["name"] for row in await cur.fetchall()}
         if "text_embedding" not in ar_cols:
-            await self._conn.execute(
-                "ALTER TABLE analysis_results ADD COLUMN text_embedding BLOB"
-            )
+            await self._conn.execute("ALTER TABLE analysis_results ADD COLUMN text_embedding BLOB")
             await self._conn.commit()
             logger.info("database.migrate", added_column="analysis_results.text_embedding")
         if "text_embedding_model" not in ar_cols:
@@ -971,9 +969,7 @@ class SqliteDatabase:
         if rows_updated == 0:
             logger.warning("database.save_description.not_found", record_id=record_id)
 
-    async def save_text_embedding(
-        self, record_id: str, vec: bytes, model: str
-    ) -> None:
+    async def save_text_embedding(self, record_id: str, vec: bytes, model: str) -> None:
         """Write a packed-float32 text embedding to ``analysis_results``.
 
         Worker calls this after a successful ``save_description`` + transition
@@ -991,9 +987,7 @@ class SqliteDatabase:
                 rows_updated = cur.rowcount
             await self.conn.commit()
         if rows_updated == 0:
-            logger.warning(
-                "database.save_text_embedding.not_found", record_id=record_id
-            )
+            logger.warning("database.save_text_embedding.not_found", record_id=record_id)
 
     async def fetch_rows_needing_text_embedding(
         self, limit: int, exclude_ids: set[str] | None = None
@@ -1014,8 +1008,7 @@ class SqliteDatabase:
         params.append(limit)
         async with self._lock:
             async with self.conn.execute(
-                f"SELECT record_id, vlm_desc FROM analysis_results "
-                f"WHERE {clause} LIMIT ?",
+                f"SELECT record_id, vlm_desc FROM analysis_results WHERE {clause} LIMIT ?",
                 params,
             ) as cur:
                 rows = await cur.fetchall()
@@ -1235,6 +1228,27 @@ class SqliteDatabase:
                 row = await cur.fetchone()
         return row["category_final"] if row else None
 
+    async def set_category_final(self, record_id: str, category: str) -> None:
+        """Authoritatively set ``category_final``, creating the analysis row if
+        the worker hasn't processed this record yet.
+
+        Used by the agent's ``apply_label`` tool: a user / AI can label a record
+        that has no VLM analysis row. We seed the row as ``vlm_done`` on first
+        touch so the worker queue (which claims ``pending_vlm``) won't re-process
+        and clobber the manual label; rows that already exist keep their status.
+        """
+        now = _now_ms()
+        async with self._lock:
+            await self.conn.execute(
+                """INSERT INTO analysis_results (record_id, category_final, status, updated_at)
+                   VALUES (?, ?, 'vlm_done', ?)
+                   ON CONFLICT(record_id) DO UPDATE SET
+                       category_final = excluded.category_final,
+                       updated_at = excluded.updated_at""",
+                (record_id, category, now),
+            )
+            await self.conn.commit()
+
     async def get_record_by_id(self, record_id: str) -> dict | None:
         """Return a single record with analysis results and screenshots list."""
         async with self._lock:
@@ -1348,9 +1362,7 @@ class SqliteDatabase:
 
     async def delete_session(self, session_id: str) -> None:
         async with self._lock:
-            await self.conn.execute(
-                "DELETE FROM auth_sessions WHERE id=?", (session_id,)
-            )
+            await self.conn.execute("DELETE FROM auth_sessions WHERE id=?", (session_id,))
             await self.conn.commit()
 
     async def delete_sessions_except(self, username: str, keep_session_id: str) -> int:

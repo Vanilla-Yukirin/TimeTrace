@@ -18,6 +18,7 @@ from timetrace.server.api.deps import (
 )
 from timetrace.server.api.mcp_auth import BearerOnlyMiddleware
 from timetrace.server.api.routes import admin as admin_routes
+from timetrace.server.api.routes import agent as agent_routes
 from timetrace.server.api.routes import auth as auth_routes
 from timetrace.server.api.routes import feedback, ingest, records, search, thumbs
 from timetrace.server.auth import make_bearer_dependency
@@ -78,6 +79,7 @@ def create_app(
     app.state.auth = auth
     app.state.users = users
     app.state.auth_cfg = auth_cfg
+    app.state.vlm_cfg = vlm_cfg
     if storage_cfg is not None:
         app.state.data_dir = str(storage_cfg.data_dir)
         # Materialise the dir up front (first-run has no screenshots yet);
@@ -106,12 +108,11 @@ def create_app(
     # is None — legacy test fixtures that pass ``create_app(db)`` with no
     # auth wiring still want the unauthenticated behavior, matching the
     # ``auth=None → ingest open`` pattern below.
-    business_deps = (
-        [Depends(require_principal)] if users is not None else []
-    )
+    business_deps = [Depends(require_principal)] if users is not None else []
     app.include_router(records.router, prefix="/v1", dependencies=business_deps)
     app.include_router(search.router, prefix="/v1", dependencies=business_deps)
     app.include_router(feedback.router, prefix="/v1", dependencies=business_deps)
+    app.include_router(agent_routes.router, prefix="/v1", dependencies=business_deps)
 
     # Phase 2 (login system): /thumbs is its own route module because the
     # FileResponse path-traversal logic doesn't belong on records/etc. — but
