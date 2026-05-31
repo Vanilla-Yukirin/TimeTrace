@@ -198,9 +198,7 @@ async def test_change_password_rejects_same_password(db, auth_cfg):
     # Old and new identical (also fails the strength check, but the equality
     # check fires first because that's the cheaper rejection).
     with pytest.raises(ValueError):
-        await users.change_password(
-            "admin", "admin", "admin", current_session_id=s.session_id
-        )
+        await users.change_password("admin", "admin", "admin", current_session_id=s.session_id)
 
 
 async def test_change_password_rejects_wrong_old(db, auth_cfg):
@@ -218,9 +216,7 @@ async def test_change_password_validates_strength(db, auth_cfg):
     await users.ensure_admin_seeded()
     s = await users.authenticate("admin", "admin", ip="1.1.1.1", user_agent=None)
     with pytest.raises(InvalidPasswordError):
-        await users.change_password(
-            "admin", "admin", "weak", current_session_id=s.session_id
-        )
+        await users.change_password("admin", "admin", "weak", current_session_id=s.session_id)
 
 
 async def test_purge_expired_sessions_bulk(db, auth_cfg):
@@ -230,9 +226,7 @@ async def test_purge_expired_sessions_bulk(db, auth_cfg):
     for i in range(2):
         await users.authenticate("admin", "admin", ip=f"1.1.1.{i}", user_agent=None)
     for i in range(3):
-        await db.insert_session(
-            f"exp-{i}", "admin", expires_at=1, user_agent=None, ip=None
-        )
+        await db.insert_session(f"exp-{i}", "admin", expires_at=1, user_agent=None, ip=None)
     purged = await db.purge_expired_sessions()
     assert purged == 3
 
@@ -256,9 +250,7 @@ def client(app_with_auth):
 
 
 def test_login_success_sets_cookie(client):
-    r = client.post(
-        "/v1/auth/login", json={"username": "admin", "password": "admin"}
-    )
+    r = client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
     assert r.status_code == 200
     body = r.json()
     assert body["username"] == "admin"
@@ -268,17 +260,13 @@ def test_login_success_sets_cookie(client):
 
 
 def test_login_wrong_password_is_401_and_no_cookie(client):
-    r = client.post(
-        "/v1/auth/login", json={"username": "admin", "password": "wrong"}
-    )
+    r = client.post("/v1/auth/login", json={"username": "admin", "password": "wrong"})
     assert r.status_code == 401
     assert "tt_session" not in client.cookies
 
 
 def test_login_unknown_user_same_as_wrong_password(client):
-    r = client.post(
-        "/v1/auth/login", json={"username": "ghost", "password": "x"}
-    )
+    r = client.post("/v1/auth/login", json={"username": "ghost", "password": "x"})
     # Identical 401 — don't leak which one was wrong.
     assert r.status_code == 401
 
@@ -318,9 +306,7 @@ def test_change_password_full_flow(client):
     assert me["must_change_password"] is False
     # Logout + log back in with new password
     client.post("/v1/auth/logout")
-    r2 = client.post(
-        "/v1/auth/login", json={"username": "admin", "password": "newpass42"}
-    )
+    r2 = client.post("/v1/auth/login", json={"username": "admin", "password": "newpass42"})
     assert r2.status_code == 200
 
 
@@ -354,13 +340,9 @@ def test_change_password_same_as_old_is_422(client):
 def test_login_rate_limit_429(client):
     # Threshold=3 from auth_cfg fixture; 4th attempt should be 429.
     for _ in range(3):
-        r = client.post(
-            "/v1/auth/login", json={"username": "admin", "password": "wrong"}
-        )
+        r = client.post("/v1/auth/login", json={"username": "admin", "password": "wrong"})
         assert r.status_code == 401
-    r = client.post(
-        "/v1/auth/login", json={"username": "admin", "password": "admin"}
-    )
+    r = client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
     assert r.status_code == 429
     assert "retry-after" in {k.lower() for k in r.headers}
 

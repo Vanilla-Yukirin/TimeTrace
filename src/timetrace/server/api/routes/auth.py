@@ -70,9 +70,7 @@ def _client_ip(request: Request) -> str:
     return client.host if client else "unknown"
 
 
-def _set_session_cookie(
-    response: Response, session_id: str, *, cfg: AuthConfig
-) -> None:
+def _set_session_cookie(response: Response, session_id: str, *, cfg: AuthConfig) -> None:
     """Drop the session cookie with the configured attributes."""
     response.set_cookie(
         key=cfg.cookie_name,
@@ -96,9 +94,7 @@ def _clear_session_cookie(response: Response, *, cfg: AuthConfig) -> None:
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(
-    body: LoginRequest, request: Request, response: Response
-) -> LoginResponse:
+async def login(body: LoginRequest, request: Request, response: Response) -> LoginResponse:
     users: UserStore = request.app.state.users
     cfg: AuthConfig = request.app.state.auth_cfg
     try:

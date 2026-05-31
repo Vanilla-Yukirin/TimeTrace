@@ -325,8 +325,12 @@ async def test_query_records_keyword_matches_app_name_via_fts(db):
         reason="heartbeat",
     )
     await db.insert_record(
-        CaptureContext(app_name="Chrome", process_name="chrome.exe", window_title="Google",
-                       url="https://example.com/dashboard"),
+        CaptureContext(
+            app_name="Chrome",
+            process_name="chrome.exe",
+            window_title="Google",
+            url="https://example.com/dashboard",
+        ),
         reason="heartbeat",
     )
 
@@ -444,16 +448,14 @@ async def test_query_records_fts_bm25_actually_ranks(db):
     await db.mark_pending(rid_top)
     await db.save_description(
         rid_top,
-        "TimeTrace TimeTrace TimeTrace TimeTrace "
-        "TimeTrace TimeTrace TimeTrace 测试 BM25 排序。",
+        "TimeTrace TimeTrace TimeTrace TimeTrace TimeTrace TimeTrace TimeTrace 测试 BM25 排序。",
     )
 
     rows = await db.query_records(0, 9_999_999_999_999, keyword="TimeTrace")
     assert len(rows) == 3
     # Expected: highest density first, lowest last. The opposite of insert order.
     assert [r["id"] for r in rows] == [rid_top, rid_high, rid_low], (
-        f"BM25 ranking broken; got insert-order or worse: "
-        f"{[r['app_name'] for r in rows]}"
+        f"BM25 ranking broken; got insert-order or worse: {[r['app_name'] for r in rows]}"
     )
 
 

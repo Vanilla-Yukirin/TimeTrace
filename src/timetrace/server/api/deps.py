@@ -44,9 +44,7 @@ def _extract_bearer(authorization: str | None) -> str | None:
     return authorization.removeprefix("Bearer ").strip() or None
 
 
-async def _resolve_cookie(
-    request: Request, session_id: str
-) -> CookiePrincipal | None:
+async def _resolve_cookie(request: Request, session_id: str) -> CookiePrincipal | None:
     """Look up a cookie session id → CookiePrincipal or None."""
     users: UserStore | None = getattr(request.app.state, "users", None)
     if users is None:

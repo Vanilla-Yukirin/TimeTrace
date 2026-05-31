@@ -144,9 +144,7 @@ class AnalysisWorker:
                         return
                     continue
                 consecutive_fails = 0
-                await self._db.save_text_embedding(
-                    row["record_id"], vec, self._embedding.model
-                )
+                await self._db.save_text_embedding(row["record_id"], vec, self._embedding.model)
                 total += 1
             logger.info("worker.backfill_progress", embedded=total, skipped=len(skipped))
         if total or skipped:

@@ -12,8 +12,8 @@ def test_rrf_single_list_preserves_order():
 
 def test_rrf_consensus_top_wins():
     """An id ranked highly in BOTH channels beats one ranked #1 in only one."""
-    fts = ["x", "a", "b"]   # x is #1 here
-    vec = ["a", "x", "c"]   # a is #1 here, x is #2
+    fts = ["x", "a", "b"]  # x is #1 here
+    vec = ["a", "x", "c"]  # a is #1 here, x is #2
     fused = reciprocal_rank_fusion([fts, vec])
     # a: 1/61 + 1/60 ; x: 1/60 + 1/61 — identical sums → tie, broken by id asc
     # so "a" comes before "x". Both beat single-list-only b/c.

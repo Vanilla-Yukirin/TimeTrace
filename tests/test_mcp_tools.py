@@ -1,7 +1,6 @@
 """MCP layer tests — build_mcp_server tools wired against a real SQLite db."""
 
 import json
-import time
 from typing import Any
 
 import pytest
@@ -116,9 +115,7 @@ async def test_ask_agent_degrades_gracefully_without_vlm(db):
     await _seed_records(db, n=1)
     mcp = build_mcp_server(db, vlm_cfg=None)
 
-    result = await mcp.call_tool(
-        "ask_agent", {"question": "我昨天在干啥", "hours_back": 24}
-    )
+    result = await mcp.call_tool("ask_agent", {"question": "我昨天在干啥", "hours_back": 24})
     body = _structured(result)
     assert body["model"] is None
     assert "not configured" in body["answer"].lower()

@@ -120,17 +120,13 @@ def test_business_route_with_cookie_passes(client, method, path, body):
 
 @pytest.mark.parametrize("method,path,body", GATED_ENDPOINTS)
 def test_business_route_with_bearer_passes(client, method, path, body):
-    r = _call(
-        client, method, path, body, headers={"Authorization": "Bearer tt_live_known"}
-    )
+    r = _call(client, method, path, body, headers={"Authorization": "Bearer tt_live_known"})
     assert r.status_code != 401, f"{method} {path} expected non-401 got {r.status_code}"
 
 
 @pytest.mark.parametrize("method,path,body", GATED_ENDPOINTS)
 def test_business_route_with_invalid_bearer_is_401(client, method, path, body):
-    r = _call(
-        client, method, path, body, headers={"Authorization": "Bearer tt_live_ghost"}
-    )
+    r = _call(client, method, path, body, headers={"Authorization": "Bearer tt_live_ghost"})
     assert r.status_code == 401
 
 

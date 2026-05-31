@@ -80,9 +80,7 @@ def test_mcp_no_auth_is_401(client):
 
 
 def test_mcp_invalid_bearer_is_401(client):
-    r = client.post(
-        "/mcp/", json={}, headers={"Authorization": "Bearer tt_live_ghost"}
-    )
+    r = client.post("/mcp/", json={}, headers={"Authorization": "Bearer tt_live_ghost"})
     assert r.status_code == 401
 
 
@@ -96,9 +94,7 @@ def test_mcp_valid_bearer_passes_gate(client):
     400/406 on a non-MCP body, but the response is NOT 401 — proving the
     gate cleared.
     """
-    r = client.post(
-        "/mcp/", json={}, headers={"Authorization": "Bearer tt_live_known"}
-    )
+    r = client.post("/mcp/", json={}, headers={"Authorization": "Bearer tt_live_known"})
     assert r.status_code != 401, r.text
 
 

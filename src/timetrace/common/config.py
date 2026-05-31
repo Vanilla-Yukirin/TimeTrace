@@ -72,9 +72,10 @@ class EmbeddingConfig:
             api_key = os.getenv("TIMETRACE_VLM_API_KEY", "").strip()
         if not api_key:
             return None
-        base_url = os.getenv("TIMETRACE_EMBEDDING_BASE_URL", "").strip() or os.getenv(
-            "TIMETRACE_VLM_BASE_URL", "https://api.openai.com/v1"
-        ).strip()
+        base_url = (
+            os.getenv("TIMETRACE_EMBEDDING_BASE_URL", "").strip()
+            or os.getenv("TIMETRACE_VLM_BASE_URL", "https://api.openai.com/v1").strip()
+        )
         model = os.getenv("TIMETRACE_EMBEDDING_MODEL", "").strip()
         if not model:
             return None  # No default — without explicit model env the worker stays off
@@ -167,10 +168,10 @@ class AuthConfig:
     # Session lifetime; reflected both in cookie ``Max-Age`` and ``auth_sessions.expires_at``.
     session_ttl_s: int = 30 * 24 * 3600  # 30 days
     # Login failure rate-limit window (seconds) and threshold (failures).
-    login_rate_window_s: int = 15 * 60   # 15 min
+    login_rate_window_s: int = 15 * 60  # 15 min
     login_rate_threshold: int = 5
     # Lockout duration after the threshold is hit.
-    login_lockout_s: int = 30 * 60       # 30 min
+    login_lockout_s: int = 30 * 60  # 30 min
     # Cap on concurrent live sessions per user; on the (N+1)th login the oldest
     # session row is evicted. Bounds unbounded 30-day-session accumulation and
     # the blast radius of a single captured session.

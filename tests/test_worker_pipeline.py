@@ -273,8 +273,8 @@ async def test_worker_embedding_failure_does_not_block_vlm_done(db, tmp_path):
         (rid,),
     ) as cur:
         row = await cur.fetchone()
-    assert row["status"] == "vlm_done"        # vlm_done despite embedding failure
-    assert row["text_embedding"] is None      # left for backfill
+    assert row["status"] == "vlm_done"  # vlm_done despite embedding failure
+    assert row["text_embedding"] is None  # left for backfill
 
 
 async def test_worker_without_embedding_client_short_circuits(db, tmp_path):
