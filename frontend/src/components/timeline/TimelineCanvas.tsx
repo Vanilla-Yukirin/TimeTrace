@@ -63,9 +63,9 @@ export function TimelineCanvas({
     const dpr = window.devicePixelRatio || 1
     ctx.save()
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    renderTimeline(ctx, viewport, records, hoverRecordId, selectedRecordId, palette)
+    renderTimeline(ctx, viewport, records, hoverRecordId, selectedRecordId, palette, theme)
     ctx.restore()
-  }, [viewport, records, hoverRecordId, selectedRecordId, palette])
+  }, [viewport, records, hoverRecordId, selectedRecordId, palette, theme])
 
   const handleHover = useCallback((id: string | null) => {
     setHoverRecordId(id)

@@ -170,7 +170,7 @@ function CopyBlock({ label, text, mono, multiline }: CopyBlockProps) {
             cursor: 'pointer',
           }}
         >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
           {copied ? '已复制' : '复制'}
         </button>
       </div>

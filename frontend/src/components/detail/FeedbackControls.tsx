@@ -48,8 +48,9 @@ export function FeedbackControls({ record, feedback }: FeedbackControlsProps) {
               key={cat.id}
               onClick={() => handleSelect(cat.id)}
               disabled={feedback.isPending}
+              aria-pressed={record.category_final === cat.id}
               style={{
-                padding: '4px 10px',
+                padding: '5px 11px',
                 fontSize: 11,
                 borderRadius: 'var(--radius-pill)',
                 border: '1px solid var(--bg-border)',
@@ -110,7 +111,7 @@ export function FeedbackControls({ record, feedback }: FeedbackControlsProps) {
             opacity: feedback.isPending ? 0.6 : 1,
           }}
         >
-          <Check size={12} />
+          <Check size={12} aria-hidden="true" />
           确认分类
         </button>
         <button
@@ -130,7 +131,7 @@ export function FeedbackControls({ record, feedback }: FeedbackControlsProps) {
             opacity: feedback.isPending ? 0.6 : 1,
           }}
         >
-          <Pencil size={12} />
+          <Pencil size={12} aria-hidden="true" />
           修改分类
         </button>
       </div>

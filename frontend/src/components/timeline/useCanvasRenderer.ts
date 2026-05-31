@@ -90,9 +90,11 @@ export function renderTimeline(
   hoverRecordId: string | null,
   selectedRecordId: string | null,
   palette: TimelinePalette,
+  theme: Theme,
 ): void {
   const { canvasWidth: w, scaleMs, offsetMs } = vp
   const h = CANVAS_H
+  const isLight = theme === 'light'
 
   // Background
   ctx.fillStyle = palette.bg
@@ -137,25 +139,27 @@ export function renderTimeline(
     const selected = rec.id === selectedRecordId
     const hovered = rec.id === hoverRecordId
 
+    // App colors are mid-saturation; on the light canvas, drawing them faint
+    // (the dark-theme alpha) made them wash out, so bump alpha in light mode.
     roundRect(ctx, x1, ACTIVITY_Y, w2, ACTIVITY_H, BLOCK_RADIUS)
     ctx.fillStyle = baseColor
-    ctx.globalAlpha = selected ? 1.0 : hovered ? 0.92 : 0.78
+    ctx.globalAlpha = selected ? 1.0 : hovered ? (isLight ? 1.0 : 0.92) : isLight ? 0.9 : 0.78
     ctx.fill()
     ctx.globalAlpha = 1.0
 
     // subtle top sheen for depth (only on blocks wide enough to notice)
     if (w2 > 10) {
       roundRect(ctx, x1, ACTIVITY_Y, w2, ACTIVITY_H * 0.5, BLOCK_RADIUS)
-      ctx.fillStyle = 'rgba(255,255,255,0.10)'
+      ctx.fillStyle = isLight ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.10)'
       ctx.globalAlpha = selected ? 0.9 : hovered ? 0.7 : 0.45
       ctx.fill()
       ctx.globalAlpha = 1.0
     }
 
-    // Hover: lighter overlay
+    // Hover overlay — lighten on dark, darken on light so it reads either way.
     if (hovered && !selected) {
       roundRect(ctx, x1, ACTIVITY_Y, w2, ACTIVITY_H, BLOCK_RADIUS)
-      ctx.fillStyle = 'rgba(255,255,255,0.14)'
+      ctx.fillStyle = isLight ? 'rgba(0,0,0,0.07)' : 'rgba(255,255,255,0.14)'
       ctx.fill()
     }
 

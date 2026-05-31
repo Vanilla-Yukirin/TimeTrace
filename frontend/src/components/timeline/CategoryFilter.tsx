@@ -39,7 +39,7 @@ export function CategoryFilter({ records, selected, onSelect }: CategoryFilterPr
           marginBottom: 8,
         }}
       >
-        <Layers size={12} />
+        <Layers size={12} aria-hidden="true" />
         快速筛选
       </div>
 
@@ -98,12 +98,13 @@ function Row({
   return (
     <button
       onClick={onClick}
+      aria-pressed={active}
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: 8,
         width: '100%',
-        padding: '7px 9px',
+        padding: '8px 9px',
         borderRadius: 'var(--radius-md)',
         background: active ? 'var(--accent-subtle)' : 'transparent',
         border: 'none',
@@ -112,6 +113,7 @@ function Row({
       }}
     >
       <span
+        aria-hidden="true"
         style={{
           width: 9,
           height: 9,

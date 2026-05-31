@@ -29,13 +29,13 @@ export function DatePicker({ value, onChange }: DatePickerProps) {
       {/* Month navigation */}
       <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
         <button onClick={() => setViewMonth(subMonths(viewMonth, 1))} style={navBtn} aria-label="上个月">
-          <ChevronLeft size={15} />
+          <ChevronLeft size={15} aria-hidden="true" />
         </button>
         <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text-primary)' }}>
           {format(viewMonth, 'yyyy年M月', { locale: zhCN })}
         </span>
         <button onClick={() => setViewMonth(addMonths(viewMonth, 1))} style={navBtn} aria-label="下个月">
-          <ChevronRight size={15} />
+          <ChevronRight size={15} aria-hidden="true" />
         </button>
       </div>
 
@@ -62,6 +62,9 @@ export function DatePicker({ value, onChange }: DatePickerProps) {
             <button
               key={day.toISOString()}
               onClick={() => onChange(day)}
+              aria-label={format(day, 'M月d日 EEEE', { locale: zhCN })}
+              aria-pressed={selected}
+              aria-current={today ? 'date' : undefined}
               className="text-center transition-colors"
               style={{
                 aspectRatio: '1 / 1',

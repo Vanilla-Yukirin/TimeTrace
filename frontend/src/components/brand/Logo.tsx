@@ -27,7 +27,7 @@ export function Logo({ size = 30, withWordmark = false, tagline }: LogoProps) {
           boxShadow: 'var(--shadow-glow)',
         }}
       >
-        <Cat size={Math.round(size * 0.62)} color="#fff" strokeWidth={2.1} />
+        <Cat size={Math.round(size * 0.62)} color="#fff" strokeWidth={2.1} aria-hidden="true" />
       </div>
       {withWordmark && (
         <div style={{ lineHeight: 1.15 }}>

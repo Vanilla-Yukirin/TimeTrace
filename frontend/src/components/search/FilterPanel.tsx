@@ -48,9 +48,10 @@ export function FilterPanel(props: FilterPanelProps) {
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
         style={{
           width: '100%',
-          padding: '10px 12px',
+          padding: '11px 12px',
           background: 'transparent',
           border: 'none',
           cursor: 'pointer',
@@ -62,7 +63,7 @@ export function FilterPanel(props: FilterPanelProps) {
           fontWeight: 500,
         }}
       >
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
         筛选
       </button>
 
@@ -164,7 +165,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Chip({
   children,
   onClick,
-  selected = false,
+  selected,
 }: {
   children: React.ReactNode
   onClick: () => void
@@ -174,8 +175,11 @@ function Chip({
     <button
       type="button"
       onClick={onClick}
+      // Only the toggle chips (apps/categories) report pressed state; the
+      // preset/clear chips are plain actions, so they omit aria-pressed.
+      aria-pressed={selected === undefined ? undefined : selected}
       style={{
-        padding: '4px 10px',
+        padding: '5px 11px',
         borderRadius: 'var(--radius-pill)',
         fontSize: 11,
         border: `1px solid ${selected ? 'var(--accent-border)' : 'var(--bg-border)'}`,

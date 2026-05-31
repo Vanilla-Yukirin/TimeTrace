@@ -48,11 +48,11 @@ export function AccountSection() {
             onClick={() => navigate('/login/change-password')}
             style={btnStyle('var(--text-secondary)')}
           >
-            <KeyRound size={14} />
+            <KeyRound size={14} aria-hidden="true" />
             修改密码
           </button>
           <button onClick={onLogout} style={btnStyle('var(--error)')}>
-            <LogOut size={14} />
+            <LogOut size={14} aria-hidden="true" />
             退出登录
           </button>
         </div>
