@@ -62,6 +62,7 @@ devlogs/
 |------|------|
 | [archive-202604300228-image-lightbox.md](frontend/archive-202604300228-image-lightbox.md) | 基于 Radix Dialog 实装截图放大 Lightbox：弹层放大 + 左右键切换 + 底部信息条 + 动画；处理索引越界、按钮嵌套语义、margin 覆盖等 review 反馈，并同步 `infra/architecture/web-ui.md` |
 | [archive-202605310019-redesign-review-emb-tokenize.md](frontend/archive-202605310019-redesign-review-emb-tokenize.md) | 6 维并行 workflow 评审 infra agent 前端美化重构（双主题/吉祥物/无障碍亮点 + medium/low 清单）；主 agent 修自己份内的 EmbeddingDiagnostics 令牌化 + a11y（high 全清）；樱花"看不见"根因（只在浅色 app-glow、默认深色看不到）；给 infra agent 交接 prompt（移动端适配 + 樱花 + medium/low） |
+| [archive-202605311034-frontend-redesign-mobile-a11y.md](frontend/archive-202605311034-frontend-redesign-mobile-a11y.md) | 前端从单深色硬编码重做为双主题设计令牌系统 + 移动端适配（useIsMobile 抽屉/全屏覆盖层）+ 时间轴触摸（单指平移/双指缩放/点选）+ 刻度自适应稀疏 + 樱花氛围 + 防浏览器自动填密码；两轮多 agent 对抗审计共确认 15 项全修（对比度/a11y/Radix 模态滚动锁）；分批 scp 部署 VPS 验证全绿 |
 
 ---
 
