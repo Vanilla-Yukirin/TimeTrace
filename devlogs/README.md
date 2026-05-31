@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-05-31
+**最后更新：** 2026-06-01
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -85,6 +85,7 @@ devlogs/
 | [archive-202605300222-phase7-deploy-qwen-restore.md](infra/archive-202605300222-phase7-deploy-qwen-restore.md) | Phase 7 部署：Qwen 35B 恢复踩 `--ttl 99999999` bug（去掉即好，无 TTL 永久驻留）+ 纠正 GPU 实为 RTX 3080 20GB 非 4090D；gh workflow run 404（deploy.yml 不在默认分支 main，GH Actions 部署路径从未可用）+ deploy.sh 被 guardrail 拦 → 用户授权手动部署 + 提议 main FF |
 | [archive-202605300855-auth-bugfix-audit-public-launch.md](infra/archive-202605300855-auth-bugfix-audit-public-launch.md) | 登录系统正式上线：修退出闪烁+改密不跳转两 bug（根因 react-query 401 保留 stale data）+ sonner toast；多 agent 对抗审计 23→13 确认，揪出 2 HIGH（must_change 后端零强制、XFF 伪造击穿限流）全修；nginx 托管 SPA + frp 隧道开公网，admin 密码经 sqlite3 直 UPDATE 重置，公网 e2e 全绿 |
 | [archive-202605311104-arch-docs-rewrite-hallucination.md](infra/archive-202605311104-arch-docs-rewrite-hallucination.md) | 架构文档批量更新到现状（新建 auth-system/web-deployment/client-server-split/embserver 4 篇 + 改写 10 篇）；**以失败教训为主**：rewrite workflow 写手系统性虚构符号（`_process_one`/`analysis_tasks` 表等）+ 10 校验员仅 1 返回 + 校验本身假阳性（误报 store_images 不存在）；主 agent 又把 Edit 与 commit 混进大并行批次误提交未修好文件、还自编 nginx 配置值；最终靠**串行逐符号 grep 复核**修净（bf69ffd→2dc8028→c230ab0）；roadmap/vector-search/capture-params 三篇虚构过多 revert 保旧版 |
+| [archive-202606010130-deploy-agent-dashboard-nginx-sse.md](infra/archive-202606010130-deploy-agent-dashboard-nginx-sse.md) | 把另一 agent 写好的 Agent 聊天页/看板页（aa6ab89）构建(`tsc -b` exit0 → `index-DUc91w2Z.js`)部署到公网 VPS + 补 nginx `/v1/agent/`+`/v1/reports/` 的 SSE 透传（buffering off + 3600s；原 `/v1/` 只基础 proxy、默认 60s read timeout 会掐断慢流式）；部署前 3 路对抗审计采纳原子交换+上传校验+nginx 失败自动恢复；整树同盘 `mv` rename 原子换入零 404 窗口、`nginx -t`+reload+`is-active`；线上验证 `/`200 / 旧 bundle 404 / reports 401 / agent GET 405 全绿（401/405 证明新前缀真到后端）；多 agent 共享树发现 HEAD 被推进（ccfdc83 纯后端 ruff、零 frontend）查证 bundle 不旧后守护式 ff push `e639a61` |
 
 ---
 
