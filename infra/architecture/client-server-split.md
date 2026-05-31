@@ -214,6 +214,6 @@ acked 条目的 blob     ← step 3（best-effort unlink）
 - [架构总览](overview.md) — 全景与模块职责
 - [Capture Service](capture-service.md) — 采集循环细节
 - [Local API Server](api-server.md) — `/v1/ingest/*` 与业务路由
-- [Analysis Worker](analysis-worker.md) — 消费 `analysis_tasks`
+- [Analysis Worker](analysis-worker.md) — 消费 `analysis_results`（status 状态机）
 - 双进程接线设计：[`devlogs/infra/archive-202605151200-client-server-split-kickoff.md`](../../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)
 - compaction：[`devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md`](../../devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md)
