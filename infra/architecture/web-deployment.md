@@ -20,7 +20,7 @@ TimeTrace 原本是纯本地工具（`127.0.0.1:8765`，靠 SSH `-L` 隧道按�
 Cloudflare (DNS / 可选 CDN，子域 timetrace.yukirin.me)
   │
   ▼
-云 VPS：nginx 反代 (TLS 终结 + 登录限速 + 安全 header)
+云 VPS：nginx 反代 (TLS 终结 + 登录限速)
   │ proxy_pass http://127.0.0.1:18765
   ▼
 frps (VPS 上的 FRP 服务端)
@@ -62,8 +62,8 @@ nginx vhost（[`deploy/nginx-timetrace.yukirin.me.conf`](../../deploy/nginx-time
 - 证书：Let's Encrypt（certbot）或 Cloudflare origin cert，`/etc/letsencrypt/live/timetrace.yukirin.me/`
 - 协议：TLSv1.2 + TLSv1.3，`ssl_ciphers HIGH:!aNULL:!MD5`
 - HTTP(:80) → HTTPS(:443) 永久跳转
-- 安全 header：`X-Frame-Options SAMEORIGIN`（防点击劫持）、`X-Content-Type-Options nosniff`、`Referrer-Policy strict-origin-when-cross-origin`
-- `client_max_body_size 64m`（multipart ingest 可能较大）
+- 安全 header：**当前实配的 nginx 只对前端静态资源加了 `Cache-Control`**（`public, max-age=31536000, immutable`）；`X-Frame-Options` / `X-Content-Type-Options` / `Referrer-Policy` 等加固 header **尚未配置**，是可补的 TODO（实际访问控制落在应用层登录鉴权，见 [auth-system](auth-system.md)）
+- `client_max_body_size 50M`（multipart ingest 可能较大；见 `deploy/nginx-timetrace.yukirin.me.conf`）
 - MCP 的 SSE / streamable-HTTP：`proxy_buffering off` + `proxy_read_timeout 3600s`，否则分块不 flush
 
 前端 SPA 静态资源由 nginx 直接从磁盘 `/var/www/timetrace` 提供，`try_files ... /index.html` 兜底 SPA 路由。后端拥有的路径（`/v1` `/healthz` `/mcp` `/thumbs` `/docs` `/openapi.json`）才 `proxy_pass` 给隧道。
@@ -108,7 +108,7 @@ nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给
   1. `if: github.repository == 'Vanilla-Yukirin/TimeTrace'` —— fork 跑不起来这个 job
   2. GH secret 不被 fork 继承 —— 即便 fork 改了 guard 也拿不到 SSH key
 - 部署流程（[`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)）：checkout → 用 secret 里的 SSH key 经 FRP 隧道连家用主机 → `ssh ... 'bash -s' < deploy/deploy.sh <ref>` → smoke-check `/healthz`
-- CI（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)）：push 到 `main` / `feature/**` 或 PR 触发，`uv sync --extra server` → ruff → pytest。**只 server extra**，不拉 embserver 的 torch/transformers
+- CI（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)）：push 到 `main` / `feature/refactor-split` 或对其 PR 触发，plain `uv sync` → `ruff check` → `ruff format --check` → `pytest`。`uv sync` 不带 `--extra embserver`，所以 CI 不拉 torch/transformers
 
 ---
 
@@ -120,7 +120,7 @@ nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给
 - 因为重构期默认部署 ref 是 `feature/refactor-split`，**部署机本地那个叫 `main` 的分支会指向 feature 分支的提交链**——这是设计的镜像状态，不是污染、不是 bug、不需要"修复"
 - 判断真实代码状态看 `origin/*`，不看部署机本地分支名
 - 部署一律走工作流，**禁止手动 ssh 改部署机 git / 重启 systemd**——那样没 CI 留痕、跳过 healthz 探针 / unit 同步 / 沙箱目录预建。唯一例外是 deploy.sh 不管的 LM Studio 模型加载（`lms load/unload`），本就在流程外
-- `uv sync --frozen --no-dev`：尊重锁文件，prod 绝不静默重解析
+- `uv sync`（plain）：deploy.sh 第 138 行实跑 plain `uv sync`（读 pyproject + uv.lock），不带 `--extra embserver`，所以部署机不拉 torch/transformers
 - schema 无显式迁移步骤：app 首次 touch DB 时幂等建表
 - embserver unit 只在已安装时才重启（`systemctl --user cat` 探测），torch/transformers 走 optional extra，`deploy.sh` 的 plain `uv sync` 不拉
 

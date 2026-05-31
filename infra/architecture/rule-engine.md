@@ -75,16 +75,16 @@ votes = {}
 # 1. 规则层（命中即按 W["rule"] 计票）
 rule_cat = rules.match(app, url, title)
 if rule_cat:
-    add_vote(votes, rule_cat, W["rule"])
+    _add_vote(votes, rule_cat, W["rule"])
 
 # 2. VLM 建议（票重 = 置信度 × W["vlm"]）
 if vlm_pred:
-    add_vote(votes, vlm_pred.category, vlm_pred.confidence * W["vlm"])
+    _add_vote(votes, vlm_pred.category, vlm_pred.confidence * W["vlm"])
 
 # 3. KNN 邻居（票重 = 距离衰减 × 来源权重 × confirm_weight）
 for nb in knn_neighbors:
     w = exp(-alpha * nb.distance) * W[nb.source] * nb.confirm_weight
-    add_vote(votes, nb.category, w)
+    _add_vote(votes, nb.category, w)
 ```
 
 - 距离衰减：`_decay(distance, alpha=1.0) = exp(-alpha * distance)`

@@ -151,7 +151,7 @@ await serve(components, config, quit_event, extra_tasks={"capture": capture_svc.
 
 - **Database**：`server/db/sqlite.py:SqliteDatabase` 是实现，`server/db/__init__.py` 导出 `Database = SqliteDatabase` 别名。所有调用方都写 `from timetrace.server.db import Database`。等 PostgresDatabase 进来（多设备/远程的持久后端），这个别名升级为 `typing.Protocol`，调用方一行不动。
 - **BlobStorage**：`server/storage/blob.py:LocalBlobStorage` 写本地文件系统。同理可升级为 Protocol 接 S3/对象存储。
-- **Queue**：worker 当前直接吃 `analysis_tasks` 表（SQLite 状态字段驱动，无需 Redis），未来若要分布式可抽象成 Protocol。
+- **Queue**：worker 当前直接吃 `analysis_results.status` 状态机（`claim_next_task` 用 `UPDATE…RETURNING` 原子抢占 `pending_vlm` 行，无独立任务表、无需 Redis），未来若要分布式可抽象成 Protocol。
 
 `BackendClient` 已经是 Protocol（client 侧先行示范了这个模式）；server 侧三件套是同一招的待落地版本。
 

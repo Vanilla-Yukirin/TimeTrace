@@ -31,12 +31,13 @@ auth_users
   password_must_change INTEGER  -- 1 = 首登强制改密
 
 auth_sessions
-  session_id   TEXT PRIMARY KEY   -- secrets.token_urlsafe(32)，~256 bit 熵
-  username     TEXT
-  expires_at   INTEGER             -- epoch ms
+  id           TEXT PRIMARY KEY   -- session token 本体 = secrets.token_urlsafe(32)，~256 bit 熵
+  username     TEXT NOT NULL REFERENCES auth_users(username)
+  created_at   INTEGER NOT NULL    -- epoch ms，建会话时刻
+  last_seen_at INTEGER NOT NULL    -- 每次 resolve 顺手 touch（非安全门，仅 telemetry）
+  expires_at   INTEGER NOT NULL    -- epoch ms
   user_agent   TEXT                -- 审计用
   ip           TEXT                -- 审计用
-  last_seen_at INTEGER             -- 每次 resolve 顺手 touch（非安全门，仅 telemetry）
 ```
 
 ### 密码哈希
@@ -63,7 +64,7 @@ auth_sessions
 
 ### Session 生命周期
 
-- 登录成功 → `secrets.token_urlsafe(32)` 铸一个 session_id → 落 `auth_sessions`，`expires_at = now + 30 天` → set HttpOnly cookie
+- 登录成功 → `secrets.token_urlsafe(32)` 铸一个 session token（即 `auth_sessions.id`）→ 落 `auth_sessions`，`expires_at = now + 30 天` → set HttpOnly cookie
 - 每个 user 的并发会话有上限（`max_sessions_per_user=10`）：超出时 `prune_sessions_over_cap` 驱逐最老的，防 30 天会话集合无界增长、让陈旧的被抓会话自然老化
 - `resolve_session`：过期则惰性删除返回 `None`；user 行消失（孤儿会话）也删；否则 touch `last_seen_at`
 - logout → 删该会话行 + 清 cookie

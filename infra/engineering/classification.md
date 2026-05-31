@@ -91,9 +91,9 @@ confidence = top1_score / (top1_score + top2_score)
 用户在 UI 修改类别
       │
       ▼
-feedback 记录 (record_id, old_cat, new_cat, source=user_edit, ts)
+feedback 记录 (id, record_id, action, category_before, category_after, created_at)
       │
-      ├──► 更新该样本 category_final + category_source=user_edit
+      ├──► 更新该样本 category_final（来源记在 decision_trace，无 category_source 列）
       │
       └──► 作为高权重邻居（user_edit=5.0）回灌 KNN 投票库
 ```

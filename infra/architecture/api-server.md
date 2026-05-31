@@ -20,7 +20,7 @@
 
 - **FastAPI** + **Uvicorn**（ASGI）
 - app 工厂：[`server/api/app.py::create_app`](../../src/timetrace/server/api/app.py)
-- 组件装配：[`server/bootstrap.py`](../../src/timetrace/server/bootstrap.py) 的 `build_server_components` + `create_app_from_components`——单进程（`main.py`）和双进程（`timetrace-server`）共享，避免两入口漂移
+- 组件装配：[`server/bootstrap.py`](../../src/timetrace/server/bootstrap.py) 的 `build_server_components` 先构建所有单例（DB / PHashIndex / VLM / Auth / UserStore 等），再调 `create_app` 工厂建出应用——`create_app` 被单进程（`main.py`）和双进程（`timetrace-server`）共享，避免两入口漂移
 - `create_app` 把 db / phash_index / vlm_client / blob_storage / auth / users / auth_cfg / thumbs_dir 挂到 `app.state`，路由从 `request.app.state` 取
 
 `create_app` 的参数大多 `Optional`：传 `None` 则对应功能关闭或路由开放。`users=None`（旧测试 fixture）时业务路由不挂鉴权依赖——这是测试兼容的有意设计，不是漏 gate。
