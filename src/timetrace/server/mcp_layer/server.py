@@ -27,6 +27,8 @@ import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from openai import AsyncOpenAI
 
+from timetrace.server.agent import tools as agent_tools
+
 if TYPE_CHECKING:
     from timetrace.common.config import VLMConfig
     from timetrace.server.db import Database
@@ -117,30 +119,7 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             Each record has ``id``, ``ts_start``, ``ts_end``, ``app_name``,
             ``window_title``, ``vlm_desc``, ``thumb_path``.
         """
-        limit = min(max(1, limit), 100)
-        now_ms = int(time.time() * 1000)
-        start_ms = now_ms - hours_back * 3600 * 1000 if hours_back else 0
-        rows = await db.query_records(
-            start_ms=start_ms,
-            end_ms=now_ms,
-            limit=limit,
-            keyword=query,
-        )
-        return {
-            "query": query,
-            "items": [
-                {
-                    "id": r["id"],
-                    "ts_start_iso": _ms_to_iso(r.get("ts_start")),
-                    "ts_end_iso": _ms_to_iso(r.get("ts_end")),
-                    "app_name": r.get("app_name"),
-                    "window_title": r.get("window_title"),
-                    "vlm_desc": r.get("vlm_desc"),
-                    "category": r.get("category_final"),
-                }
-                for r in rows
-            ],
-        }
+        return await agent_tools.search_activity(db, query, limit=limit, hours_back=hours_back)
 
     @mcp.tool()
     async def get_recent_activity(hours_back: int = 24, limit: int = 50) -> dict:
@@ -153,23 +132,7 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             hours_back: time window in hours (default 24, cap 720 = 30 days).
             limit: max records (default 50, cap 200).
         """
-        hours_back = min(max(1, hours_back), 720)
-        limit = min(max(1, limit), 200)
-        now_ms = int(time.time() * 1000)
-        start_ms = now_ms - hours_back * 3600 * 1000
-        rows = await db.query_records(start_ms=start_ms, end_ms=now_ms, limit=limit)
-        return {
-            "hours_back": hours_back,
-            "items": [
-                {
-                    "ts_start_iso": _ms_to_iso(r.get("ts_start")),
-                    "app_name": r.get("app_name"),
-                    "window_title": r.get("window_title"),
-                    "vlm_desc": (r.get("vlm_desc") or "")[:200],
-                }
-                for r in rows
-            ],
-        }
+        return await agent_tools.get_recent_activity(db, hours_back=hours_back, limit=limit)
 
     @mcp.tool()
     async def get_app_breakdown(hours_back: int = 24, top_n: int = 20) -> dict:
@@ -185,38 +148,31 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             hours_back: time window (default 24, cap 720).
             top_n: max apps to return, sorted by duration desc (default 20).
         """
-        hours_back = min(max(1, hours_back), 720)
-        now_ms = int(time.time() * 1000)
-        start_ms = now_ms - hours_back * 3600 * 1000
-        # Use raw SQL — query_records doesn't aggregate.
-        async with db.lock:
-            async with db.conn.execute(
-                """SELECT app_name,
-                          COUNT(*) AS records,
-                          SUM(COALESCE(ts_end, ts_start) - ts_start) AS total_ms
-                   FROM records
-                   WHERE ts_start BETWEEN ? AND ?
-                     AND app_name != ''
-                   GROUP BY app_name
-                   ORDER BY total_ms DESC
-                   LIMIT ?""",
-                (start_ms, now_ms, top_n),
-            ) as cur:
-                rows = await cur.fetchall()
-        items = [
-            {
-                "app_name": r["app_name"],
-                "records": r["records"],
-                "total_seconds": int((r["total_ms"] or 0) / 1000),
-            }
-            for r in rows
-        ]
-        total_seconds = sum(it["total_seconds"] for it in items)
-        return {
-            "hours_back": hours_back,
-            "total_seconds": total_seconds,
-            "items": items,
-        }
+        return await agent_tools.get_app_breakdown(db, hours_back=hours_back, top_n=top_n)
+
+    @mcp.tool()
+    async def get_category_stats(hours_back: int = 24, top_n: int = 20) -> dict:
+        """Aggregate active duration per category (the AI-assigned label) over the
+        last N hours. Use for "how is my time split across kinds of activity".
+        Records not yet classified bucket under ``uncategorized``.
+
+        Args:
+            hours_back: time window (default 24, cap 720).
+            top_n: max categories, sorted by duration desc (default 20, cap 50).
+        """
+        return await agent_tools.get_category_stats(db, hours_back=hours_back, top_n=top_n)
+
+    @mcp.tool()
+    async def apply_label(record_id: str, category: str, note: str | None = None) -> dict:
+        """Set/replace a record's category label — the ONLY write tool.
+
+        Read everything, label only: this cannot delete or modify a record or
+        its screenshots. ``category`` accepts a category id (``work/coding``) or
+        its display name (``工作/编程``); ``record_id`` comes from
+        ``search_activity`` / ``get_recent_activity``. Returns an ``error`` field
+        (not an exception) on unknown record/category.
+        """
+        return await agent_tools.apply_label(db, record_id, category, note=note)
 
     @mcp.tool()
     async def ask_agent(question: str, hours_back: int = 24, ctx: Context | None = None) -> dict:
@@ -267,8 +223,7 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             if not rows:
                 return {
                     "answer": (
-                        "数据库里还没有任何活动记录。"
-                        "先启动 timetrace-client 采集一段时间再试。"
+                        "数据库里还没有任何活动记录。先启动 timetrace-client 采集一段时间再试。"
                     ),
                     "records_consulted": 0,
                     "model": vlm_cfg.model,
