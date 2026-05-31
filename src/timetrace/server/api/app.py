@@ -20,7 +20,7 @@ from timetrace.server.api.mcp_auth import BearerOnlyMiddleware
 from timetrace.server.api.routes import admin as admin_routes
 from timetrace.server.api.routes import agent as agent_routes
 from timetrace.server.api.routes import auth as auth_routes
-from timetrace.server.api.routes import feedback, ingest, records, search, thumbs
+from timetrace.server.api.routes import feedback, ingest, records, reports, search, thumbs
 from timetrace.server.auth import make_bearer_dependency
 from timetrace.server.mcp_layer.server import build_mcp_server
 
@@ -113,6 +113,7 @@ def create_app(
     app.include_router(search.router, prefix="/v1", dependencies=business_deps)
     app.include_router(feedback.router, prefix="/v1", dependencies=business_deps)
     app.include_router(agent_routes.router, prefix="/v1", dependencies=business_deps)
+    app.include_router(reports.router, prefix="/v1", dependencies=business_deps)
 
     # Phase 2 (login system): /thumbs is its own route module because the
     # FileResponse path-traversal logic doesn't belong on records/etc. — but

@@ -146,6 +146,22 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at  INTEGER NOT NULL
 );
 
+-- AI-generated insight dashboards ("看板"). One row per generation; the latest
+-- per scope is what the UI shows. content is an HTML fragment authored by the
+-- agent from real activity data. We keep history (no UPDATE) so regenerations
+-- don't lose prior reports and a future view can diff them.
+CREATE TABLE IF NOT EXISTS reports (
+    id            TEXT PRIMARY KEY,
+    scope         TEXT NOT NULL,
+    period_start  INTEGER NOT NULL,
+    period_end    INTEGER NOT NULL,
+    format        TEXT NOT NULL DEFAULT 'html',
+    content       TEXT NOT NULL,
+    model         TEXT,
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reports_scope_created ON reports(scope, created_at DESC);
+
 -- Full-text search across record metadata + VLM description.
 -- trigram tokenizer is CJK-friendly (no whitespace tokenization needed).
 -- record_id is UNINDEXED — stored for JOIN but not searchable.
@@ -1178,6 +1194,48 @@ class SqliteDatabase:
                 (key, value_json, now),
             )
             await self.conn.commit()
+
+    # ------------------------------------------------------------------ #
+    # Reports (AI-generated insight dashboards)                            #
+    # ------------------------------------------------------------------ #
+
+    async def insert_report(
+        self,
+        scope: str,
+        period_start: int,
+        period_end: int,
+        fmt: str,
+        content: str,
+        model: str | None = None,
+    ) -> str:
+        """Store one generated report. History is kept (append-only)."""
+        report_id = _new_id()
+        now = _now_ms()
+        async with self._lock:
+            await self.conn.execute(
+                """INSERT INTO reports
+                   (id, scope, period_start, period_end, format, content, model, created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (report_id, scope, period_start, period_end, fmt, content, model, now),
+            )
+            await self.conn.commit()
+        return report_id
+
+    async def get_latest_report(self, scope: str) -> dict | None:
+        """Return the most recently generated report for ``scope``, or None.
+
+        Ties on created_at (same-ms inserts in tests) break by rowid so "latest"
+        is always the last-inserted row.
+        """
+        async with self._lock:
+            async with self.conn.execute(
+                """SELECT id, scope, period_start, period_end, format, content, model, created_at
+                   FROM reports WHERE scope=?
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (scope,),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------ #
     # Housekeeping                                                         #

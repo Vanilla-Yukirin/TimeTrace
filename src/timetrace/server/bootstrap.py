@@ -41,6 +41,10 @@ from timetrace.server.worker.loop import AnalysisWorker
 logger = structlog.get_logger(__name__)
 
 _STALE_TASK_RECLAIM_INTERVAL_S = 60
+# AI 看板定时生成：首次延迟（给采集/启动让路）+ 间隔。LLM 调用开销大，间隔
+# 取 30min（用户要求的最短档）。
+_REPORT_INITIAL_DELAY_S = 30
+_REPORT_INTERVAL_S = 1800
 
 
 @dataclass
@@ -179,7 +183,7 @@ async def serve(
         logger.info("server.stop_requested")
         server.should_exit = True
         for task in asyncio.all_tasks():
-            if task.get_name() in {"worker", "reclaim"} | extra_task_names:
+            if task.get_name() in {"worker", "reclaim", "report_scheduler"} | extra_task_names:
                 task.cancel()
 
     async def _reclaim_loop() -> None:
@@ -192,12 +196,30 @@ async def serve(
             if purged:
                 logger.info("auth.sessions_purged", count=purged)
 
+    async def _report_scheduler() -> None:
+        # AI 看板：定时让 agent 生成 HTML 洞察报告。无 VLM 时直接退出，不影响
+        # 其它任务；异常被吞掉只记日志，单次失败不拖垮 TaskGroup。
+        if config.vlm is None:
+            logger.info("report.scheduler_disabled", reason="no_vlm")
+            return
+        from timetrace.server.report.generator import DEFAULT_SCOPE, ReportGenerator
+
+        gen = ReportGenerator(components.db, config.vlm)
+        await asyncio.sleep(_REPORT_INITIAL_DELAY_S)
+        while True:
+            try:
+                await gen.generate(DEFAULT_SCOPE)
+            except Exception:  # noqa: BLE001
+                logger.warning("report.scheduler_generate_failed", exc_info=True)
+            await asyncio.sleep(_REPORT_INTERVAL_S)
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(components.worker.run(), name="worker")
             tg.create_task(server.serve(), name="api")
             tg.create_task(_watch_quit(), name="quit_watcher")
             tg.create_task(_reclaim_loop(), name="reclaim")
+            tg.create_task(_report_scheduler(), name="report_scheduler")
             for name, coro in (extra_tasks or {}).items():
                 tg.create_task(coro, name=name)
     finally:

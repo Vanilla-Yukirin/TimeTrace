@@ -80,10 +80,15 @@ class AgentRunner:
         vlm_cfg: VLMConfig,
         *,
         max_iterations: int = _MAX_ITERATIONS,
+        system_prompt: str | None = None,
     ) -> None:
         self._db = db
         self._cfg = vlm_cfg
         self._max_iterations = max_iterations
+        # None → the default chat persona. Callers (e.g. the report generator)
+        # pass their own persona; we append the current time rather than
+        # ``.format`` it so prompts containing literal ``{}`` (CSS) are safe.
+        self._system_prompt = system_prompt
         self._client = AsyncOpenAI(base_url=vlm_cfg.base_url, api_key=vlm_cfg.api_key)
 
     async def aclose(self) -> None:
@@ -104,7 +109,11 @@ class AgentRunner:
         """Drive the loop, yielding event dicts. ``messages`` is the chat history
         ([{role, content}, ...]); the latest user message is last."""
         now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        convo: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT.format(now=now)}]
+        if self._system_prompt is not None:
+            system_content = f"{self._system_prompt}\n\n当前时间：{now}。"
+        else:
+            system_content = _SYSTEM_PROMPT.format(now=now)
+        convo: list[dict] = [{"role": "system", "content": system_content}]
         convo.extend({"role": m["role"], "content": m["content"]} for m in messages)
         extra = self._extra_body()
         tools_used: list[str] = []
