@@ -3,7 +3,7 @@ import type { ApiRecord } from '@/types/api'
 import { useTimelineState } from '@/hooks/useTimelineState'
 import { useTheme } from '@/contexts/ThemeContext'
 import { formatTime } from '@/lib/dateUtils'
-import { renderTimeline, CANVAS_H, TIMELINE_PALETTES } from './useCanvasRenderer'
+import { renderTimeline, hitTest, CANVAS_H, TIMELINE_PALETTES } from './useCanvasRenderer'
 import { useCanvasEvents } from './useCanvasEvents'
 import { TimelineTooltip } from './TimelineTooltip'
 
@@ -12,11 +12,10 @@ interface TimelineCanvasProps {
   date: Date
   selectedRecordId: string | null
   onSelectRecord: (id: string | null) => void
-  onGoToday: () => void
 }
 
 export function TimelineCanvas({
-  records, date, selectedRecordId, onSelectRecord, onGoToday,
+  records, date, selectedRecordId, onSelectRecord,
 }: TimelineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -26,6 +25,15 @@ export function TimelineCanvas({
   const { viewport, setViewport, initViewport, zoom, pan, goToday } = useTimelineState(date)
   const { theme } = useTheme()
   const palette = TIMELINE_PALETTES[theme]
+
+  // Touch gesture state persists across re-renders (the render effect re-runs on
+  // every pan/zoom, so this can't live in the touch effect's closure). records /
+  // viewport are read via refs so tap-hit-testing always sees current values.
+  const touchRef = useRef({ mode: 'none' as 'none' | 'pan' | 'pinch', lastX: 0, lastDist: 0, startX: 0, startY: 0, moved: false })
+  const recordsRef = useRef(records)
+  recordsRef.current = records
+  const viewportRef = useRef(viewport)
+  viewportRef.current = viewport
 
   // Track whether the canvas has been initialized at least once
   const initializedRef = useRef(false)
@@ -89,6 +97,64 @@ export function TimelineCanvas({
     return () => canvas.removeEventListener('wheel', onWheel)
   }, [onWheel])
 
+  // Touch: 1-finger drag = pan, 2-finger = pinch-zoom, tap = select. zoom/pan
+  // are stable (useCallback) and onSelectRecord is memoized, so this attaches
+  // once and is not torn down mid-gesture. preventDefault + touch-action:none
+  // stop the browser's own scroll/zoom and synthesized mouse events.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const g = touchRef.current
+    const distOf = (a: Touch, b: Touch) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        const t = e.touches[0]
+        g.mode = 'pan'; g.lastX = t.clientX; g.startX = t.clientX; g.startY = t.clientY; g.moved = false
+      } else if (e.touches.length >= 2) {
+        g.mode = 'pinch'; g.lastDist = distOf(e.touches[0], e.touches[1])
+        setHoverRecordId(null)
+      }
+      e.preventDefault()
+    }
+    const onMove = (e: TouchEvent) => {
+      if (g.mode === 'pan' && e.touches.length === 1) {
+        const t = e.touches[0]
+        if (Math.abs(t.clientX - g.startX) > 6 || Math.abs(t.clientY - g.startY) > 6) g.moved = true
+        pan(t.clientX - g.lastX)
+        g.lastX = t.clientX
+        e.preventDefault()
+      } else if (g.mode === 'pinch' && e.touches.length >= 2) {
+        const rect = canvas.getBoundingClientRect()
+        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left
+        const newDist = distOf(e.touches[0], e.touches[1])
+        if (newDist > 0 && g.lastDist > 0) zoom(g.lastDist / newDist, midX)
+        g.lastDist = newDist
+        e.preventDefault()
+      }
+    }
+    const onEnd = (e: TouchEvent) => {
+      if (g.mode === 'pan' && !g.moved && e.changedTouches.length >= 1) {
+        const t = e.changedTouches[0]
+        const rect = canvas.getBoundingClientRect()
+        const hit = hitTest(t.clientX - rect.left, t.clientY - rect.top, recordsRef.current, viewportRef.current)
+        onSelectRecord(hit?.record.id ?? null)
+      }
+      if (e.touches.length === 0) g.mode = 'none'
+      else if (e.touches.length === 1) { g.mode = 'pan'; g.lastX = e.touches[0].clientX; g.moved = true }
+    }
+    canvas.addEventListener('touchstart', onStart, { passive: false })
+    canvas.addEventListener('touchmove', onMove, { passive: false })
+    canvas.addEventListener('touchend', onEnd)
+    canvas.addEventListener('touchcancel', onEnd)
+    return () => {
+      canvas.removeEventListener('touchstart', onStart)
+      canvas.removeEventListener('touchmove', onMove)
+      canvas.removeEventListener('touchend', onEnd)
+      canvas.removeEventListener('touchcancel', onEnd)
+    }
+  }, [zoom, pan, onSelectRecord])
+
   const hoverRecord = hoverRecordId ? records.find(r => r.id === hoverRecordId) : null
 
   return (
@@ -108,7 +174,7 @@ export function TimelineCanvas({
           ref={canvasRef}
           role="img"
           aria-label={`活动时间轴，共 ${records.length} 条活动。键盘用户可用下方列表逐条查看。`}
-          style={{ display: 'block', userSelect: 'none' }}
+          style={{ display: 'block', userSelect: 'none', touchAction: 'none' }}
           onMouseDown={e => onMouseDown(e.nativeEvent)}
           onMouseMove={e => {
             onMouseMove(e.nativeEvent)
@@ -145,7 +211,6 @@ export function TimelineCanvas({
       >
         <button aria-label="缩小" title="缩小" onClick={() => zoom(1.5, viewport.canvasWidth / 2)} style={iconBtn}>−</button>
         <button onClick={() => goToday(viewport.canvasWidth)} style={textBtn}>整天</button>
-        <button onClick={onGoToday} style={textBtn}>今天</button>
         <button aria-label="放大" title="放大" onClick={() => zoom(0.67, viewport.canvasWidth / 2)} style={iconBtn}>+</button>
       </div>
 

@@ -187,7 +187,6 @@ export function TimelinePage() {
             date={selectedDate}
             selectedRecordId={selectedRecordId}
             onSelectRecord={handleSelectRecord}
-            onGoToday={handleGoToday}
           />
         </div>
         {detail}
@@ -239,7 +238,6 @@ export function TimelinePage() {
             date={selectedDate}
             selectedRecordId={selectedRecordId}
             onSelectRecord={handleSelectRecord}
-            onGoToday={handleGoToday}
           />
         </div>
       </div>
