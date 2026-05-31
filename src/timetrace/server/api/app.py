@@ -20,7 +20,7 @@ from timetrace.server.api.mcp_auth import BearerOnlyMiddleware
 from timetrace.server.api.routes import admin as admin_routes
 from timetrace.server.api.routes import agent as agent_routes
 from timetrace.server.api.routes import auth as auth_routes
-from timetrace.server.api.routes import feedback, ingest, records, reports, search, thumbs
+from timetrace.server.api.routes import feedback, ingest, records, reports, search, skill, thumbs
 from timetrace.server.auth import make_bearer_dependency
 from timetrace.server.mcp_layer.server import build_mcp_server
 
@@ -129,6 +129,11 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict:
         return {"status": "ok"}
+
+    # Claude Code skill download — open (it's docs; the MCP it describes is still
+    # bearer-gated). A local agent fetches /skill and installs the returned
+    # markdown so it learns to drive TimeTrace over MCP.
+    app.include_router(skill.router)
 
     # /docs + /openapi.json behind cookie session — don't expose the API map
     # to public scanners. Only wired when ``users`` is configured (test/legacy
