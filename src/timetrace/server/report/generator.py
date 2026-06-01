@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 import structlog
@@ -65,6 +66,31 @@ class ReportGenerator:
         self._cfg = vlm_cfg
 
     async def generate(self, scope: str = DEFAULT_SCOPE) -> dict:
+        """Generate + persist a report, returning the final record (non-streaming).
+
+        Used by the 30-min scheduler and the legacy POST route. Internally drains
+        ``generate_stream`` and returns its terminal ``report`` payload.
+        """
+        final: dict | None = None
+        async for ev in self.generate_stream(scope):
+            if ev["type"] == "report":
+                final = ev["report"]
+            elif ev["type"] == "error":
+                raise RuntimeError(ev["message"])
+        if final is None:  # pragma: no cover - stream always ends in report or error
+            raise RuntimeError("report stream ended without a result")
+        return final
+
+    async def generate_stream(self, scope: str = DEFAULT_SCOPE) -> AsyncIterator[dict]:
+        """Run the agent loop and yield progress events, then persist + yield the
+        final report. Lets the UI show tool steps + live token output.
+
+        Event shapes (``type`` discriminates):
+          {"type":"step","phase":"tool_call"|"tool_result", "tool":.., ...}
+          {"type":"token","text":..}                       # live report HTML
+          {"type":"report","report":{id,scope,...,content}}  # terminal success
+          {"type":"error","message":..}                      # terminal failure
+        """
         hours = SCOPE_HOURS.get(scope, 24)
         now_ms = int(time.time() * 1000)
         start_ms = now_ms - hours * 3600 * 1000
@@ -77,8 +103,12 @@ class ReportGenerator:
             ):
                 if ev["type"] == "token":
                     parts.append(ev["text"])
+                    yield ev
+                elif ev["type"] == "step":
+                    yield ev
                 elif ev["type"] == "error":
-                    raise RuntimeError(ev["message"])
+                    yield ev
+                    return
         finally:
             await runner.aclose()
         html = _clean_html("".join(parts))
@@ -91,12 +121,16 @@ class ReportGenerator:
             model=self._cfg.model,
         )
         logger.info("report.saved", scope=scope, report_id=report_id, html_len=len(html))
-        return {
-            "id": report_id,
-            "scope": scope,
-            "period_start": start_ms,
-            "period_end": now_ms,
-            "format": "html",
-            "content": html,
-            "model": self._cfg.model,
+        yield {
+            "type": "report",
+            "report": {
+                "id": report_id,
+                "scope": scope,
+                "period_start": start_ms,
+                "period_end": now_ms,
+                "format": "html",
+                "content": html,
+                "model": self._cfg.model,
+                "created_at": now_ms,
+            },
         }

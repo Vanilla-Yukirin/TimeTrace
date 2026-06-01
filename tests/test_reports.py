@@ -71,3 +71,64 @@ async def test_report_generator_propagates_error(db, monkeypatch):
     gen = gmod.ReportGenerator(db, VLMConfig(base_url="x", api_key="x", model="m"))
     with pytest.raises(RuntimeError, match="boom"):
         await gen.generate("recent_24h")
+
+
+async def test_generate_stream_yields_steps_tokens_then_report(db, monkeypatch):
+    import timetrace.server.report.generator as gmod
+
+    class _StubRunner:
+        def __init__(self, *a, **k):
+            pass
+
+        async def run(self, messages, **k):
+            yield {"type": "step", "phase": "tool_call", "tool": "get_app_breakdown", "args": {}}
+            yield {
+                "type": "step",
+                "phase": "tool_result",
+                "tool": "get_app_breakdown",
+                "summary": "3 条",
+            }
+            yield {"type": "token", "text": "<div>今天"}
+            yield {"type": "token", "text": "很努力</div>"}
+            yield {"type": "done", "records_consulted": 1, "model": "m", "tools_used": ["x"]}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(gmod, "AgentRunner", _StubRunner)
+    gen = gmod.ReportGenerator(db, VLMConfig(base_url="x", api_key="x", model="m"))
+    events = [ev async for ev in gen.generate_stream("recent_24h")]
+    types = [e["type"] for e in events]
+    assert types.count("step") == 2
+    assert types.count("token") == 2
+    # terminal event is the persisted report
+    assert types[-1] == "report"
+    report = events[-1]["report"]
+    assert report["content"] == "<div>今天很努力</div>"
+    assert report["scope"] == "recent_24h"
+    assert "created_at" in report
+    # and it actually landed in the DB
+    latest = await db.get_latest_report("recent_24h")
+    assert latest["content"] == "<div>今天很努力</div>"
+
+
+async def test_generate_stream_emits_error_event_no_report(db, monkeypatch):
+    import timetrace.server.report.generator as gmod
+
+    class _ErrRunner:
+        def __init__(self, *a, **k):
+            pass
+
+        async def run(self, messages, **k):
+            yield {"type": "error", "message": "kaboom"}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(gmod, "AgentRunner", _ErrRunner)
+    gen = gmod.ReportGenerator(db, VLMConfig(base_url="x", api_key="x", model="m"))
+    events = [ev async for ev in gen.generate_stream("recent_24h")]
+    assert events[-1]["type"] == "error"
+    assert not any(e["type"] == "report" for e in events)
+    # nothing persisted on failure
+    assert await db.get_latest_report("recent_24h") is None

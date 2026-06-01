@@ -308,6 +308,9 @@ body {
 .tt-drawer-content[data-state='open'] { animation: tt-drawer-in 0.26s cubic-bezier(0.16, 1, 0.3, 1); }
 .tt-sheet-content[data-state='open']  { animation: tt-sheet-in 0.24s cubic-bezier(0.16, 1, 0.3, 1); }
 
+@keyframes tt-spin { to { transform: rotate(360deg); } }
+.tt-spin { animation: tt-spin 0.9s linear infinite; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }

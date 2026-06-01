@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
-import { reportsApi, type Report } from '@/lib/agentApi'
+import { useEffect, useRef, useState } from 'react'
+import { RefreshCw, Wrench } from 'lucide-react'
+import { reportsApi, type Report, type ReportEvent } from '@/lib/agentApi'
 import { CatMascot } from '@/components/brand/CatMascot'
 
 const SCOPES = [
@@ -8,6 +8,19 @@ const SCOPES = [
   { key: 'recent_24h', label: '最近 24 小时' },
   { key: 'recent_7d', label: '最近 7 天' },
 ]
+
+const TOOL_LABELS: Record<string, string> = {
+  search_activity: '检索活动',
+  get_recent_activity: '拉取最近活动',
+  get_app_breakdown: '统计应用时长',
+  get_category_stats: '统计分类时长',
+  apply_label: '打标签',
+}
+
+interface ToolStep {
+  tool: string
+  summary?: string
+}
 
 function fmtTime(ms: number): string {
   const d = new Date(ms)
@@ -19,8 +32,14 @@ export function DashboardPage() {
   const [scope, setScope] = useState('recent_24h')
   const [report, setReport] = useState<Report | null>(null)
   const [loading, setLoading] = useState(true)
-  const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Generation (streaming) state — persisted across renders so the button stays
+  // disabled until the run finishes, and the live progress survives re-renders.
+  const [generating, setGenerating] = useState(false)
+  const [steps, setSteps] = useState<ToolStep[]>([])
+  const [liveText, setLiveText] = useState('')
+  const genScopeRef = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -43,15 +62,46 @@ export function DashboardPage() {
   }, [scope])
 
   async function regenerate() {
+    if (generating) return // guard against double-fire
     setGenerating(true)
     setError(null)
+    setSteps([])
+    setLiveText('')
+    genScopeRef.current = scope
     try {
-      const r = await reportsApi.generate(scope)
-      setReport(r)
+      for await (const ev of reportsApi.generateStream(scope)) {
+        applyEvent(ev)
+      }
     } catch (e) {
       setError(String(e))
     } finally {
       setGenerating(false)
+      setLiveText('')
+      setSteps([])
+      genScopeRef.current = null
+    }
+  }
+
+  function applyEvent(ev: ReportEvent) {
+    if (ev.type === 'step' && ev.phase === 'tool_call') {
+      setSteps((prev) => [...prev, { tool: ev.tool }])
+    } else if (ev.type === 'step' && ev.phase === 'tool_result') {
+      setSteps((prev) => {
+        const next = [...prev]
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].tool === ev.tool && next[i].summary === undefined) {
+            next[i] = { ...next[i], summary: ev.summary }
+            break
+          }
+        }
+        return next
+      })
+    } else if (ev.type === 'token') {
+      setLiveText((prev) => prev + ev.text)
+    } else if (ev.type === 'report') {
+      setReport(ev.report)
+    } else if (ev.type === 'error') {
+      setError(ev.message)
     }
   }
 
@@ -61,19 +111,20 @@ export function DashboardPage() {
         <div
           style={{
             display: 'flex',
-            alignItems: 'center',
+            alignItems: 'flex-start',
             justifyContent: 'space-between',
             flexWrap: 'wrap',
             gap: 12,
-            marginBottom: 18,
+            marginBottom: 8,
           }}
         >
-          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 440, lineHeight: 1.6 }}>
             AI 自动分析你的真实活动，抓特点、给洞察。系统每 30 分钟自动刷新一份。
           </div>
           <button
             onClick={regenerate}
             disabled={generating}
+            title={generating ? '正在生成，请稍候…' : '让 AI 现在重新分析一份'}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -81,18 +132,23 @@ export function DashboardPage() {
               padding: '8px 16px',
               borderRadius: 'var(--radius-md)',
               border: 'none',
-              background: 'var(--grad-accent)',
-              color: '#fff',
+              background: generating ? 'var(--bg-raised)' : 'var(--grad-accent)',
+              color: generating ? 'var(--text-muted)' : '#fff',
               fontWeight: 600,
               fontSize: 13,
-              cursor: generating ? 'wait' : 'pointer',
-              opacity: generating ? 0.7 : 1,
-              boxShadow: 'var(--shadow-glow)',
+              cursor: generating ? 'not-allowed' : 'pointer',
+              boxShadow: generating ? 'none' : 'var(--shadow-glow)',
+              flexShrink: 0,
             }}
           >
-            <RefreshCw size={14} style={generating ? { opacity: 0.6 } : undefined} />
+            <RefreshCw size={14} className={generating ? 'tt-spin' : undefined} />
             {generating ? '生成中…' : '重新生成'}
           </button>
+        </div>
+
+        {/* Cost/time hint — set expectations before they click. */}
+        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 18, opacity: 0.85 }}>
+          ⏳ 生成由本地大模型实时分析，耗时约 10–60 秒、消耗算力，期间按钮不可点；请耐心等待。
         </div>
 
         <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -100,6 +156,7 @@ export function DashboardPage() {
             <button
               key={s.key}
               onClick={() => setScope(s.key)}
+              disabled={generating}
               style={{
                 padding: '6px 14px',
                 borderRadius: 'var(--radius-pill)',
@@ -108,7 +165,8 @@ export function DashboardPage() {
                 color: scope === s.key ? 'var(--accent)' : 'var(--text-secondary)',
                 fontWeight: scope === s.key ? 600 : 500,
                 fontSize: 13,
-                cursor: 'pointer',
+                cursor: generating ? 'not-allowed' : 'pointer',
+                opacity: generating && scope !== s.key ? 0.5 : 1,
               }}
             >
               {s.label}
@@ -132,11 +190,76 @@ export function DashboardPage() {
           </div>
         )}
 
+        {/* Live generation panel: tool steps + streaming raw output. */}
+        {generating && (
+          <div
+            style={{
+              padding: '16px 18px',
+              borderRadius: 'var(--radius-lg)',
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--bg-border)',
+              marginBottom: 18,
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 10 }}>
+              ✨ AI 正在分析你的活动…
+            </div>
+            {steps.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                {steps.map((s, i) => (
+                  <span
+                    key={i}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      padding: '4px 10px',
+                      borderRadius: 'var(--radius-pill)',
+                      background: 'var(--bg-base)',
+                      border: '1px solid var(--bg-border)',
+                      color: 'var(--text-muted)',
+                      fontSize: 12,
+                    }}
+                  >
+                    <Wrench size={12} aria-hidden="true" />
+                    {TOOL_LABELS[s.tool] ?? s.tool}
+                    {s.summary ? ` · ${s.summary}` : '…'}
+                  </span>
+                ))}
+              </div>
+            )}
+            {liveText && (
+              <pre
+                style={{
+                  margin: 0,
+                  maxHeight: 200,
+                  overflowY: 'auto',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                  fontSize: 11.5,
+                  lineHeight: 1.5,
+                  color: 'var(--text-secondary)',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  background: 'var(--bg-base)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '10px 12px',
+                }}
+              >
+                {liveText}
+                <span style={{ opacity: 0.6 }}> ▍</span>
+              </pre>
+            )}
+            {steps.length === 0 && !liveText && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>正在连接本地大模型…</div>
+            )}
+          </div>
+        )}
+
         {loading ? (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
             加载中…
           </div>
-        ) : !report ? (
+        ) : !report && !generating ? (
           <div
             style={{
               padding: 32,
@@ -155,7 +278,7 @@ export function DashboardPage() {
               点右上角「重新生成」让 AI 现在分析一份；之后系统会每 30 分钟自动刷新。
             </div>
           </div>
-        ) : (
+        ) : report ? (
           <>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
               生成于 {fmtTime(report.created_at)}
@@ -169,7 +292,7 @@ export function DashboardPage() {
               dangerouslySetInnerHTML={{ __html: report.content }}
             />
           </>
-        )}
+        ) : null}
       </div>
     </div>
   )

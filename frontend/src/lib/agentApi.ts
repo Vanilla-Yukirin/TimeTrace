@@ -15,19 +15,20 @@ export interface ChatMessage {
   content: string
 }
 
-// POST /v1/agent/chat returns an SSE stream (text/event-stream). EventSource
-// only does GET, so we read the body as a stream and split on the SSE record
-// delimiter (\n\n), parsing each `data: {json}` line into an AgentEvent.
-export async function* streamAgentChat(
-  messages: ChatMessage[],
-  opts?: { hoursBack?: number; signal?: AbortSignal },
-): AsyncGenerator<AgentEvent> {
-  const res = await fetch(`${API_BASE}/v1/agent/chat`, {
+// Shared SSE-over-fetch reader: POST a JSON body, read text/event-stream,
+// split on the record delimiter (\n\n), yield each parsed `data: {json}` event.
+// EventSource only does GET, so we hand-roll this for POST endpoints.
+async function* postSSE<T>(
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): AsyncGenerator<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ messages, hours_back: opts?.hoursBack }),
-    signal: opts?.signal,
+    body: JSON.stringify(body),
+    signal,
   })
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => '')
@@ -49,12 +50,24 @@ export async function* streamAgentChat(
       const json = dataLine.slice(5).trim()
       if (!json) continue
       try {
-        yield JSON.parse(json) as AgentEvent
+        yield JSON.parse(json) as T
       } catch {
         // partial/garbled record — skip
       }
     }
   }
+}
+
+// POST /v1/agent/chat → SSE stream of AgentEvents.
+export function streamAgentChat(
+  messages: ChatMessage[],
+  opts?: { hoursBack?: number; signal?: AbortSignal },
+): AsyncGenerator<AgentEvent> {
+  return postSSE<AgentEvent>(
+    '/v1/agent/chat',
+    { messages, hours_back: opts?.hoursBack },
+    opts?.signal,
+  )
 }
 
 export interface Report {
@@ -67,6 +80,15 @@ export interface Report {
   model: string | null
   created_at: number
 }
+
+// Events from POST /v1/reports/generate/stream — the agent's tool steps + live
+// report HTML tokens, terminated by either the persisted report or an error.
+export type ReportEvent =
+  | { type: 'step'; phase: 'tool_call'; tool: string; args: Record<string, unknown> }
+  | { type: 'step'; phase: 'tool_result'; tool: string; summary: string }
+  | { type: 'token'; text: string }
+  | { type: 'report'; report: Report }
+  | { type: 'error'; message: string }
 
 export const reportsApi = {
   async latest(scope: string): Promise<Report | null> {
@@ -94,5 +116,12 @@ export const reportsApi = {
       throw new Error(`API ${res.status}: ${text || res.statusText}`)
     }
     return res.json() as Promise<Report>
+  },
+
+  // POST /v1/reports/generate/stream → SSE of ReportEvents (tool steps + live
+  // token output + terminal report). Lets the UI show progress for the slow,
+  // token-costly generation instead of a blank spinner.
+  generateStream(scope: string, signal?: AbortSignal): AsyncGenerator<ReportEvent> {
+    return postSSE<ReportEvent>('/v1/reports/generate/stream', { scope }, signal)
   },
 }

@@ -65,6 +65,19 @@ async def test_reports_generate_503_without_vlm(client):
     assert res.status_code == 503
 
 
+async def test_reports_generate_stream_errors_without_vlm(client):
+    c, _ = client
+    res = await c.post("/v1/reports/generate/stream", json={"scope": "recent_24h"})
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/event-stream")
+    payloads = [
+        json.loads(line[5:].strip()) for line in res.text.splitlines() if line.startswith("data:")
+    ]
+    assert payloads, "expected at least one SSE data event"
+    assert payloads[0]["type"] == "error"
+    assert "未配置" in payloads[0]["message"]
+
+
 async def test_agent_chat_streams_error_without_vlm(client):
     c, _ = client
     res = await c.post(
