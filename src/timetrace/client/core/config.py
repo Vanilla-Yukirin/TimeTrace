@@ -70,6 +70,11 @@ class UploadSection:
     # 0 means unlimited; positive ints are KB/s caps that OutboxSender turns
     # into a token bucket.
     max_kbps: int = 0
+    # Drop screenshot entries whose image blob exceeds this many MB (0 disables
+    # the cap). Default 2MB protects the remote (HK) path, where large legacy
+    # PNGs can't upload reliably and wedge the strict-FIFO queue. Bump it (or
+    # set 0) for a fast LAN-direct session where big blobs upload fine.
+    max_image_mb: float = 2.0
 
 
 @dataclass
@@ -121,7 +126,10 @@ class ClientConfig:
                 if "root_dir" in outbox_data
                 else _DEFAULT_OUTBOX_DIR
             ),
-            upload=UploadSection(max_kbps=int(upload_data.get("max_kbps", 0))),
+            upload=UploadSection(
+                max_kbps=int(upload_data.get("max_kbps", 0)),
+                max_image_mb=float(upload_data.get("max_image_mb", UploadSection.max_image_mb)),
+            ),
             storage=_storage_from_toml(storage_data),
             capture=_capture_from_toml(capture_data),
             privacy=_privacy_from_toml(privacy_data),
@@ -195,6 +203,7 @@ class ClientConfig:
             "",
             "[upload]",
             _kv("max_kbps", self.upload.max_kbps),
+            _kv("max_image_mb", self.upload.max_image_mb),
             "",
             "[storage]",
             _kv("data_dir", str(self.storage.data_dir)),

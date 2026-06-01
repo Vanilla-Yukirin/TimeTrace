@@ -125,6 +125,7 @@ class OutboxSender:
         backoff_max_s: float = 60.0,
         idle_poll_interval_s: float = 5.0,
         max_kbps: int = 0,
+        max_image_bytes: int = _MAX_IMAGE_BYTES,
         compact_every_n_acks: int = 200,
     ) -> None:
         self._outbox = outbox
@@ -133,6 +134,9 @@ class OutboxSender:
         self._backoff_max = backoff_max_s
         self._idle_interval = idle_poll_interval_s
         self._bucket = _TokenBucket(max_kbps)
+        # Drop image entries above this size (0 disables the cap). See
+        # _MAX_IMAGE_BYTES. Configurable via client.toml [upload] max_image_mb.
+        self._max_image_bytes = max_image_bytes
         # Reclaim disk after every N successful acks. 0 disables compaction.
         # Default 200 is a heuristic: typical capture rate is ~1 entry per
         # window switch, so 200 acks ≈ a few hours of normal use, well below
@@ -167,12 +171,16 @@ class OutboxSender:
             # Drop oversize legacy screenshots that would otherwise wedge the
             # FIFO queue forever (they can't be uploaded reliably). Ack to step
             # past them; the record-only entry for the same capture still sends.
-            if entry.image_bytes is not None and len(entry.image_bytes) > _MAX_IMAGE_BYTES:
+            if (
+                self._max_image_bytes > 0
+                and entry.image_bytes is not None
+                and len(entry.image_bytes) > self._max_image_bytes
+            ):
                 logger.warning(
                     "outbox_sender.dropped_oversize_image",
                     entry_id=entry.entry_id,
                     image_bytes=len(entry.image_bytes),
-                    limit=_MAX_IMAGE_BYTES,
+                    limit=self._max_image_bytes,
                 )
                 await self._outbox.ack_next(entry.entry_id)
                 self._acks_since_compact += 1

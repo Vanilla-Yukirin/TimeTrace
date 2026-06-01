@@ -136,6 +136,7 @@ async def _run(
             outbox,
             make_http_sender(http),
             max_kbps=client_cfg.upload.max_kbps,
+            max_image_bytes=int(client_cfg.upload.max_image_mb * 1024 * 1024),
         )
         sender_stop = asyncio.Event()
 
