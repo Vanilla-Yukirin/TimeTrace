@@ -26,10 +26,20 @@ async def db(tmp_path):
     await database.close()
 
 
-def _chunk(content=None, tool_calls=None):
-    """A single streamed chunk: choices[0].delta with content / tool_calls."""
-    delta = SimpleNamespace(content=content, tool_calls=tool_calls, reasoning_content=None)
+def _chunk(content=None, tool_calls=None, reasoning=None):
+    """A single streamed chunk: choices[0].delta with content / tool_calls / reasoning."""
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls, reasoning_content=reasoning)
     return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+
+def _usage_chunk(prompt, completion, total):
+    """A usage-only chunk (empty choices) as sent with stream_options.include_usage."""
+    return SimpleNamespace(
+        choices=[],
+        usage=SimpleNamespace(
+            prompt_tokens=prompt, completion_tokens=completion, total_tokens=total
+        ),
+    )
 
 
 def _content(text):
@@ -176,3 +186,40 @@ async def test_llm_failure_emits_error(db):
     events = await _collect(runner, [{"role": "user", "content": "hi"}])
     assert events[0]["type"] == "error"
     assert "connection refused" in events[0]["message"]
+
+
+async def test_reasoning_streamed_as_events(db):
+    # A thinking model emits reasoning_content deltas; they should surface as
+    # their own `reasoning` events (not swallowed), alongside the answer tokens.
+    runner = _runner(db, [[_chunk(reasoning="让我想想"), _chunk(content="你好")]])
+    events = await _collect(runner, [{"role": "user", "content": "hi"}])
+    assert any(e["type"] == "reasoning" and "想想" in e["text"] for e in events)
+    assert any(e["type"] == "token" and "你好" in e["text"] for e in events)
+    assert events[-1]["type"] == "done"
+
+
+async def test_usage_accumulated_into_done(db):
+    # The final usage-only chunk (stream_options.include_usage) is folded into
+    # the done event so the UI can show per-message token cost.
+    runner = _runner(db, [[_chunk(content="hi"), _usage_chunk(10, 5, 15)]])
+    events = await _collect(runner, [{"role": "user", "content": "hi"}])
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+
+
+async def test_usage_summed_across_tool_iterations(db):
+    # Multiple LLM calls in one turn (tool round + final answer) → usage sums.
+    await db.insert_record(
+        CaptureContext(app_name="Cursor", process_name="cursor.exe", window_title="main.py"),
+        reason="t",
+    )
+    responses = [
+        [_chunk(tool_calls=[_tcd(0, "c1", "get_recent_activity", "{}")]), _usage_chunk(8, 2, 10)],
+        [_chunk(content="你在用 Cursor。"), _usage_chunk(20, 6, 26)],
+    ]
+    runner = _runner(db, responses)
+    events = await _collect(runner, [{"role": "user", "content": "我在干嘛"}])
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["usage"] == {"prompt_tokens": 28, "completion_tokens": 8, "total_tokens": 36}

@@ -15,8 +15,9 @@ last turn we drop the tools so the model is forced to answer in prose.
 Event shapes (all dicts, ``type`` discriminates):
   {"type":"step","phase":"tool_call","tool":..,"args":{..}}
   {"type":"step","phase":"tool_result","tool":..,"summary":".."}
+  {"type":"reasoning","text":".."}                   # thinking delta (reasoning_content)
   {"type":"token","text":".."}                       # the answer
-  {"type":"done","records_consulted":N,"model":..,"tools_used":[..]}
+  {"type":"done","records_consulted":N,"model":..,"tools_used":[..],"usage":{prompt,completion,total}}
   {"type":"error","message":".."}
 """
 
@@ -67,6 +68,21 @@ def _chunk_delta(chunk: Any) -> Any:
     if not choices:
         return None
     return getattr(choices[0], "delta", None)
+
+
+def _accumulate_usage(total: dict[str, int], chunk: Any) -> None:
+    """Fold a streamed chunk's token usage (if present) into ``total``.
+
+    With ``stream_options={"include_usage": True}`` an OpenAI-compatible server
+    sends a final usage-only chunk (empty ``choices``). Some servers omit it, so
+    this is best-effort — a turn with no usage chunk just leaves the total at 0.
+    """
+    u = getattr(chunk, "usage", None)
+    if u is None:
+        return
+    total["prompt_tokens"] += getattr(u, "prompt_tokens", 0) or 0
+    total["completion_tokens"] += getattr(u, "completion_tokens", 0) or 0
+    total["total_tokens"] += getattr(u, "total_tokens", 0) or 0
 
 
 def _summarize(name: str, result: dict) -> str:
@@ -130,6 +146,7 @@ class AgentRunner:
         extra = self._extra_body()
         tools_used: list[str] = []
         records_consulted = 0
+        usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         for _ in range(self._max_iterations):
             content_parts: list[str] = []
@@ -145,9 +162,11 @@ class AgentRunner:
                     tool_choice="auto",
                     timeout=_TIMEOUT_S,
                     stream=True,
+                    stream_options={"include_usage": True},
                     **extra,
                 )
                 async for chunk in stream:
+                    _accumulate_usage(usage_total, chunk)
                     delta = _chunk_delta(chunk)
                     if delta is None:
                         continue
@@ -158,6 +177,7 @@ class AgentRunner:
                     reasoning = getattr(delta, "reasoning_content", None)
                     if reasoning:
                         reasoning_parts.append(reasoning)
+                        yield {"type": "reasoning", "text": reasoning}
                     for tcd in getattr(delta, "tool_calls", None) or []:
                         slot = tc_acc.setdefault(
                             getattr(tcd, "index", 0) or 0,
@@ -187,6 +207,7 @@ class AgentRunner:
                     "records_consulted": records_consulted,
                     "model": self._cfg.model,
                     "tools_used": tools_used,
+                    "usage": usage_total,
                 }
                 return
 
@@ -245,11 +266,13 @@ class AgentRunner:
                 messages=convo,
                 timeout=_TIMEOUT_S,
                 stream=True,
+                stream_options={"include_usage": True},
                 **extra,
             )
             emitted = False
             reasoning_parts = []
             async for chunk in stream:
+                _accumulate_usage(usage_total, chunk)
                 delta = _chunk_delta(chunk)
                 if delta is None:
                     continue
@@ -260,6 +283,7 @@ class AgentRunner:
                 reasoning = getattr(delta, "reasoning_content", None)
                 if reasoning:
                     reasoning_parts.append(reasoning)
+                    yield {"type": "reasoning", "text": reasoning}
             if not emitted:
                 yield {
                     "type": "token",
@@ -273,4 +297,5 @@ class AgentRunner:
             "records_consulted": records_consulted,
             "model": self._cfg.model,
             "tools_used": tools_used,
+            "usage": usage_total,
         }
