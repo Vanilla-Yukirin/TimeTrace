@@ -17,6 +17,9 @@ export interface ApiRecord {
   confidence: number | null
   // from screenshots subquery
   thumb_path: string | null
+  // full-resolution original path (relative to data_dir, e.g.
+  // "screenshots/2026/06/01/...png") — served via /blob for lightbox zoom
+  image_path: string | null
   screenshot_count: number
 }
 

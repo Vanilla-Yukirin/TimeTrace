@@ -19,7 +19,12 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-_THUMB_SIZE = (320, 200)  # Max thumbnail dimensions (preserves aspect ratio)
+# Max thumbnail dimensions (preserves aspect ratio). 640×400 @ q85 lands around
+# ~40KB/thumb — readable text in the timeline/detail views without the blur of
+# the old 320×200 @ q75 (~11KB). Upload cost is still trivial (≈1KB/s while
+# active). Full-resolution PNGs live in screenshots/ and are served separately
+# to the lightbox for pixel-exact zoom.
+_THUMB_SIZE = (640, 400)
 
 
 def capture_active_window(
@@ -60,7 +65,7 @@ def capture_active_window(
         thumb.thumbnail(_THUMB_SIZE, Image.Resampling.LANCZOS)
         thumb_path = _build_path(storage_cfg.thumbs_dir, record_id, "jpg", captured_at)
         thumb_path.parent.mkdir(parents=True, exist_ok=True)
-        thumb.save(str(thumb_path), format="JPEG", quality=75, optimize=True)
+        thumb.save(str(thumb_path), format="JPEG", quality=85, optimize=True)
 
         # Return paths relative to data_dir for portability
         rel_img = img_path.relative_to(storage_cfg.data_dir)

@@ -717,7 +717,7 @@ class SqliteDatabase:
                     FROM records_fts WHERE records_fts MATCH ?
                 )
                 SELECT r.*, a.vlm_desc, a.category_final, a.confidence,
-                       s.thumb_path,
+                       s.thumb_path, s.image_path,
                        (SELECT COUNT(*) FROM screenshots
                         WHERE record_id = r.id AND deleted_at IS NULL
                        ) AS screenshot_count
@@ -725,7 +725,8 @@ class SqliteDatabase:
                 JOIN fts_hits h ON h.record_id = r.id
                 LEFT JOIN analysis_results a ON a.record_id = r.id
                 LEFT JOIN (
-                    SELECT record_id, MIN(thumb_path) AS thumb_path
+                    SELECT record_id, MIN(thumb_path) AS thumb_path,
+                           MIN(path) AS image_path
                     FROM screenshots
                     WHERE deleted_at IS NULL
                     GROUP BY record_id
@@ -738,14 +739,15 @@ class SqliteDatabase:
         else:
             sql = """
                 SELECT r.*, a.vlm_desc, a.category_final, a.confidence,
-                       s.thumb_path,
+                       s.thumb_path, s.image_path,
                        (SELECT COUNT(*) FROM screenshots
                         WHERE record_id = r.id AND deleted_at IS NULL
                        ) AS screenshot_count
                 FROM records r
                 LEFT JOIN analysis_results a ON a.record_id = r.id
                 LEFT JOIN (
-                    SELECT record_id, MIN(thumb_path) AS thumb_path
+                    SELECT record_id, MIN(thumb_path) AS thumb_path,
+                           MIN(path) AS image_path
                     FROM screenshots
                     WHERE deleted_at IS NULL
                     GROUP BY record_id

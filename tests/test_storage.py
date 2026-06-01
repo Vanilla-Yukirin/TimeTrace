@@ -262,6 +262,25 @@ async def test_insert_screenshot(db):
     assert shots[0]["hash_sha256"] == "abc123"
 
 
+async def test_query_records_exposes_image_and_thumb_path(db):
+    """query_records surfaces both the thumb_path (small JPEG) and image_path
+    (full-res PNG, relative to data_dir) so the lightbox can zoom the original."""
+    ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
+    record_id = await db.insert_record(ctx, reason="heartbeat")
+    await db.insert_screenshot(
+        record_id=record_id,
+        path="screenshots/2026/06/01/shot.png",
+        thumb_path="thumbs/2026/06/01/shot.jpg",
+        width=1920,
+        height=1080,
+        hash_sha256="img1",
+    )
+    rows = await db.query_records(0, 9_999_999_999_999)
+    assert len(rows) == 1
+    assert rows[0]["image_path"] == "screenshots/2026/06/01/shot.png"
+    assert rows[0]["thumb_path"] == "thumbs/2026/06/01/shot.jpg"
+
+
 async def test_insert_feedback(db):
     ctx = CaptureContext(app_name="App", process_name="app", window_title="Window")
     record_id = await db.insert_record(ctx, reason="heartbeat")

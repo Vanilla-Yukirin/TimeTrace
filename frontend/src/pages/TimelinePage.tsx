@@ -46,6 +46,7 @@ export function TimelinePage() {
       shownRecords.map((r) => ({
         id: r.id,
         thumbPath: r.thumb_path,
+        imagePath: r.image_path,
         tsStart: r.ts_start,
         tsEnd: r.ts_end,
         appName: r.app_name,

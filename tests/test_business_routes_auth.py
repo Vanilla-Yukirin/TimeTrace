@@ -137,6 +137,32 @@ def test_thumbs_still_gated_same_principle(client):
     assert r.status_code == 401
 
 
+def test_blob_gated_no_auth_is_401(client):
+    """/blob (full-res screenshot server) must require auth, same as /thumbs."""
+    r = client.get("/blob/screenshots/2026/06/01/x.png")
+    assert r.status_code == 401
+
+
+def test_blob_serves_original_and_blocks_traversal(client, tmp_path):
+    """With a bearer, /blob serves a real file from data_dir and 404s on both
+    a missing path and a ``..`` traversal escape."""
+    # Write a fake original under the app's data_dir/screenshots tree.
+    shot = tmp_path / "screenshots" / "2026" / "06" / "01" / "x.png"
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    shot.write_bytes(b"\x89PNG\r\n\x1a\nfake-bytes")
+    hdr = {"Authorization": "Bearer tt_live_known"}
+
+    ok = client.get("/blob/screenshots/2026/06/01/x.png", headers=hdr)
+    assert ok.status_code == 200
+    assert ok.content == b"\x89PNG\r\n\x1a\nfake-bytes"
+
+    missing = client.get("/blob/screenshots/nope.png", headers=hdr)
+    assert missing.status_code == 404
+
+    escape = client.get("/blob/../../../etc/passwd", headers=hdr)
+    assert escape.status_code == 404
+
+
 def test_ingest_still_bearer_only(client):
     """ingest must NOT accept a cookie — it's a write surface for capture
     clients that hold bearer tokens, not for humans."""

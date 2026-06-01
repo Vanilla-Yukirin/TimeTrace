@@ -20,7 +20,16 @@ from timetrace.server.api.mcp_auth import BearerOnlyMiddleware
 from timetrace.server.api.routes import admin as admin_routes
 from timetrace.server.api.routes import agent as agent_routes
 from timetrace.server.api.routes import auth as auth_routes
-from timetrace.server.api.routes import feedback, ingest, records, reports, search, skill, thumbs
+from timetrace.server.api.routes import (
+    blob,
+    feedback,
+    ingest,
+    records,
+    reports,
+    search,
+    skill,
+    thumbs,
+)
 from timetrace.server.auth import make_bearer_dependency
 from timetrace.server.mcp_layer.server import build_mcp_server
 
@@ -117,9 +126,12 @@ def create_app(
 
     # Phase 2 (login system): /thumbs is its own route module because the
     # FileResponse path-traversal logic doesn't belong on records/etc. — but
-    # the auth model is the same (cookie OR bearer).
+    # the auth model is the same (cookie OR bearer). /blob serves the
+    # full-resolution screenshot originals (lightbox zoom) from data_dir with
+    # the same auth + traversal posture.
     if storage_cfg is not None:
         app.include_router(thumbs.router)
+        app.include_router(blob.router)
     if auth is not None:
         bearer = make_bearer_dependency(auth)
         app.include_router(ingest.router, prefix="/v1", dependencies=[Depends(bearer)])

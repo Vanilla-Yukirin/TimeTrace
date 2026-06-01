@@ -7,6 +7,8 @@ import { formatTime, formatDate, formatDurationMs } from '@/lib/dateUtils'
 export interface LightboxItem {
   id: string
   thumbPath: string | null
+  // full-resolution original (served via /blob); falls back to thumb when absent
+  imagePath?: string | null
   tsStart: number
   tsEnd: number | null
   appName: string | null
@@ -58,7 +60,13 @@ export function ImageLightbox({ items, index, onIndexChange, open, onOpenChange 
 
   if (!item) return null
 
-  const imgUrl = item.thumbPath ? `/thumbs/${item.thumbPath.replace(/\\/g, '/')}` : null
+  // Prefer the full-resolution original (/blob) for pixel-exact zoom; fall back
+  // to the thumbnail (/thumbs) when the record has no stored original path.
+  const imgUrl = item.imagePath
+    ? `/blob/${item.imagePath.replace(/\\/g, '/')}`
+    : item.thumbPath
+      ? `/thumbs/${item.thumbPath.replace(/\\/g, '/')}`
+      : null
   const duration = item.tsEnd != null ? formatDurationMs(item.tsEnd - item.tsStart) : null
 
   return (
