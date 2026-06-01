@@ -64,6 +64,13 @@ async def test_client_composition_matches_cli_and_records_land_on_server(server_
     # ------------- client side composition (mirrors client/cli.py) -------------
     client_cfg = ClientConfig.load_or_default(tmp_path / "client.toml")
     client_cfg.server.url = "http://test"  # ASGI transport, not a real socket
+    # CRITICAL test isolation: load_or_default with a non-existent file leaves
+    # outbox.root_dir at its production default (~/TimeTraceData/outbox). Without
+    # this override the smoke test would read+ack+drain the developer's REAL
+    # outbox into the throwaway tmp server — corrupting live capture state and
+    # advancing the acked cursor past records that never reached the real server.
+    # Pin it under tmp_path so every run gets a clean, isolated spool.
+    client_cfg.outbox.root_dir = tmp_path / "client-outbox"
     client_cfg.ensure_device_id()
 
     storage_cfg = StorageConfig(data_dir=tmp_path / "client-data")
@@ -133,6 +140,23 @@ async def test_client_composition_matches_cli_and_records_land_on_server(server_
     # phash_index should also have learned the new screenshot
     hits = server_stack["phash_index"].search(0xCAFE, radius=0)
     assert any(sid == shots[0]["id"] for _, sid in hits)
+
+
+async def test_smoke_outbox_is_isolated_from_home(tmp_path):
+    """Regression guard for the test-isolation footgun: the smoke test MUST pin
+    outbox.root_dir under tmp_path. ClientConfig defaults it to
+    ~/TimeTraceData/outbox, so a missed override silently drains the dev's real
+    outbox. This asserts the override actually scopes it under tmp_path and is
+    NOT the production default ~/TimeTraceData/outbox."""
+    from pathlib import Path
+
+    client_cfg = ClientConfig.load_or_default(tmp_path / "client.toml")
+    # Before the override: the default IS the production home outbox (the footgun).
+    assert client_cfg.outbox.root_dir == Path.home() / "TimeTraceData" / "outbox"
+    # After the override: scoped under tmp_path, away from the real outbox.
+    client_cfg.outbox.root_dir = tmp_path / "client-outbox"
+    assert tmp_path in client_cfg.outbox.root_dir.parents
+    assert client_cfg.outbox.root_dir != Path.home() / "TimeTraceData" / "outbox"
 
 
 async def test_cli_modules_expose_main_callable():
