@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { Send, Wrench, Square } from 'lucide-react'
 import { streamAgentChat, type AgentEvent, type ChatMessage } from '@/lib/agentApi'
 import { CatMascot } from '@/components/brand/CatMascot'
+import { Markdown } from '@/components/ui/Markdown'
 
 // A "step" the agent took mid-answer (a tool call + its one-line result),
 // surfaced inline so the user sees it consulting real data, not hallucinating.
@@ -322,11 +323,13 @@ function TurnBubble({ turn }: { turn: Turn }) {
             color: 'var(--text-primary)',
             fontSize: 14,
             lineHeight: 1.6,
-            whiteSpace: 'pre-wrap',
           }}
         >
-          {turn.content || (turn.pending ? '思考中…' : '')}
-          {turn.pending && turn.content ? ' ▍' : ''}
+          {turn.content ? (
+            <Markdown text={turn.content} trailing={turn.pending ? ' ▍' : null} />
+          ) : (
+            turn.pending && '思考中…'
+          )}
         </div>
       )}
     </div>
