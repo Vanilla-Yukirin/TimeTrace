@@ -22,9 +22,16 @@ logger = structlog.get_logger(__name__)
 # Max thumbnail dimensions (preserves aspect ratio). 640×400 @ q85 lands around
 # ~40KB/thumb — readable text in the timeline/detail views without the blur of
 # the old 320×200 @ q75 (~11KB). Upload cost is still trivial (≈1KB/s while
-# active). Full-resolution PNGs live in screenshots/ and are served separately
-# to the lightbox for pixel-exact zoom.
+# active).
 _THUMB_SIZE = (640, 400)
+
+# Full image ("original" served to the lightbox). A lossless full-res PNG of a
+# 4K / multi-monitor grab is ~9MB — unuploadable over a residential→remote link
+# (it blows past the client's HTTP timeout, so the outbox wedges re-sending the
+# same blob). Cap the long side and save JPEG: a 2560px q88 frame is ~0.5MB,
+# uploads in a second or two, and stays sharp enough to zoom and read text.
+_FULL_MAX_DIM = 2560
+_FULL_QUALITY = 88
 
 
 def capture_active_window(
@@ -48,7 +55,6 @@ def capture_active_window(
             sct_img = sct.grab(region)
             img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
 
-        width, height = img.size
         sha256 = _image_hash(img)
         try:
             phash: int | None = compute_phash(img)
@@ -57,9 +63,16 @@ def capture_active_window(
             phash = None
 
         captured_at = datetime.now()
-        img_path = _build_path(storage_cfg.screenshots_dir, record_id, "png", captured_at)
+        # Full image: downscale oversized grabs, then JPEG. width/height reflect
+        # the *saved* frame so DB metadata matches the stored blob.
+        full = img
+        if max(img.size) > _FULL_MAX_DIM:
+            full = img.copy()
+            full.thumbnail((_FULL_MAX_DIM, _FULL_MAX_DIM), Image.Resampling.LANCZOS)
+        width, height = full.size
+        img_path = _build_path(storage_cfg.screenshots_dir, record_id, "jpg", captured_at)
         img_path.parent.mkdir(parents=True, exist_ok=True)
-        img.save(str(img_path), format="PNG", optimize=False)
+        full.save(str(img_path), format="JPEG", quality=_FULL_QUALITY, optimize=True)
 
         thumb = img.copy()
         thumb.thumbnail(_THUMB_SIZE, Image.Resampling.LANCZOS)

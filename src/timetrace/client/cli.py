@@ -113,6 +113,10 @@ async def _run(
             auth_token=client_cfg.server.auth_token or None,
             device_id=client_cfg.device.id or None,
             data_dir=client_cfg.storage.data_dir,
+            # Screenshots can be a few hundred KB and the link to a remote
+            # server may be slow (residential uplink); 30s was too tight and
+            # wedged the outbox re-sending the same blob on every timeout.
+            timeout_s=120.0,
         )
         stack.push_async_callback(http.aclose)
 
