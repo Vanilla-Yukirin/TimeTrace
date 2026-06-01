@@ -147,10 +147,11 @@ export const TurnView = memo(function TurnView({ turn }: { turn: ChatTurn }) {
     )
   }
 
-  // Streaming cursor attaches to the LAST text block only.
+  // Streaming cursor attaches to the LAST non-empty text block only.
   let lastTextIdx = -1
   for (let i = turn.blocks.length - 1; i >= 0; i--) {
-    if (turn.blocks[i].kind === 'text') {
+    const b = turn.blocks[i]
+    if (b.kind === 'text' && b.text.trim()) {
       lastTextIdx = i
       break
     }
@@ -161,6 +162,9 @@ export const TurnView = memo(function TurnView({ turn }: { turn: ChatTurn }) {
       {turn.blocks.map((b, i) => {
         if (b.kind === 'thinking') return <ThinkingBlock key={i} text={b.text} pending={!!turn.pending} />
         if (b.kind === 'tool') return <ToolChip key={i} tool={b.tool} summary={b.summary} />
+        // Skip whitespace-only text blocks (e.g. a lone newline the model emits
+        // between its reasoning and a tool call) so they don't render as an empty bubble.
+        if (!b.text.trim()) return null
         return <TextBubble key={i} text={b.text} cursor={!!turn.pending && i === lastTextIdx} />
       })}
 
