@@ -26,21 +26,40 @@ async def db(tmp_path):
     await database.close()
 
 
-def _msg(content=None, tool_calls=None):
-    m = SimpleNamespace(content=content, tool_calls=tool_calls, reasoning_content=None)
-    return SimpleNamespace(choices=[SimpleNamespace(message=m)])
+def _chunk(content=None, tool_calls=None):
+    """A single streamed chunk: choices[0].delta with content / tool_calls."""
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls, reasoning_content=None)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
 
 
-def _tool_call(call_id, name, arguments):
+def _content(text):
+    """A streamed response that is a plain prose answer (one content chunk)."""
+    return [_chunk(content=text)]
+
+
+def _tcd(index, call_id, name, arguments):
     return SimpleNamespace(
+        index=index,
         id=call_id,
-        type="function",
         function=SimpleNamespace(name=name, arguments=arguments),
     )
 
 
+def _tools(*calls):
+    """A streamed response carrying tool calls.
+
+    ``calls`` are ``(call_id, name, arguments)`` tuples; each becomes its own
+    streamed chunk with an ascending ``index`` (mirrors how OpenAI streams
+    parallel tool calls)."""
+    return [
+        _chunk(tool_calls=[_tcd(i, cid, name, args)]) for i, (cid, name, args) in enumerate(calls)
+    ]
+
+
 class _ScriptedClient:
-    """Stand-in for AsyncOpenAI: pops a scripted response per create() call."""
+    """Stand-in for AsyncOpenAI: pops a scripted *streamed* response per
+    create() call. Each response is a list of chunks; create() returns an
+    async iterator over them, matching ``stream=True`` semantics."""
 
     def __init__(self, responses):
         self._responses = list(responses)
@@ -50,7 +69,13 @@ class _ScriptedClient:
 
     async def _create(self, **kwargs):
         self.calls.append(kwargs)
-        return self._responses.pop(0)
+        chunks = self._responses.pop(0)
+
+        async def _stream():
+            for c in chunks:
+                yield c
+
+        return _stream()
 
     async def close(self):
         self.closed = True
@@ -68,7 +93,7 @@ async def _collect(runner, messages):
 
 
 async def test_direct_answer_no_tools(db):
-    runner = _runner(db, [_msg(content="你好，有什么可以帮你的？")])
+    runner = _runner(db, [_content("你好，有什么可以帮你的？")])
     events = await _collect(runner, [{"role": "user", "content": "hi"}])
     types = [e["type"] for e in events]
     assert "step" not in types
@@ -82,8 +107,8 @@ async def test_tool_call_then_answer(db):
         reason="t",
     )
     responses = [
-        _msg(tool_calls=[_tool_call("c1", "get_recent_activity", '{"hours_back": 24}')]),
-        _msg(content="你最近在用 Cursor。"),
+        _tools(("c1", "get_recent_activity", '{"hours_back": 24}')),
+        _content("你最近在用 Cursor。"),
     ]
     runner = _runner(db, responses)
     events = await _collect(runner, [{"role": "user", "content": "我最近在干嘛"}])
@@ -102,14 +127,8 @@ async def test_apply_label_through_loop(db):
         reason="t",
     )
     responses = [
-        _msg(
-            tool_calls=[
-                _tool_call(
-                    "c1", "apply_label", f'{{"record_id": "{rid}", "category": "work/coding"}}'
-                )
-            ]
-        ),
-        _msg(content="已标记。"),
+        _tools(("c1", "apply_label", f'{{"record_id": "{rid}", "category": "work/coding"}}')),
+        _content("已标记。"),
     ]
     runner = _runner(db, responses)
     events = await _collect(runner, [{"role": "user", "content": "把它标成编程"}])
@@ -131,8 +150,8 @@ async def test_iteration_budget_forces_final_answer(db):
     runner = AgentRunner(db, cfg, max_iterations=1)
     runner._client = _ScriptedClient(  # noqa: SLF001
         [
-            _msg(tool_calls=[_tool_call("c1", "get_recent_activity", "{}")]),
-            _msg(content="（基于已查到的）你在用 Cursor。"),
+            _tools(("c1", "get_recent_activity", "{}")),
+            _content("（基于已查到的）你在用 Cursor。"),
         ]
     )
     events = await _collect(runner, [{"role": "user", "content": "我在干嘛"}])

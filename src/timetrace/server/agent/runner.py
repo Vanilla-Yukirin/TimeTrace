@@ -57,6 +57,18 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _chunk_delta(chunk: Any) -> Any:
+    """Pull the delta off a streaming chunk, tolerating empty ``choices``.
+
+    Some OpenAI-compatible servers emit keep-alive / usage-only chunks with an
+    empty ``choices`` list; skip those rather than IndexError.
+    """
+    choices = getattr(chunk, "choices", None)
+    if not choices:
+        return None
+    return getattr(choices[0], "delta", None)
+
+
 def _summarize(name: str, result: dict) -> str:
     """One-line human summary of a tool result for the 'thinking' UI chip."""
     if not isinstance(result, dict):
@@ -120,28 +132,56 @@ class AgentRunner:
         records_consulted = 0
 
         for _ in range(self._max_iterations):
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            # Streamed tool-call fragments, keyed by their `index` so multiple
+            # parallel calls accumulate into the right slot.
+            tc_acc: dict[int, dict[str, Any]] = {}
             try:
-                resp = await self._client.chat.completions.create(
+                stream = await self._client.chat.completions.create(
                     model=self._cfg.model,
                     messages=convo,
                     tools=agent_tools.TOOL_SCHEMAS,
                     tool_choice="auto",
                     timeout=_TIMEOUT_S,
+                    stream=True,
                     **extra,
                 )
+                async for chunk in stream:
+                    delta = _chunk_delta(chunk)
+                    if delta is None:
+                        continue
+                    text = getattr(delta, "content", None)
+                    if text:
+                        content_parts.append(text)
+                        yield {"type": "token", "text": text}
+                    reasoning = getattr(delta, "reasoning_content", None)
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                    for tcd in getattr(delta, "tool_calls", None) or []:
+                        slot = tc_acc.setdefault(
+                            getattr(tcd, "index", 0) or 0,
+                            {"id": None, "name": None, "args": ""},
+                        )
+                        if getattr(tcd, "id", None):
+                            slot["id"] = tcd.id
+                        fn = getattr(tcd, "function", None)
+                        if fn is not None:
+                            if getattr(fn, "name", None):
+                                slot["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                slot["args"] += fn.arguments
             except Exception as exc:  # noqa: BLE001
                 logger.exception("agent.llm_failed")
                 yield {"type": "error", "message": f"调用 LLM 失败: {exc}"}
                 return
 
-            msg = resp.choices[0].message
-            tool_calls = getattr(msg, "tool_calls", None)
-
-            if not tool_calls:
-                answer = (
-                    getattr(msg, "content", None) or getattr(msg, "reasoning_content", None) or ""
-                ).strip()
-                yield {"type": "token", "text": answer}
+            if not tc_acc:
+                # No tool calls → this turn was the final answer, already
+                # streamed token-by-token above. Fall back to reasoning_content
+                # only if the model emitted nothing on `content`.
+                if not content_parts and reasoning_parts:
+                    yield {"type": "token", "text": "".join(reasoning_parts).strip()}
                 yield {
                     "type": "done",
                     "records_consulted": records_consulted,
@@ -150,29 +190,30 @@ class AgentRunner:
                 }
                 return
 
+            ordered = [tc_acc[i] for i in sorted(tc_acc)]
             # Record the assistant's tool-call turn verbatim so the follow-up
             # tool messages reference valid tool_call_ids.
             convo.append(
                 {
                     "role": "assistant",
-                    "content": msg.content or "",
+                    "content": "".join(content_parts),
                     "tool_calls": [
                         {
-                            "id": tc.id,
+                            "id": slot["id"] or f"call_{i}",
                             "type": "function",
                             "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
+                                "name": slot["name"] or "",
+                                "arguments": slot["args"] or "{}",
                             },
                         }
-                        for tc in tool_calls
+                        for i, slot in enumerate(ordered)
                     ],
                 }
             )
-            for tc in tool_calls:
-                name = tc.function.name
+            for i, slot in enumerate(ordered):
+                name = slot["name"] or ""
                 try:
-                    args = json.loads(tc.function.arguments or "{}")
+                    args = json.loads(slot["args"] or "{}")
                 except json.JSONDecodeError:
                     args = {}
                 if not isinstance(args, dict):
@@ -191,28 +232,42 @@ class AgentRunner:
                 convo.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tc.id,
+                        "tool_call_id": slot["id"] or f"call_{i}",
                         "content": json.dumps(result, ensure_ascii=False),
                     }
                 )
 
         # Iteration budget exhausted while still tool-calling: force a prose
-        # answer by dropping the tools on the final shot.
+        # answer by dropping the tools on the final shot (still streamed).
         try:
-            resp = await self._client.chat.completions.create(
+            stream = await self._client.chat.completions.create(
                 model=self._cfg.model,
                 messages=convo,
                 timeout=_TIMEOUT_S,
+                stream=True,
                 **extra,
             )
-            msg = resp.choices[0].message
-            answer = (
-                getattr(msg, "content", None) or getattr(msg, "reasoning_content", None) or ""
-            ).strip()
+            emitted = False
+            reasoning_parts = []
+            async for chunk in stream:
+                delta = _chunk_delta(chunk)
+                if delta is None:
+                    continue
+                text = getattr(delta, "content", None)
+                if text:
+                    emitted = True
+                    yield {"type": "token", "text": text}
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    reasoning_parts.append(reasoning)
+            if not emitted:
+                yield {
+                    "type": "token",
+                    "text": "".join(reasoning_parts).strip() or "(已达到工具调用上限)",
+                }
         except Exception as exc:  # noqa: BLE001
             logger.exception("agent.final_answer_failed")
-            answer = f"(已达到工具调用上限，最终回答失败: {exc})"
-        yield {"type": "token", "text": answer or "(已达到工具调用上限)"}
+            yield {"type": "token", "text": f"(已达到工具调用上限，最终回答失败: {exc})"}
         yield {
             "type": "done",
             "records_consulted": records_consulted,
