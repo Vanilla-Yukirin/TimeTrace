@@ -137,16 +137,16 @@ async def test_apply_label_through_loop(db):
         reason="t",
     )
     responses = [
-        _tools(("c1", "apply_label", f'{{"record_id": "{rid}", "category": "work/coding"}}')),
+        _tools(("c1", "apply_label", f'{{"record_id": "{rid}", "category": "work"}}')),
         _content("已标记。"),
     ]
     runner = _runner(db, responses)
-    events = await _collect(runner, [{"role": "user", "content": "把它标成编程"}])
+    events = await _collect(runner, [{"role": "user", "content": "把它标成工作"}])
     assert any(
-        e["type"] == "step" and e["phase"] == "tool_result" and "work/coding" in e["summary"]
+        e["type"] == "step" and e["phase"] == "tool_result" and "work" in e["summary"]
         for e in events
     )
-    assert await db.get_category_final(rid) == "work/coding"
+    assert await db.get_category_final(rid) == "work"
 
 
 async def test_iteration_budget_forces_final_answer(db):

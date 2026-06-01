@@ -91,14 +91,16 @@ def _make_worker(db: Database, vlm: Any, tmp_path: Path, *, max_retries: int = 5
 
 async def test_worker_writes_description_on_success(db, tmp_path):
     rid = await _seed_pending(db, tmp_path)
-    vlm = _StubVLM(payload={"keywords": ["k"], "summary": "s", "description": "d"})
+    vlm = _StubVLM(
+        payload={"keywords": ["k"], "summary": "s", "description": "d", "category": "work"}
+    )
     worker = _make_worker(db, vlm, tmp_path)
 
     task = await db.claim_next_task("pending_vlm")
     await worker._handle_one(task, worker_id=0)
 
     async with db.conn.execute(
-        "SELECT vlm_desc, status FROM analysis_results WHERE record_id=?", (rid,)
+        "SELECT vlm_desc, status, category_final FROM analysis_results WHERE record_id=?", (rid,)
     ) as cur:
         row = await cur.fetchone()
     assert row["status"] == "vlm_done"
@@ -106,6 +108,8 @@ async def test_worker_writes_description_on_success(db, tmp_path):
     assert "d" in row["vlm_desc"]
     assert "摘要：s" in row["vlm_desc"]
     assert "关键词：k" in row["vlm_desc"]
+    # The VLM's chosen category is persisted as category_final (no rule → VLM wins).
+    assert row["category_final"] == "work"
 
 
 # --------------------------------------------------------------------------- #

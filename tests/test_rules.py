@@ -1,6 +1,6 @@
-"""Tests for the Rule/Feedback Engine."""
+"""Tests for the Rule/Feedback Engine (rules + VLM; KNN removed)."""
 
-from timetrace.server.rules.engine import KnnNeighbor, RuleSet, VlmPrediction, decide_category
+from timetrace.server.rules.engine import RuleSet, VlmPrediction, decide_category
 
 
 def _rules() -> RuleSet:
@@ -19,7 +19,6 @@ def test_rule_match_by_app():
         url=None,
         title="main.py",
         vlm_pred=None,
-        knn_neighbors=[],
         rules=_rules(),
     )
     assert cat == "development"
@@ -32,7 +31,6 @@ def test_rule_match_by_domain():
         url="https://github.com/user/repo",
         title="Pull Request",
         vlm_pred=None,
-        knn_neighbors=[],
         rules=_rules(),
     )
     assert cat == "development"
@@ -44,28 +42,22 @@ def test_vlm_pred_used_when_no_rule():
         url=None,
         title="something",
         vlm_pred=VlmPrediction(category="learning", confidence=0.9),
-        knn_neighbors=[],
         rules=RuleSet(),
     )
     assert cat == "learning"
     assert conf == 1.0
 
 
-def test_knn_neighbors_contribute():
-    neighbors = [
-        KnnNeighbor(category="gaming", distance=0.1, source="knn"),
-        KnnNeighbor(category="gaming", distance=0.2, source="knn"),
-        KnnNeighbor(category="work", distance=0.5, source="knn"),
-    ]
+def test_rule_outvotes_vlm():
+    # A deterministic rule beats the VLM's pick (rule weight > vlm weight).
     cat, _, _ = decide_category(
-        app="unknown",
+        app="VSCode",
         url=None,
-        title="something",
-        vlm_pred=None,
-        knn_neighbors=neighbors,
-        rules=RuleSet(),
+        title="main.py",
+        vlm_pred=VlmPrediction(category="entertainment", confidence=1.0),
+        rules=_rules(),
     )
-    assert cat == "gaming"
+    assert cat == "development"
 
 
 def test_no_signals_returns_uncategorized():
@@ -74,7 +66,6 @@ def test_no_signals_returns_uncategorized():
         url=None,
         title="",
         vlm_pred=None,
-        knn_neighbors=[],
         rules=RuleSet(),
     )
     assert cat == "uncategorized"

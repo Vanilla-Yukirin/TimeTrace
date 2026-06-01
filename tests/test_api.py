@@ -64,7 +64,7 @@ def test_list_categories(client):
     data = resp.json()
     assert isinstance(data["categories"], list)
     names = [c["name"] for c in data["categories"]]
-    assert "工作/编程" in names
+    assert "工作" in names
 
 
 async def test_list_records_with_data(db, tmp_path):

@@ -152,8 +152,9 @@ async def get_app_breakdown(db: Database, hours_back: int = 24, top_n: int = 20)
 async def get_category_stats(db: Database, hours_back: int = 24, top_n: int = 20) -> dict:
     """Aggregate active duration per category over the window.
 
-    ``category_final`` is the AI-assigned label (rules + VLM + KNN). Records the
-    worker hasn't classified yet bucket under ``"uncategorized"``.
+    ``category_final`` is the AI-assigned label (rule override, else the VLM's
+    pick). Records the worker hasn't classified yet bucket under
+    ``"uncategorized"``.
     """
     hours_back = min(max(1, int(hours_back)), _MAX_HOURS)
     top_n = min(max(1, int(top_n)), _MAX_TOP_N)
@@ -200,7 +201,7 @@ async def apply_label(
 ) -> dict:
     """Set/replace a record's category label. The agent's only write surface.
 
-    Accepts a category id (``work/coding``) or its display name (``工作/编程``).
+    Accepts a category id (``work``) or its display name (``工作``).
     Writes a ``feedback`` audit row (action=edit) AND authoritatively sets
     ``category_final`` (creating the analysis row if the worker hasn't run yet).
     Returns an ``error`` dict (not an exception) on unknown record/category so

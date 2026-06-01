@@ -83,24 +83,24 @@ async def test_get_category_stats_buckets_uncategorized(db):
 
 async def test_apply_label_sets_category_final(db):
     rid = await _insert(db)
-    res = await agent_tools.apply_label(db, record_id=rid, category="work/coding")
+    res = await agent_tools.apply_label(db, record_id=rid, category="work")
     assert res["status"] == "labeled"
-    assert res["category_after"] == "work/coding"
-    assert await db.get_category_final(rid) == "work/coding"
+    assert res["category_after"] == "work"
+    assert await db.get_category_final(rid) == "work"
 
 
 async def test_apply_label_resolves_by_chinese_name(db):
     rid = await _insert(db)
-    res = await agent_tools.apply_label(db, record_id=rid, category="工作/编程")
-    assert res["category_after"] == "work/coding"
-    assert await db.get_category_final(rid) == "work/coding"
+    res = await agent_tools.apply_label(db, record_id=rid, category="工作")
+    assert res["category_after"] == "work"
+    assert await db.get_category_final(rid) == "work"
 
 
 async def test_apply_label_rejects_unknown_category(db):
     rid = await _insert(db)
     res = await agent_tools.apply_label(db, record_id=rid, category="nonsense")
     assert "error" in res
-    assert "work/coding" in res["valid_categories"]
+    assert "work" in res["valid_categories"]
 
 
 async def test_apply_label_rejects_unknown_record(db):
@@ -110,10 +110,10 @@ async def test_apply_label_rejects_unknown_record(db):
 
 async def test_apply_label_then_category_stats_reflects_label(db):
     rid = await _insert(db)
-    await agent_tools.apply_label(db, record_id=rid, category="work/coding")
+    await agent_tools.apply_label(db, record_id=rid, category="work")
     res = await agent_tools.get_category_stats(db, hours_back=24)
     cats = {it["category"] for it in res["items"]}
-    assert "work/coding" in cats
+    assert "work" in cats
 
 
 async def test_dispatch_tool_unknown_returns_error(db):

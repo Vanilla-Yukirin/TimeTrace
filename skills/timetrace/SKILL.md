@@ -67,7 +67,7 @@ URL 末尾的 `/` 不能省（服务端 streamable handler 挂在 mount 根）�
 
 - **`get_app_breakdown(hours_back=24, top_n=20)`** — 统计某时间窗内每个应用的累计活跃时长（秒），降序。回答 **"在 X 上花了多久"** 用它。只统计已闭合的会话。
 
-- **`get_category_stats(hours_back=24, top_n=20)`** — 统计某时间窗内每个**分类**（AI 自动打的标签，如 `work/coding` 工作/编程、`entertainment/game` 娱乐/游戏）的累计时长（秒）。回答 **"我把时间花在哪类事情上"** 用它。还没分类的记录归入 `uncategorized`。
+- **`get_category_stats(hours_back=24, top_n=20)`** — 统计某时间窗内每个**分类**（AI 自动打的标签，如 `work` 工作、`entertainment` 娱乐）的累计时长（秒）。回答 **"我把时间花在哪类事情上"** 用它。还没分类的记录归入 `uncategorized`。
 
 - **`ask_agent(question, hours_back=24)`** — 让 TimeTrace 服务端**自带的本地大模型**取数据并直接给一句话自然语言回答（单轮，低延迟）。当你只想要个快速总结、不需要自己逐步推理时用它。
 
@@ -75,16 +75,16 @@ URL 末尾的 `/` 不能省（服务端 streamable handler 挂在 mount 根）�
 
 - **`apply_label(record_id, category, note=None)`** — 给某条记录打 / 改分类标签。**这是你唯一的写权限**，不能删除或修改记录本身。
   - `record_id` 从 `search_activity` / `get_recent_activity` 返回的 `id` 字段取。
-  - `category` 用分类 id（如 `work/coding`）或中文名（如 `工作/编程`）。
-  - 内置分类：`work/coding` `work/meeting` `work/writing` `work/other` `study/reading` `study/video` `study/other` `entertainment/video` `entertainment/game` `entertainment/other` `social/chat` `social/other` `system/idle` `system/other` `uncategorized`。
+  - `category` 用分类 id（如 `work`）或中文名（如 `工作`）。
+  - 内置分类（6 类，单级）：`work` 工作 · `study` 学习 · `social` 沟通 · `entertainment` 娱乐 · `system` 系统 · `uncategorized` 未分类。
   - 传未知 record_id / category 会返回 `error` 字段（不抛异常），据此自我纠正。
 
 ## 典型用法
 
 - **"我今天主要在干嘛？"** → `get_recent_activity(hours_back=24)` 或 `get_app_breakdown(hours_back=24)`，综合后用中文一句话总结。
 - **"我这周在 VSCode 上花了多久？"** → `get_app_breakdown(hours_back=168)`，从结果里挑出对应应用，秒换算成小时。
-- **"我有没有在摸鱼？"** → `get_category_stats(hours_back=24)`，看 `entertainment/*` 占比。
-- **"把我下午查鸣潮攻略那几条标成娱乐"** → 先 `search_activity(query="鸣潮", hours_back=12)` 拿到各条 `id`，再对每条 `apply_label(record_id=..., category="entertainment/game", note="用户确认是查游戏攻略")`。
+- **"我有没有在摸鱼？"** → `get_category_stats(hours_back=24)`，看 `entertainment` 占比。
+- **"把我下午查鸣潮攻略那几条标成娱乐"** → 先 `search_activity(query="鸣潮", hours_back=12)` 拿到各条 `id`，再对每条 `apply_label(record_id=..., category="entertainment", note="用户确认是查游戏攻略")`。
 - **快速总结** → `ask_agent(question="我昨天写了多久代码")`。
 
 ## 注意

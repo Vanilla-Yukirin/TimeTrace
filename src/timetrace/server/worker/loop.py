@@ -11,6 +11,7 @@ import structlog
 from PIL import Image
 
 from timetrace.server.embedding.client import EmbeddingClient, EmbeddingError
+from timetrace.server.rules.engine import RuleSet, VlmPrediction, decide_category
 from timetrace.server.vlm.client import VLMClient, VLMError, format_description
 from timetrace.server.vlm.health import VLMHealthGate
 
@@ -204,12 +205,28 @@ class AnalysisWorker:
         await self._gate.report_success()
         text = format_description(payload)
         await self._db.save_description(record_id, text)
+
+        # Classification: a deterministic rule (if any) outvotes the VLM's pick;
+        # with no rule the VLM's chosen category wins. RuleSet is empty for now —
+        # the hook is here for app/domain overrides later.
+        final_cat, _conf, _trace = decide_category(
+            app=meta.get("app_name") or "",
+            url=meta.get("url"),
+            title=meta.get("window_title") or "",
+            vlm_pred=VlmPrediction(
+                category=payload.get("category") or "uncategorized", confidence=1.0
+            ),
+            rules=RuleSet(),
+        )
+        await self._db.set_category_final(record_id, final_cat)
+
         await self._db.transition(record_id, "vlm_done")
         logger.info(
             "worker.vlm_done",
             worker_id=worker_id,
             record_id=record_id,
             chars=len(text),
+            category=final_cat,
         )
         # Best-effort embedding stage. Failure → log + skip; vlm_done remains
         # the durable state. Phase 2 backfill sweeps any rows that landed

@@ -207,21 +207,17 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires  ON auth_sessions(expires_at);
 # to multi-field LIKE so 2-char queries like "VS" / "鸣潮" still hit.
 _FTS_MIN_LEN = 3
 
+# Flat, intent-based 6-category taxonomy. Kept deliberately small + mutually
+# exclusive so the VLM can pick exactly one reliably. The id is the stored
+# value (category_final / VLM enum); the name is the Chinese display label.
+# NOTE: the same id set is mirrored as the VLM output enum in
+# server/vlm/client.py (_CATEGORY_IDS) — keep the two in sync.
 _BUILTIN_CATEGORIES = [
-    ("work/coding", "工作/编程", None),
-    ("work/meeting", "工作/会议", None),
-    ("work/writing", "工作/写作", None),
-    ("work/other", "工作/其他", None),
-    ("study/reading", "学习/阅读", None),
-    ("study/video", "学习/视频", None),
-    ("study/other", "学习/其他", None),
-    ("entertainment/video", "娱乐/视频", None),
-    ("entertainment/game", "娱乐/游戏", None),
-    ("entertainment/other", "娱乐/其他", None),
-    ("social/chat", "社交/聊天", None),
-    ("social/other", "社交/其他", None),
-    ("system/idle", "系统/空闲", None),
-    ("system/other", "系统/其他", None),
+    ("work", "工作", None),
+    ("study", "学习", None),
+    ("social", "沟通", None),
+    ("entertainment", "娱乐", None),
+    ("system", "系统", None),
     ("uncategorized", "未分类", None),
 ]
 
@@ -934,11 +930,14 @@ class SqliteDatabase:
         """Return record metadata + first non-deleted screenshot path for VLM.
 
         Returns:
-            {"record_id", "window_title", "screenshot_path"} or None if missing.
+            {"record_id", "window_title", "app_name", "url", "screenshot_path"}
+            or None if missing. app_name/url feed the category rule hook.
         """
         async with self._lock:
             async with self.conn.execute(
                 """SELECT r.window_title AS window_title,
+                          r.app_name AS app_name,
+                          r.url AS url,
                           (SELECT path FROM screenshots
                            WHERE record_id = r.id AND deleted_at IS NULL
                            ORDER BY created_at ASC LIMIT 1) AS screenshot_path
@@ -952,6 +951,8 @@ class SqliteDatabase:
         return {
             "record_id": record_id,
             "window_title": row["window_title"],
+            "app_name": row["app_name"],
+            "url": row["url"],
             "screenshot_path": row["screenshot_path"],
         }
 

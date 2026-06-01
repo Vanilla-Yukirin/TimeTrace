@@ -290,7 +290,7 @@ async def test_insert_feedback(db):
         record_id=record_id,
         action="edit",
         category_before="uncategorized",
-        category_after="work/coding",
+        category_after="work",
     )
     assert feedback_id
 
@@ -299,13 +299,13 @@ async def test_insert_feedback(db):
     ) as cur:
         row = await cur.fetchone()
     assert row["action"] == "edit"
-    assert row["category_after"] == "work/coding"
+    assert row["category_after"] == "work"
 
 
 async def test_get_categories_seeded(db):
     cats = await db.get_categories()
     names = [c["name"] for c in cats]
-    assert "工作/编程" in names
+    assert "工作" in names
     assert "未分类" in names
 
 

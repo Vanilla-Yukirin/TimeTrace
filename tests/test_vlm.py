@@ -103,13 +103,18 @@ def _make_client_with_mock(mock_create: AsyncMock, *, disable_thinking: bool = F
 async def test_vlm_client_describe_parses_response():
     mock = AsyncMock(
         return_value=_fake_completion(
-            '{"keywords": ["a", "b"], "summary": "s", "description": "d"}'
+            '{"keywords": ["a", "b"], "summary": "s", "description": "d", "category": "work"}'
         )
     )
     client = _make_client_with_mock(mock)
     img = Image.new("RGB", (8, 8), (10, 20, 30))
     result = await client.describe(img, window_title="t")
-    assert result == {"keywords": ["a", "b"], "summary": "s", "description": "d"}
+    assert result == {
+        "keywords": ["a", "b"],
+        "summary": "s",
+        "description": "d",
+        "category": "work",
+    }
 
     kwargs = mock.call_args.kwargs
     # Structured outputs via json_schema — works on OpenAI 2024-08+, LM Studio,
@@ -118,9 +123,27 @@ async def test_vlm_client_describe_parses_response():
     assert rf["type"] == "json_schema"
     assert rf["json_schema"]["name"] == "describe"
     assert rf["json_schema"]["strict"] is True
-    assert set(rf["json_schema"]["schema"]["required"]) == {"keywords", "summary", "description"}
+    assert set(rf["json_schema"]["schema"]["required"]) == {
+        "keywords",
+        "summary",
+        "description",
+        "category",
+    }
     # default config does NOT send extra_body so vanilla OpenAI doesn't 400
     assert "extra_body" not in kwargs
+
+
+async def test_vlm_client_describe_defaults_offlist_category():
+    """A missing / off-taxonomy category must fall back to uncategorized rather
+    than failing the whole describe (the description is still useful)."""
+    mock = AsyncMock(
+        return_value=_fake_completion(
+            '{"keywords": [], "summary": "s", "description": "d", "category": "nonsense"}'
+        )
+    )
+    client = _make_client_with_mock(mock)
+    result = await client.describe(Image.new("RGB", (8, 8)), window_title="t")
+    assert result["category"] == "uncategorized"
 
 
 async def test_vlm_client_describe_prompt_enforces_noun_phrase_and_softens_title_caveat():

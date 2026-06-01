@@ -167,8 +167,8 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
         """Set/replace a record's category label — the ONLY write tool.
 
         Read everything, label only: this cannot delete or modify a record or
-        its screenshots. ``category`` accepts a category id (``work/coding``) or
-        its display name (``工作/编程``); ``record_id`` comes from
+        its screenshots. ``category`` accepts a category id (``work``) or
+        its display name (``工作``); ``record_id`` comes from
         ``search_activity`` / ``get_recent_activity``. Returns an ``error`` field
         (not an exception) on unknown record/category.
         """

@@ -1,8 +1,12 @@
-"""Rule/Feedback Engine – combines rules, VLM predictions and KNN voting."""
+"""Rule/Feedback Engine – combines deterministic rules with the VLM's pick.
+
+KNN voting was removed: with a small fixed taxonomy + a capable VLM, nearest-
+neighbour voting over a sparse labelled set added noise, not signal. The
+category decision is now rules-first, then the VLM's chosen category.
+"""
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
 SOURCE_WEIGHTS: dict[str, float] = {
@@ -10,7 +14,6 @@ SOURCE_WEIGHTS: dict[str, float] = {
     "user_confirm": 3.0,
     "rule": 2.0,
     "vlm": 1.5,
-    "knn": 1.0,
 }
 
 
@@ -18,14 +21,6 @@ SOURCE_WEIGHTS: dict[str, float] = {
 class VlmPrediction:
     category: str
     confidence: float
-
-
-@dataclass
-class KnnNeighbor:
-    category: str
-    distance: float
-    source: str
-    confirm_weight: float = 1.0
 
 
 @dataclass
@@ -45,10 +40,6 @@ class RuleSet:
         return None
 
 
-def _decay(distance: float, alpha: float = 1.0) -> float:
-    return math.exp(-alpha * distance)
-
-
 def _add_vote(votes: dict[str, float], category: str, weight: float) -> None:
     votes[category] = votes.get(category, 0.0) + weight
 
@@ -58,10 +49,13 @@ def decide_category(
     url: str | None,
     title: str,
     vlm_pred: VlmPrediction | None,
-    knn_neighbors: list[KnnNeighbor],
     rules: RuleSet,
 ) -> tuple[str, float, dict]:
-    """Return (final_category, confidence, decision_trace)."""
+    """Return (final_category, confidence, decision_trace).
+
+    A deterministic rule (app/domain/title match) outvotes the VLM; with no
+    matching rule the VLM's chosen category wins. Empty inputs → uncategorized.
+    """
     votes: dict[str, float] = {}
 
     rule_cat = rules.match(app, url, title)
@@ -70,10 +64,6 @@ def decide_category(
 
     if vlm_pred:
         _add_vote(votes, vlm_pred.category, vlm_pred.confidence * SOURCE_WEIGHTS["vlm"])
-
-    for nb in knn_neighbors:
-        w = _decay(nb.distance) * SOURCE_WEIGHTS.get(nb.source, 1.0) * nb.confirm_weight
-        _add_vote(votes, nb.category, w)
 
     if not votes:
         return ("uncategorized", 0.0, {"signals": {}})
@@ -90,13 +80,6 @@ def decide_category(
         "signals": {
             "rule": {"hit": rule_cat is not None, "cat": rule_cat},
             "vlm": {"cat": vlm_pred.category, "conf": vlm_pred.confidence} if vlm_pred else None,
-            "knn": {
-                "k": len(knn_neighbors),
-                "top_votes": [
-                    {"cat": nb.category, "w": round(_decay(nb.distance), 4)}
-                    for nb in knn_neighbors[:3]
-                ],
-            },
         },
     }
     return (top_cat, confidence, trace)

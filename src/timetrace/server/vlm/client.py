@@ -38,6 +38,10 @@ from timetrace.common.config import VLMConfig
 logger = structlog.get_logger(__name__)
 
 
+# Category ids the VLM must choose from — mirror of _BUILTIN_CATEGORIES in
+# server/db/sqlite.py. Keep the two in sync.
+_CATEGORY_IDS = ("work", "study", "social", "entertainment", "system", "uncategorized")
+
 # Long literal Chinese prompt; CJK characters skew the line-length lint.
 # fmt: off
 _DESCRIBE_PROMPT = (
@@ -45,8 +49,16 @@ _DESCRIBE_PROMPT = (
     "{\n"
     '  "keywords":    ["..."],   // 截图中显著可见的文字、人名、产品名、文件名等关键词；按重要性排列；最多 8 项；可空数组\n'  # noqa: E501
     '  "summary":     "...",     // 30 字以内的画面要点\n'
-    '  "description": "..."      // 100 字以内对画面的完整描述（用户在做什么、应用、内容大致主题）\n'  # noqa: E501
+    '  "description": "...",     // 100 字以内对画面的完整描述（用户在做什么、应用、内容大致主题）\n'  # noqa: E501
+    '  "category":    "..."      // 从下面 6 类里选 1 个最贴切的，只填英文 id\n'  # noqa: E501
     "}\n\n"
+    "**category 只能从这 6 个英文 id 里选 1 个**：\n"
+    "- work=工作（编程/写文档/邮件/工作类工具）\n"
+    "- study=学习（阅读/课程/研究/做题）\n"
+    "- social=沟通（微信/QQ/飞书/钉钉/会议等即时通讯）\n"
+    "- entertainment=娱乐（游戏/视频/音乐/刷社交媒体）\n"
+    "- system=系统（文件管理/设置/桌面/空闲等系统与工具操作）\n"
+    "- uncategorized=实在判断不了时才用\n\n"
     "**summary 与 description 的硬性写作规范**：\n"
     "1. 必须以**名词性短语**开头（直接命名画面主体），严禁以陈述句、判断句或动宾结构开头。\n"
     "2. 严禁出现的开头句式（包括但不限于）："
@@ -76,8 +88,9 @@ _DESCRIBE_SCHEMA = {
         },
         "summary": {"type": "string"},
         "description": {"type": "string"},
+        "category": {"type": "string", "enum": list(_CATEGORY_IDS)},
     },
-    "required": ["keywords", "summary", "description"],
+    "required": ["keywords", "summary", "description", "category"],
     "additionalProperties": False,
 }
 
@@ -147,10 +160,17 @@ def _validate_describe_payload(raw: Any) -> dict:
         raise VLMError("VLM response missing or non-string 'summary'")
     if not isinstance(description, str):
         raise VLMError("VLM response missing or non-string 'description'")
+    # category is best-effort: even with the enum schema some servers omit it or
+    # return an off-list value; fall back to uncategorized rather than failing
+    # the whole describe (the description is still useful without a category).
+    category = raw.get("category")
+    if not isinstance(category, str) or category not in _CATEGORY_IDS:
+        category = "uncategorized"
     return {
         "keywords": [str(k) for k in keywords],
         "summary": summary,
         "description": description,
+        "category": category,
     }
 
 
