@@ -97,6 +97,11 @@ async def ingest_record(
         reason=payload.capture_reason,
         event_type=payload.event_type,
         client_record_id=payload.client_record_id,
+        # Honour the client's capture clock (protocol contract: the server does
+        # not rewrite ts_start). Without this a backed-up outbox drain restamps
+        # records with the server-receive time, so ts_end (client close clock)
+        # lands *before* ts_start and durations go negative.
+        ts_start=payload.ts_start,
     )
 
     screenshot_id: str | None = None

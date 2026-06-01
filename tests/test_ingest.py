@@ -108,6 +108,27 @@ async def test_ingest_record_only_persists_metadata(db, blob_storage):
     assert found["window_title"] == "main.py"
 
 
+async def test_ingest_record_honors_client_ts_start(db, blob_storage):
+    """Wire contract: the server does not rewrite ts_start — a record's stored
+    ts_start must equal the client's capture clock, not the server-receive time.
+
+    Regression: a backed-up outbox drain used to restamp records with
+    server-now, so ts_end (the client's close clock) landed *before* ts_start
+    and every replayed record reported a negative duration.
+    """
+    app = create_app(db, blob_storage=blob_storage)
+    capture_ts = 1747300000000  # fixed 2025 epoch ms, far from the server's "now"
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/ingest/record",
+            data={"record": _record_payload("client-ts", ts_start=capture_ts)},
+        )
+    assert resp.status_code == 200
+    found = await db.find_record_by_client_id("client-ts")
+    assert found is not None
+    assert found["ts_start"] == capture_ts
+
+
 # --------------------------------------------------------------------------- #
 # With image + thumb                                                           #
 # --------------------------------------------------------------------------- #

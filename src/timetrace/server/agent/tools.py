@@ -120,9 +120,12 @@ async def get_app_breakdown(db: Database, hours_back: int = 24, top_n: int = 20)
     start_ms, end_ms = _window(hours_back)
     async with db.lock:
         async with db.conn.execute(
+            # MAX(0, ...) clamps per-record duration: a record whose ts_end
+            # predates ts_start (legacy data from before the ingest ts_start
+            # fix) must not subtract from the total.
             """SELECT app_name,
                       COUNT(*) AS records,
-                      SUM(COALESCE(ts_end, ts_start) - ts_start) AS total_ms
+                      SUM(MAX(0, COALESCE(ts_end, ts_start) - ts_start)) AS total_ms
                FROM records
                WHERE ts_start BETWEEN ? AND ? AND app_name != ''
                GROUP BY app_name
@@ -159,7 +162,7 @@ async def get_category_stats(db: Database, hours_back: int = 24, top_n: int = 20
         async with db.conn.execute(
             """SELECT COALESCE(a.category_final, 'uncategorized') AS category,
                       COUNT(*) AS records,
-                      SUM(COALESCE(r.ts_end, r.ts_start) - r.ts_start) AS total_ms
+                      SUM(MAX(0, COALESCE(r.ts_end, r.ts_start) - r.ts_start)) AS total_ms
                FROM records r
                LEFT JOIN analysis_results a ON a.record_id = r.id
                WHERE r.ts_start BETWEEN ? AND ?

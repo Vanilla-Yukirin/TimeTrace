@@ -6,6 +6,8 @@ tool-calling loop (runner.py) needs a live model and is smoke-tested separately.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from timetrace.common.config import StorageConfig
@@ -52,6 +54,24 @@ async def test_get_app_breakdown_groups_by_app(db):
     apps = {it["app_name"]: it["records"] for it in res["items"]}
     assert apps.get("Cursor") == 2
     assert apps.get("Chrome") == 1
+
+
+async def test_get_app_breakdown_clamps_negative_durations(db):
+    """Legacy rows can have ts_end < ts_start (the pre-fix ingest restamp bug).
+    Such a record must contribute 0 — never a negative — to its app's total,
+    so the breakdown never reports a nonsensical negative duration."""
+    now = int(time.time() * 1000)
+    rid = await db.insert_record(
+        CaptureContext(app_name="Cursor", process_name="cursor.exe", window_title="x"),
+        reason="test",
+        ts_start=now - 1_000,  # inside the 24h window
+    )
+    await db.close_record(rid, ts_end=now - 181_000)  # ts_end 3 min BEFORE ts_start → negative
+    res = await agent_tools.get_app_breakdown(db, hours_back=24)
+    cursor = next((it for it in res["items"] if it["app_name"] == "Cursor"), None)
+    assert cursor is not None
+    assert cursor["total_seconds"] == 0  # clamped, not -180
+    assert res["total_seconds"] >= 0
 
 
 async def test_get_category_stats_buckets_uncategorized(db):

@@ -410,9 +410,17 @@ class SqliteDatabase:
         event_type: str = "heartbeat",
         *,
         client_record_id: str | None = None,
+        ts_start: int | None = None,
     ) -> str:
         record_id = _new_id()
         now = _now_ms()
+        # ts_start is the *business* time (when the activity happened on the
+        # client). In single-process capture it equals now; the two-process
+        # ingest path passes the client's capture clock so a backed-up outbox
+        # drain doesn't restamp records with the (much later) server-receive
+        # time — which previously made ts_end < ts_start for every replayed
+        # record. created_at/updated_at stay on the server clock (bookkeeping).
+        ts_start_value = ts_start if ts_start is not None else now
         async with self._lock:
             healed = await self._close_open_records_before(now, tail_ts=now)
             if healed:
@@ -431,7 +439,7 @@ class SqliteDatabase:
                     (
                         record_id,
                         client_record_id,
-                        now,
+                        ts_start_value,
                         event_type,
                         ctx.app_name,
                         ctx.process_name,
@@ -482,6 +490,7 @@ class SqliteDatabase:
         reason: str,
         event_type: str,
         client_record_id: str,
+        ts_start: int | None = None,
     ) -> tuple[str, bool]:
         """Insert a record with the given client_record_id, or return the
         existing one if a row already carries this id.
@@ -489,6 +498,10 @@ class SqliteDatabase:
         Returns ``(record_id, was_new)``. Uses the ``client_record_id``
         UNIQUE INDEX as the atomic check — a parallel ingest losing the race
         catches the IntegrityError and re-reads the winner.
+
+        ``ts_start`` is the client's capture clock (the wire contract says the
+        server does not rewrite it); passed through so replayed outbox entries
+        keep their real activity time instead of the server-receive time.
         """
         try:
             rid = await self.insert_record(
@@ -496,6 +509,7 @@ class SqliteDatabase:
                 reason=reason,
                 event_type=event_type,
                 client_record_id=client_record_id,
+                ts_start=ts_start,
             )
             return rid, True
         except aiosqlite.IntegrityError:
