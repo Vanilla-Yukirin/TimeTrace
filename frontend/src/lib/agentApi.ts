@@ -3,11 +3,18 @@
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
+export interface Usage {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+}
+
 export type AgentEvent =
   | { type: 'step'; phase: 'tool_call'; tool: string; args: Record<string, unknown> }
   | { type: 'step'; phase: 'tool_result'; tool: string; summary: string }
+  | { type: 'reasoning'; text: string }
   | { type: 'token'; text: string }
-  | { type: 'done'; records_consulted: number; model: string | null; tools_used: string[] }
+  | { type: 'done'; records_consulted: number; model: string | null; tools_used: string[]; usage?: Usage }
   | { type: 'error'; message: string }
 
 export interface ChatMessage {

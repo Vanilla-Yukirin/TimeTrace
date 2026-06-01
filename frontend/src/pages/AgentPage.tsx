@@ -1,32 +1,21 @@
-import { useRef, useState } from 'react'
-import { Send, Wrench, Square } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
+import { Menu, Send, Square } from 'lucide-react'
 import { streamAgentChat, type AgentEvent, type ChatMessage } from '@/lib/agentApi'
+import {
+  deriveTitle,
+  loadSessions,
+  newSession,
+  saveSessions,
+  statsForSessions,
+  type AgentSession,
+  type AssistantTurn,
+  type ChatTurn,
+} from '@/lib/agentSessions'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import { CatMascot } from '@/components/brand/CatMascot'
-import { Markdown } from '@/components/ui/Markdown'
-
-// A "step" the agent took mid-answer (a tool call + its one-line result),
-// surfaced inline so the user sees it consulting real data, not hallucinating.
-interface ToolStep {
-  tool: string
-  args?: Record<string, unknown>
-  summary?: string
-}
-
-interface Turn {
-  role: 'user' | 'assistant'
-  content: string
-  steps?: ToolStep[]
-  pending?: boolean
-  error?: string
-}
-
-const TOOL_LABELS: Record<string, string> = {
-  search_activity: '检索活动',
-  get_recent_activity: '拉取最近活动',
-  get_app_breakdown: '统计应用时长',
-  get_category_stats: '统计分类时长',
-  apply_label: '打标签',
-}
+import { AgentSidebar } from '@/components/agent/AgentSidebar'
+import { TurnView } from '@/components/agent/TurnView'
 
 const SUGGESTIONS = [
   '我今天主要在用哪些应用？各花了多久？',
@@ -34,12 +23,67 @@ const SUGGESTIONS = [
   '我有没有在摸鱼？花了多少时间在娱乐上？',
 ]
 
+// ---- pure block-builders: fold a streamed event into the assistant turn ------
+function appendText(t: AssistantTurn, text: string): AssistantTurn {
+  const blocks = [...t.blocks]
+  const last = blocks[blocks.length - 1]
+  if (last && last.kind === 'text') blocks[blocks.length - 1] = { kind: 'text', text: last.text + text }
+  else blocks.push({ kind: 'text', text })
+  return { ...t, blocks }
+}
+
+function appendThinking(t: AssistantTurn, text: string): AssistantTurn {
+  const blocks = [...t.blocks]
+  const last = blocks[blocks.length - 1]
+  if (last && last.kind === 'thinking') blocks[blocks.length - 1] = { kind: 'thinking', text: last.text + text }
+  else blocks.push({ kind: 'thinking', text })
+  return { ...t, blocks }
+}
+
+function fillToolResult(t: AssistantTurn, tool: string, summary: string): AssistantTurn {
+  const blocks = [...t.blocks]
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i]
+    if (b.kind === 'tool' && b.tool === tool && b.summary === undefined) {
+      blocks[i] = { ...b, summary }
+      break
+    }
+  }
+  return { ...t, blocks }
+}
+
 export function AgentPage() {
-  const [turns, setTurns] = useState<Turn[]>([])
+  // Start on a fresh blank chat with the persisted history below it (ChatGPT-style).
+  const [{ initialSessions, initialActive }] = useState(() => {
+    const blank = newSession()
+    return { initialSessions: [blank, ...loadSessions()], initialActive: blank.id }
+  })
+  const [sessions, setSessions] = useState<AgentSession[]>(initialSessions)
+  const [activeId, setActiveId] = useState(initialActive)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
+  const isMobile = useIsMobile()
   const abortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const sessionsRef = useRef(sessions)
+  sessionsRef.current = sessions
+
+  const active = sessions.find((s) => s.id === activeId) ?? sessions[0]
+  const stats = useMemo(() => statsForSessions(sessions), [sessions])
+
+  // Debounced persistence: stream updates fire many setSessions per second, so
+  // we only hit localStorage ~once the burst settles (saveSessions filters out
+  // empty drafts + caps history).
+  useEffect(() => {
+    const id = setTimeout(() => saveSessions(sessions), 400)
+    return () => clearTimeout(id)
+  }, [sessions])
+
+  // Flush latest state on unmount (route change) so an exchange that completed
+  // inside the 400ms debounce window isn't lost when navigating away.
+  useEffect(() => () => saveSessions(sessionsRef.current), [])
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -48,65 +92,90 @@ export function AgentPage() {
     })
   }
 
+  useEffect(scrollToBottom, [activeId])
+
+  // Patch the last (assistant) turn of session `sid`.
+  const patchTurn = (sid: string, fn: (t: AssistantTurn) => AssistantTurn) =>
+    setSessions((prev) =>
+      prev.map((s) => {
+        if (s.id !== sid) return s
+        const turns = [...s.turns]
+        const last = turns[turns.length - 1]
+        if (last && last.role === 'assistant') turns[turns.length - 1] = fn(last)
+        return { ...s, turns, updatedAt: Date.now() }
+      }),
+    )
+
+  function applyEvent(sid: string, ev: AgentEvent) {
+    if (ev.type === 'token') {
+      patchTurn(sid, (t) => appendText(t, ev.text))
+    } else if (ev.type === 'reasoning') {
+      patchTurn(sid, (t) => appendThinking(t, ev.text))
+    } else if (ev.type === 'step' && ev.phase === 'tool_call') {
+      patchTurn(sid, (t) => ({ ...t, blocks: [...t.blocks, { kind: 'tool', tool: ev.tool, args: ev.args }] }))
+    } else if (ev.type === 'step' && ev.phase === 'tool_result') {
+      patchTurn(sid, (t) => fillToolResult(t, ev.tool, ev.summary))
+    } else if (ev.type === 'done') {
+      patchTurn(sid, (t) => ({
+        ...t,
+        usage: ev.usage,
+        toolCount: t.blocks.filter((b) => b.kind === 'tool').length,
+        pending: false,
+      }))
+    } else if (ev.type === 'error') {
+      patchTurn(sid, (t) => ({ ...t, error: ev.message, pending: false }))
+    }
+    scrollToBottom()
+  }
+
   async function send(text: string) {
     const q = text.trim()
     if (!q || busy) return
     setInput('')
     setBusy(true)
-    const history: ChatMessage[] = turns
-      .filter((t) => !t.error)
-      .map((t) => ({ role: t.role, content: t.content }))
+    const sid = active.id
+
+    // History the model sees: prior turns, assistant collapsed to its text blocks.
+    const history: ChatMessage[] = []
+    for (const t of active.turns) {
+      if (t.role === 'user') {
+        history.push({ role: 'user', content: t.content })
+      } else if (!t.error) {
+        const txt = t.blocks
+          .filter((b) => b.kind === 'text')
+          .map((b) => (b.kind === 'text' ? b.text : ''))
+          .join('')
+          .trim()
+        if (txt) history.push({ role: 'assistant', content: txt })
+      }
+    }
     history.push({ role: 'user', content: q })
-    setTurns((prev) => [
-      ...prev,
-      { role: 'user', content: q },
-      { role: 'assistant', content: '', steps: [], pending: true },
-    ])
+
+    setSessions((prev) =>
+      prev.map((s) => {
+        if (s.id !== sid) return s
+        const turns: ChatTurn[] = [
+          ...s.turns,
+          { role: 'user', content: q },
+          { role: 'assistant', blocks: [], toolCount: 0, pending: true },
+        ]
+        return { ...s, turns, title: s.turns.length === 0 ? deriveTitle(turns) : s.title, updatedAt: Date.now() }
+      }),
+    )
     scrollToBottom()
 
     const ctrl = new AbortController()
     abortRef.current = ctrl
-    const patchLast = (fn: (t: Turn) => Turn) =>
-      setTurns((prev) => {
-        const next = [...prev]
-        next[next.length - 1] = fn(next[next.length - 1])
-        return next
-      })
-
     try {
       for await (const ev of streamAgentChat(history, { signal: ctrl.signal })) {
-        applyEvent(ev, patchLast)
-        scrollToBottom()
+        applyEvent(sid, ev)
       }
     } catch (err) {
-      if (!ctrl.signal.aborted) {
-        patchLast((t) => ({ ...t, pending: false, error: String(err) }))
-      }
+      if (!ctrl.signal.aborted) patchTurn(sid, (t) => ({ ...t, error: String(err), pending: false }))
     } finally {
-      patchLast((t) => ({ ...t, pending: false }))
+      patchTurn(sid, (t) => ({ ...t, pending: false }))
       setBusy(false)
       abortRef.current = null
-    }
-  }
-
-  function applyEvent(ev: AgentEvent, patchLast: (fn: (t: Turn) => Turn) => void) {
-    if (ev.type === 'step' && ev.phase === 'tool_call') {
-      patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), { tool: ev.tool, args: ev.args }] }))
-    } else if (ev.type === 'step' && ev.phase === 'tool_result') {
-      patchLast((t) => {
-        const steps = [...(t.steps ?? [])]
-        for (let i = steps.length - 1; i >= 0; i--) {
-          if (steps[i].tool === ev.tool && steps[i].summary === undefined) {
-            steps[i] = { ...steps[i], summary: ev.summary }
-            break
-          }
-        }
-        return { ...t, steps }
-      })
-    } else if (ev.type === 'token') {
-      patchLast((t) => ({ ...t, content: t.content + ev.text }))
-    } else if (ev.type === 'error') {
-      patchLast((t) => ({ ...t, error: ev.message, pending: false }))
     }
   }
 
@@ -115,43 +184,47 @@ export function AgentPage() {
     setBusy(false)
   }
 
-  return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        flex: 1,
-        minHeight: 0,
-        maxWidth: 820,
-        margin: '0 auto',
-        width: '100%',
-      }}
-    >
+  function onNew() {
+    const cur = sessions.find((s) => s.id === activeId)
+    if (cur && cur.turns.length === 0) {
+      setDrawerOpen(false)
+      return
+    }
+    const blank = newSession()
+    // Drop any other empty drafts so at most one blank chat exists.
+    setSessions((prev) => [blank, ...prev.filter((s) => s.turns.length > 0)])
+    setActiveId(blank.id)
+    setDrawerOpen(false)
+  }
+
+  function onSelect(id: string) {
+    setActiveId(id)
+    // Drop any empty draft we're leaving behind (so the list isn't littered).
+    setSessions((prev) => prev.filter((s) => s.id === id || s.turns.length > 0))
+    setDrawerOpen(false)
+  }
+
+  function onDelete(id: string) {
+    if (!window.confirm('删除这个对话？')) return
+    const remaining = sessions.filter((s) => s.id !== id)
+    const next = remaining.length > 0 ? remaining : [newSession()]
+    setSessions(next)
+    if (id === activeId) {
+      const top = [...next].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+      setActiveId(top.id)
+    }
+  }
+
+  const chatArea = (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '24px 20px' }}>
-        {turns.length === 0 ? (
-          <div
-            style={{
-              paddingTop: 40,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
+        {active.turns.length === 0 ? (
+          <div style={{ paddingTop: 36, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, maxWidth: 560, margin: '0 auto' }}>
             <CatMascot size={84} float />
             <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginTop: 6 }}>
               问问你的活动记录
             </div>
-            <div
-              style={{
-                fontSize: 12.5,
-                color: 'var(--text-muted)',
-                maxWidth: 360,
-                lineHeight: 1.6,
-                textAlign: 'center',
-                marginBottom: 6,
-              }}
-            >
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)', maxWidth: 360, lineHeight: 1.6, textAlign: 'center', marginBottom: 6 }}>
               基于你电脑上记录的真实活动，我会查数据再回答——不编造。
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 480, width: '100%' }}>
@@ -176,9 +249,9 @@ export function AgentPage() {
             </div>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-            {turns.map((t, i) => (
-              <TurnBubble key={i} turn={t} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 820, margin: '0 auto', width: '100%' }}>
+            {active.turns.map((t, i) => (
+              <TurnView key={i} turn={t} />
             ))}
           </div>
         )}
@@ -189,13 +262,7 @@ export function AgentPage() {
           e.preventDefault()
           send(input)
         }}
-        style={{
-          display: 'flex',
-          gap: 10,
-          padding: '14px 20px',
-          borderTop: '1px solid var(--bg-border)',
-          background: 'var(--bg-surface)',
-        }}
+        style={{ display: 'flex', gap: 10, padding: '14px 20px', borderTop: '1px solid var(--bg-border)', background: 'var(--bg-surface)' }}
       >
         <input
           value={input}
@@ -215,123 +282,69 @@ export function AgentPage() {
           }}
         />
         {busy ? (
-          <button
-            type="button"
-            onClick={stop}
-            aria-label="停止"
-            style={{
-              padding: '0 18px',
-              borderRadius: 'var(--radius-md)',
-              border: '1px solid var(--bg-border)',
-              background: 'var(--bg-raised)',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-            }}
-          >
+          <button type="button" onClick={stop} aria-label="停止" style={{ padding: '0 18px', borderRadius: 'var(--radius-md)', border: '1px solid var(--bg-border)', background: 'var(--bg-raised)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
             <Square size={16} />
           </button>
         ) : (
-          <button
-            type="submit"
-            aria-label="发送"
-            style={{
-              padding: '0 20px',
-              borderRadius: 'var(--radius-md)',
-              border: 'none',
-              background: 'var(--grad-accent)',
-              color: '#fff',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
+          <button type="submit" aria-label="发送" style={{ padding: '0 20px', borderRadius: 'var(--radius-md)', border: 'none', background: 'var(--grad-accent)', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
             <Send size={16} />
           </button>
         )}
       </form>
     </div>
   )
-}
 
-function TurnBubble({ turn }: { turn: Turn }) {
-  if (turn.role === 'user') {
+  const sidebar = (
+    <AgentSidebar sessions={sessions} activeId={activeId} onNew={onNew} onSelect={onSelect} onDelete={onDelete} stats={stats} />
+  )
+
+  if (isMobile) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <div
-          style={{
-            maxWidth: '80%',
-            padding: '10px 14px',
-            borderRadius: 'var(--radius-lg)',
-            background: 'var(--grad-accent)',
-            color: '#fff',
-            fontSize: 14,
-            lineHeight: 1.5,
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          {turn.content}
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--bg-border)', background: 'var(--bg-surface)' }}>
+          <button onClick={() => setDrawerOpen(true)} aria-label="对话列表" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 38, height: 38, borderRadius: 'var(--radius-md)', background: 'var(--bg-raised)', border: '1px solid var(--bg-border)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+            <Menu size={18} />
+          </button>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {active.title || '新对话'}
+          </div>
         </div>
+        {chatArea}
+        <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="tt-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 49 }} />
+            <Dialog.Content
+              className="tt-drawer-content"
+              aria-label="对话列表"
+              style={{ position: 'fixed', top: 0, bottom: 0, left: 0, width: 'min(82vw, 320px)', zIndex: 50, background: 'var(--bg-surface)', borderRight: '1px solid var(--bg-border)', outline: 'none' }}
+            >
+              <Dialog.Title style={srOnly}>对话列表</Dialog.Title>
+              {sidebar}
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
       </div>
     )
   }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
-      {turn.steps && turn.steps.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {turn.steps.map((s, i) => (
-            <span
-              key={i}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 5,
-                padding: '4px 10px',
-                borderRadius: 'var(--radius-pill)',
-                background: 'var(--bg-surface)',
-                border: '1px solid var(--bg-border)',
-                color: 'var(--text-muted)',
-                fontSize: 12,
-              }}
-            >
-              <Wrench size={12} aria-hidden="true" />
-              {TOOL_LABELS[s.tool] ?? s.tool}
-              {s.summary ? ` · ${s.summary}` : '…'}
-            </span>
-          ))}
-        </div>
-      )}
-      {turn.error ? (
-        <div
-          style={{
-            padding: '10px 14px',
-            borderRadius: 'var(--radius-lg)',
-            background: 'var(--error-bg)',
-            border: '1px solid var(--error)',
-            color: 'var(--error)',
-            fontSize: 14,
-          }}
-        >
-          出错了：{turn.error}
-        </div>
-      ) : (
-        <div
-          style={{
-            maxWidth: '90%',
-            padding: '10px 14px',
-            borderRadius: 'var(--radius-lg)',
-            background: 'var(--bg-raised)',
-            border: '1px solid var(--bg-border)',
-            color: 'var(--text-primary)',
-            fontSize: 14,
-            lineHeight: 1.6,
-          }}
-        >
-          {turn.content ? (
-            <Markdown text={turn.content} trailing={turn.pending ? ' ▍' : null} />
-          ) : (
-            turn.pending && '思考中…'
-          )}
-        </div>
-      )}
+    <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+      <aside style={{ width: 248, flexShrink: 0, borderRight: '1px solid var(--bg-border)', background: 'var(--bg-surface)', minHeight: 0 }}>
+        {sidebar}
+      </aside>
+      {chatArea}
     </div>
   )
+}
+
+const srOnly: CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
 }
