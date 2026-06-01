@@ -65,6 +65,7 @@ devlogs/
 | [archive-202604300228-image-lightbox.md](frontend/archive-202604300228-image-lightbox.md) | 基于 Radix Dialog 实装截图放大 Lightbox：弹层放大 + 左右键切换 + 底部信息条 + 动画；处理索引越界、按钮嵌套语义、margin 覆盖等 review 反馈，并同步 `infra/architecture/web-ui.md` |
 | [archive-202605310019-redesign-review-emb-tokenize.md](frontend/archive-202605310019-redesign-review-emb-tokenize.md) | 6 维并行 workflow 评审 infra agent 前端美化重构（双主题/吉祥物/无障碍亮点 + medium/low 清单）；主 agent 修自己份内的 EmbeddingDiagnostics 令牌化 + a11y（high 全清）；樱花"看不见"根因（只在浅色 app-glow、默认深色看不到）；给 infra agent 交接 prompt（移动端适配 + 樱花 + medium/low） |
 | [archive-202605311034-frontend-redesign-mobile-a11y.md](frontend/archive-202605311034-frontend-redesign-mobile-a11y.md) | 前端从单深色硬编码重做为双主题设计令牌系统 + 移动端适配（useIsMobile 抽屉/全屏覆盖层）+ 时间轴触摸（单指平移/双指缩放/点选）+ 刻度自适应稀疏 + 樱花氛围 + 防浏览器自动填密码；两轮多 agent 对抗审计共确认 15 项全修（对比度/a11y/Radix 模态滚动锁）；分批 scp 部署 VPS 验证全绿 |
+| [archive-202606012136-agent-chat-ux-overhaul.md](frontend/archive-202606012136-agent-chat-ux-overhaul.md) | 按用户 7 项诉求重做 Agent 聊天页 UX：Markdown 换 react-markdown+remark-gfm（GFM 表格）+ 懒加载 mermaid（图表库按需 chunk）；助手回合改「按到达顺序 block 列表（thinking/text/tool）」→ 工具间文本各自独立气泡（修全挤一个）；可折叠思考流 + 每条 token 用量灰字；localStorage 多会话持久化+列表+左栏 token 面板；配套后端小改 runner 发 reasoning 事件 + stream_options 收 usage 进 done。4 路对抗审计修 O(n²) 重解析(React.memo)/会话行键盘可达/卸载 flush。2 commit、push（含他人 09a92c0）、前后端都部署验证；VPS 链路抖动改 tarball 单流+幂等原子交换+curl 校验；撞见另一 agent 并发部署的前端 bundle |
 
 ---
 
