@@ -54,6 +54,30 @@ async def test_sender_drains_in_submission_order(outbox):
     assert await outbox.pending_count() == 0
 
 
+async def test_sender_drops_oversize_image_entry(outbox):
+    """An entry whose image blob exceeds the cap is dropped (acked without
+    sending) so it can't wedge the strict-FIFO queue; the entry behind it
+    still sends."""
+    from timetrace.client.core.outbox_sender import _MAX_IMAGE_BYTES
+
+    await outbox.append({"i": 0}, image_bytes=b"X" * (_MAX_IMAGE_BYTES + 1))  # oversize → drop
+    eid_ok = await outbox.append({"i": 1}, image_bytes=b"X" * 1024)  # normal → send
+
+    stub = _StubSender()
+    sender = OutboxSender(outbox, stub, idle_poll_interval_s=0.05)
+    stop = asyncio.Event()
+
+    task = asyncio.create_task(sender.run(stop))
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+
+    # The oversize entry never reached the sender; only the small one did.
+    assert [e.entry_id for e in stub.calls] == [eid_ok]
+    assert await outbox.pending_count() == 0
+
+
 async def test_sender_picks_up_entries_appended_after_start(outbox):
     """Sender's idle wait must let new appends drain the next iteration."""
     stub = _StubSender()

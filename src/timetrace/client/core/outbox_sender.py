@@ -48,6 +48,15 @@ logger = structlog.get_logger(__name__)
 # raises any exception on failure.
 SendCallable = Callable[[OutboxEntry], Awaitable[None]]
 
+# Drop image entries whose blob exceeds this. Legacy pre-JPEG screenshots
+# (full-res PNG, ~5MB) fail to traverse the residential→FRP→remote path
+# reliably — they time out / TLS-reset mid-upload and, under strict FIFO,
+# block the entire queue behind them. New captures are ~0.5MB JPEGs, well
+# under this cap, so it only catches the legacy oversize stragglers. The
+# record-only entry for the same capture is a separate outbox entry and still
+# uploads — only that one screenshot is lost, not the activity record.
+_MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2 MB
+
 
 class _TokenBucket:
     """Pre-emptive rate limiter: ``await consume(n)`` blocks until n bytes of
@@ -155,6 +164,19 @@ class OutboxSender:
         async for entry in self._outbox.iter_pending():
             if stop_event.is_set():
                 return sent
+            # Drop oversize legacy screenshots that would otherwise wedge the
+            # FIFO queue forever (they can't be uploaded reliably). Ack to step
+            # past them; the record-only entry for the same capture still sends.
+            if entry.image_bytes is not None and len(entry.image_bytes) > _MAX_IMAGE_BYTES:
+                logger.warning(
+                    "outbox_sender.dropped_oversize_image",
+                    entry_id=entry.entry_id,
+                    image_bytes=len(entry.image_bytes),
+                    limit=_MAX_IMAGE_BYTES,
+                )
+                await self._outbox.ack_next(entry.entry_id)
+                self._acks_since_compact += 1
+                continue
             # Pre-emptive bandwidth gate: wait BEFORE the network attempt so the
             # bytes we're about to send fit inside the cap. No-op when the
             # bucket is disabled (max_kbps=0).
