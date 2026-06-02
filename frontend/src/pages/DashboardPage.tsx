@@ -69,23 +69,36 @@ export function DashboardPage() {
     setSteps([])
     setLiveText('')
     genScopeRef.current = scope
+    const startedAt = Date.now()
     try {
       for await (const ev of reportsApi.generateStream(scope)) {
         applyEvent(ev)
       }
     } catch {
-      // The streaming endpoint is an SSE-over-fetch POST. Some client networks (a
-      // local proxy/VPN in TUN mode, strict corporate proxies) drop long-lived
-      // streaming responses while ordinary request/response POSTs still go through.
-      // Fall back to the non-streaming endpoint — we lose the live tool-step preview
-      // but still get the finished report (the spinner keeps covering the wait).
+      // The streaming endpoint is an SSE-over-fetch POST. Two failure modes seen in
+      // the wild: (a) some browser + proxy(TUN) setups can't read the long-lived
+      // stream; (b) a long (>~60s) generation can get idle-cut by an intermediary
+      // even on the plain POST — but the server still finishes + PERSISTS the report.
+      // So: fall back to the non-streaming POST; and if THAT is also severed, poll
+      // latest() to recover the report that landed server-side after we were cut.
+      setSteps([])
+      setLiveText('')
+      const sc = genScopeRef.current ?? scope
       try {
-        setSteps([])
-        setLiveText('')
-        const report = await reportsApi.generate(genScopeRef.current ?? scope)
-        setReport(report)
+        setReport(await reportsApi.generate(sc))
       } catch (fallbackErr) {
-        setError(String(fallbackErr))
+        let recovered: Report | null = null
+        for (let i = 0; i < 15 && !recovered; i++) {
+          await new Promise((r) => setTimeout(r, 4000))
+          try {
+            const r = await reportsApi.latest(sc)
+            if (r && r.created_at >= startedAt - 5000) recovered = r // a fresh one landed
+          } catch {
+            // keep polling
+          }
+        }
+        if (recovered) setReport(recovered)
+        else setError(String(fallbackErr))
       }
     } finally {
       setGenerating(false)
