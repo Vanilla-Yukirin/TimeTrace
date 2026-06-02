@@ -9,6 +9,7 @@ not KPI bars. The LLM call is expensive, so this runs on a schedule (see
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import AsyncIterator
@@ -56,21 +57,21 @@ _REPORT_SYSTEM = (
     "配置后该应用就会被自动、确定性地归类。把它写成贴心建议，而不是报错或吐槽。\n\n"
     "工作流：先调用工具（get_recent_activity / get_app_breakdown / get_category_stats）"
     "拿到这段时间的【真实】数据，再据此写报告。\n\n"
-    "输出：**直接输出一段自包含的 HTML 片段本身**，第一个字符就是 `<`。"
-    "绝对不要输出任何分析过程 / 思考 / 前言 / 解释，也不要 ```html 代码围栏、不要 markdown、"
-    "不要 <html>/<body> 外壳。结构：\n"
-    "1) 顶部一个总览卡片：本时段（已剔除休眠伪影后的）大致活跃时长 + 最花时间的应用/分类；\n"
-    "2) 下面 2-4 个『特点 / 洞察』小卡片，每个一句话点出一个【有数据出处】的真实特点"
-    "（如某段时间集中在某应用、某分类占比突出、沟通类很活跃）。"
-    "可以风趣，但每句都要能在工具数据里找到依据。\n"
-    "样式用内联 style，做成一张【自带完整配色的自包含海报】："
-    "根容器用一个**不透明的深色背景**（例如 background:#1e1e2a 这类深色，"
-    "不要 rgba 半透明、不要 transparent），配与之对比的浅色文字；"
-    "每个卡片 / 标题 / 正文都【明确写死】自己的颜色且对比充足。"
-    "绝不要用 color:inherit 或半透明背景去依赖外部页面主题——"
-    "这份报告要在任意深色或浅色页面背景上都自成一体、清晰好看。"
-    "可用 emoji、圆角卡片，紧凑好看。时长把秒换算成分钟 / 小时。"
-    "数据稀少、或大半是『尚未分类』遗留时，就幽默且诚实地说明现状，别硬编洞察。"
+    "输出：**只输出一个 JSON 对象**，第一个字符就是 `{`。绝对不要输出任何分析过程 / 思考 / "
+    "前言 / 解释，也不要 markdown、不要 ```json 代码围栏。颜色和排版由前端负责，你只给内容文字"
+    "（值一律用中文）。字段：\n"
+    '- "scope_label"(str)：本报告时段的中文短语，如 "过去 24 小时"。\n'
+    '- "headline"(str)：本时段大致活跃时长（已剔除休眠封顶后），口语化，如 "约 10 小时"。\n'
+    '- "headline_caption"(str)：给 headline 配一句很短的说明，如 "总活跃时长（已剔除休眠封顶）"。\n'
+    '- "top_app"(对象或 null)：最花时间的应用，形如 '
+    '{"name": "Visual Studio Code", "value": "约 3.3 小时"}。\n'
+    '- "caveat"(str 或 null)：一句话提醒；比如一大批数据还在排队分类（系统积压、不是用户行为）'
+    "时友好提一句，没有要提醒的就给 null。\n"
+    '- "insights"(数组)：2-4 条洞察，每条形如 '
+    '{"emoji": "💻", "title": "短标题", "body": "一句话点出一个【有数据出处】的真实特点"}。'
+    "可风趣，但每句都要能在工具数据里找到依据。\n"
+    "数据稀少、或大半是『尚未分类』遗留时，就在 caveat / insights 里幽默且诚实地说明现状，"
+    "别硬编洞察。"
 )
 
 
@@ -79,22 +80,88 @@ def _instruction(scope: str) -> str:
     return f"请为我生成一份『{label}』的活动近况洞察看板（HTML）。先查真实数据再写。"
 
 
-def _clean_html(text: str) -> str:
-    """Return just the HTML artifact.
-
-    Some model variants leak their planning/reasoning as plain text BEFORE the
-    artifact and wrap the artifact in a ```html ... ``` fence (the leading-fence
-    strip below then misses it, leaking the whole chain-of-thought into the
-    report). So if a fenced block exists anywhere, take its contents; otherwise
-    fall back to stripping a stray leading / trailing bare fence.
-    """
-    t = (text or "").strip()
-    m = re.search(r"```(?:html)?[ \t]*\n(.*?)\n?```", t, re.S | re.I)
+def _json_candidates(t: str):
+    """Yield progressively-more-salvaged candidate JSON strings from raw output."""
+    yield t
+    # ```json ... ``` fenced block (model wrapped it despite being told not to)
+    m = re.search(r"```(?:json)?[ \t]*\n(.*?)\n?```", t, re.S | re.I)
     if m:
-        return m.group(1).strip()
-    t = re.sub(r"^```[a-zA-Z]*\n", "", t)
-    t = re.sub(r"\n```$", "", t)
-    return t.strip()
+        yield m.group(1).strip()
+    # first balanced {...} run (model prepended stray prose / reasoning)
+    start = t.find("{")
+    if start >= 0:
+        depth = 0
+        for i in range(start, len(t)):
+            if t[i] == "{":
+                depth += 1
+            elif t[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    yield t[start : i + 1]
+                    break
+
+
+def _extract_json(text: str) -> dict | None:
+    """Pull the report JSON object out of the model's output (best-effort)."""
+    t = (text or "").strip()
+    for candidate in _json_candidates(t):
+        try:
+            obj = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def _parse_report(text: str) -> dict:
+    """Validate / coerce the model's JSON into the clean shape the frontend renders.
+
+    Colour + layout live in the frontend's themed component (so reports adapt to
+    the app's light/dark theme); the model only supplies content text here. We
+    always return a well-formed dict — a fallback with a friendly caveat if the
+    output couldn't be parsed — so the frontend never has to guess.
+    """
+    obj = _extract_json(text)
+    if obj is None:
+        return {
+            "scope_label": "",
+            "headline": "",
+            "headline_caption": "",
+            "top_app": None,
+            "caveat": "这份报告没能正常生成，点「重新生成」再试一次吧。",
+            "insights": [],
+        }
+
+    def s(v: object) -> str:
+        return v.strip() if isinstance(v, str) else ""
+
+    top = obj.get("top_app")
+    top_app = None
+    if isinstance(top, dict) and s(top.get("name")):
+        top_app = {"name": s(top.get("name")), "value": s(top.get("value"))}
+
+    insights: list[dict] = []
+    raw = obj.get("insights")
+    if isinstance(raw, list):
+        for it in raw[:5]:
+            if isinstance(it, dict) and s(it.get("title")) and s(it.get("body")):
+                insights.append(
+                    {
+                        "emoji": s(it.get("emoji")) or "•",
+                        "title": s(it.get("title")),
+                        "body": s(it.get("body")),
+                    }
+                )
+
+    return {
+        "scope_label": s(obj.get("scope_label")),
+        "headline": s(obj.get("headline")),
+        "headline_caption": s(obj.get("headline_caption")),
+        "top_app": top_app,
+        "caveat": s(obj.get("caveat")) or None,
+        "insights": insights,
+    }
 
 
 class ReportGenerator:
@@ -150,16 +217,17 @@ class ReportGenerator:
                     return
         finally:
             await runner.aclose()
-        html = _clean_html("".join(parts))
+        data = _parse_report("".join(parts))
+        content = json.dumps(data, ensure_ascii=False)
         report_id = await self._db.insert_report(
             scope=scope,
             period_start=start_ms,
             period_end=now_ms,
-            fmt="html",
-            content=html,
+            fmt="json",
+            content=content,
             model=self._cfg.model,
         )
-        logger.info("report.saved", scope=scope, report_id=report_id, html_len=len(html))
+        logger.info("report.saved", scope=scope, report_id=report_id, n=len(data["insights"]))
         yield {
             "type": "report",
             "report": {
@@ -167,8 +235,8 @@ class ReportGenerator:
                 "scope": scope,
                 "period_start": start_ms,
                 "period_end": now_ms,
-                "format": "html",
-                "content": html,
+                "format": "json",
+                "content": content,
                 "model": self._cfg.model,
                 "created_at": now_ms,
             },

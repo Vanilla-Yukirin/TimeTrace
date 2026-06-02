@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from timetrace.common.config import StorageConfig, VLMConfig
@@ -29,8 +31,14 @@ async def test_insert_and_get_latest_report(db):
     assert await db.get_latest_report("recent_7d") is None
 
 
-async def test_report_generator_stores_cleaned_html(db, monkeypatch):
+async def test_report_generator_stores_parsed_json(db, monkeypatch):
     import timetrace.server.report.generator as gmod
+
+    payload = (
+        '{"scope_label":"过去24小时","headline":"约5小时","headline_caption":"总活跃",'
+        '"top_app":{"name":"VS Code","value":"约3小时"},"caveat":null,'
+        '"insights":[{"emoji":"💻","title":"努力","body":"今天很努力"}]}'
+    )
 
     class _StubRunner:
         def __init__(self, *a, **k):
@@ -38,7 +46,8 @@ async def test_report_generator_stores_cleaned_html(db, monkeypatch):
 
         async def run(self, messages, **k):
             yield {"type": "step", "phase": "tool_call", "tool": "get_app_breakdown", "args": {}}
-            yield {"type": "token", "text": "```html\n<div>今天很努力</div>\n```"}
+            # model leaks reasoning + wraps in a ```json fence — must still parse out
+            yield {"type": "token", "text": "Let me think...\n```json\n" + payload + "\n```"}
             yield {"type": "done", "records_consulted": 1, "model": "m", "tools_used": ["x"]}
 
         async def aclose(self):
@@ -47,11 +56,13 @@ async def test_report_generator_stores_cleaned_html(db, monkeypatch):
     monkeypatch.setattr(gmod, "AgentRunner", _StubRunner)
     gen = gmod.ReportGenerator(db, VLMConfig(base_url="x", api_key="x", model="m"))
     res = await gen.generate("recent_24h")
-    assert res["format"] == "html"
-    # code fence stripped
-    assert res["content"] == "<div>今天很努力</div>"
+    assert res["format"] == "json"
+    data = json.loads(res["content"])
+    assert data["headline"] == "约5小时"
+    assert data["top_app"]["name"] == "VS Code"
+    assert data["insights"][0]["title"] == "努力"
     latest = await db.get_latest_report("recent_24h")
-    assert latest["content"] == "<div>今天很努力</div>"
+    assert json.loads(latest["content"])["headline"] == "约5小时"
 
 
 async def test_report_generator_propagates_error(db, monkeypatch):
@@ -88,8 +99,13 @@ async def test_generate_stream_yields_steps_tokens_then_report(db, monkeypatch):
                 "tool": "get_app_breakdown",
                 "summary": "3 条",
             }
-            yield {"type": "token", "text": "<div>今天"}
-            yield {"type": "token", "text": "很努力</div>"}
+            # JSON split across two token events (streamed)
+            yield {"type": "token", "text": '{"scope_label":"过去24小时","headline":"约5小时",'}
+            yield {
+                "type": "token",
+                "text": '"headline_caption":"总活跃","top_app":null,"caveat":null,'
+                '"insights":[{"emoji":"📊","title":"T","body":"今天很努力"}]}',
+            }
             yield {"type": "done", "records_consulted": 1, "model": "m", "tools_used": ["x"]}
 
         async def aclose(self):
@@ -104,12 +120,15 @@ async def test_generate_stream_yields_steps_tokens_then_report(db, monkeypatch):
     # terminal event is the persisted report
     assert types[-1] == "report"
     report = events[-1]["report"]
-    assert report["content"] == "<div>今天很努力</div>"
+    assert report["format"] == "json"
+    data = json.loads(report["content"])
+    assert data["headline"] == "约5小时"
+    assert data["insights"][0]["body"] == "今天很努力"
     assert report["scope"] == "recent_24h"
     assert "created_at" in report
     # and it actually landed in the DB
     latest = await db.get_latest_report("recent_24h")
-    assert latest["content"] == "<div>今天很努力</div>"
+    assert json.loads(latest["content"])["headline"] == "约5小时"
 
 
 async def test_generate_stream_emits_error_event_no_report(db, monkeypatch):
