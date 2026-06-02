@@ -286,9 +286,24 @@ export function DashboardPage() {
             </div>
             {/* The report body is HTML authored by the user's own local LLM from
                 their own activity data (single-user, local-first threat model).
-                Rendered inline so its color:inherit picks up the theme tokens. */}
+                The prompt asks for theme-adaptive styling but the model isn't
+                reliable about it — it bakes solid light-mode card colors, which
+                look wrong on the dark theme. So we render reports on a fixed light
+                "paper" surface (colorScheme:light + light bg + dark base text):
+                light-baked HTML then reads as an intentional document in BOTH
+                themes, and any color:inherit text falls back to dark (readable on
+                the paper) rather than the white --text-primary it used to get. */}
             <div
-              style={{ color: 'var(--text-primary)' }}
+              className="tt-report-paper"
+              style={{
+                colorScheme: 'light',
+                background: '#f5f6f8',
+                color: '#1b1e27',
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid var(--bg-border)',
+                padding: 16,
+                overflowX: 'auto',
+              }}
               dangerouslySetInnerHTML={{ __html: report.content }}
             />
           </>
