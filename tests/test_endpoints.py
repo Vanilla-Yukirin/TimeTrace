@@ -142,6 +142,39 @@ async def test_selector_none_when_all_down_and_no_current():
     assert await sel.select() is None
 
 
+async def test_selector_upgrade_only_skips_current_probe():
+    """Periodic upgrade check must NOT re-probe the current endpoint — only
+    higher-priority ones — so a slow/busy current isn't falsely failed."""
+    probed: list[str] = []
+    healthy = {"u_pub"}  # only public healthy (localhost down)
+
+    async def probe(url: str) -> bool:
+        probed.append(url)
+        return url in healthy
+
+    sel = EndpointSelector(_eps(("lan", "u_lan", True), ("pub", "u_pub", True)), probe=probe)
+    await sel.select()  # full probe → current=pub
+    assert sel.current_url() == "u_pub"
+    probed.clear()
+    await sel.select(upgrade_only=True)  # current=pub (lowest) → only lan probed
+    assert probed == ["u_lan"]  # pub (current) NOT re-probed
+    assert sel.current_url() == "u_pub"  # kept
+
+
+async def test_selector_upgrade_only_upgrades_when_higher_recovers():
+    healthy = {"u_pub"}
+
+    async def probe(url: str) -> bool:
+        return url in healthy
+
+    sel = EndpointSelector(_eps(("lan", "u_lan", True), ("pub", "u_pub", True)), probe=probe)
+    await sel.select()
+    assert sel.current_url() == "u_pub"
+    healthy.add("u_lan")  # higher-priority lan recovers
+    await sel.select(upgrade_only=True)
+    assert sel.current_url() == "u_lan"  # upgraded
+
+
 async def test_selector_upgrades_back_to_higher_priority():
     healthy = {"u_pub"}
 

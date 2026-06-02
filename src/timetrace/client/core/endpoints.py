@@ -83,24 +83,40 @@ class EndpointSelector:
     def _enabled(self) -> list[EndpointSection]:
         return [e for e in self._endpoints if e.enabled]
 
-    async def select(self) -> EndpointSection | None:
+    async def select(self, *, upgrade_only: bool = False) -> EndpointSection | None:
         """Probe enabled endpoints in priority order; set ``current`` to the
-        first healthy one. Probes all enabled (cheap) so the tray gets full
-        health, but the first healthy in priority order always wins.
+        first healthy one. First healthy in priority order wins.
 
-        Sticky on a probe miss: if *nothing* probes healthy we KEEP the current
-        endpoint (when still enabled) rather than blackholing sends to None — a
-        probe is only a hint; the send's own retry is the real liveness test.
-        This stops a flaky link from flapping current → None → "no healthy
-        endpoint" on every transient probe failure. Only drop to None when there
-        is no current to keep."""
+        Two rules that make this robust on a flaky/slow link:
+
+        - **Don't probe the current endpoint** (``upgrade_only=True``, the
+          periodic check): its liveness is already proven by whether sends
+          succeed, so re-probing wastes the (scarce) uplink and a short healthz
+          timeout can falsely fail mid-upload. We only probe *higher*-priority
+          endpoints — to decide whether to upgrade back (e.g. LAN at home).
+          ``upgrade_only=False`` (startup + on a send failure) probes all to find
+          any working path.
+        - **Sticky**: if nothing probes healthy, KEEP current (when still
+          enabled) instead of blackholing sends to None — the send's own retry is
+          the real liveness test. Only drop to None with no current to keep."""
         async with self._lock:
+            enabled = self._enabled()
+            to_probe = enabled
+            if upgrade_only and self._current is not None:
+                # Only endpoints strictly higher-priority than current.
+                to_probe = []
+                for ep in enabled:
+                    if ep.name == self._current.name:
+                        break
+                    to_probe.append(ep)
+
             chosen: EndpointSection | None = None
-            for ep in self._enabled():
+            for ep in to_probe:
                 ok = await self._probe(ep.url)
                 self._health[ep.name] = ok
                 if ok and chosen is None:
                     chosen = ep
+
             prev = self._current.name if self._current is not None else None
             if chosen is not None:
                 self._current = chosen
@@ -108,21 +124,24 @@ class EndpointSelector:
                     logger.info(
                         "endpoint.selected", name=chosen.name, url=chosen.url, previous=prev
                     )
-            elif self._current is not None and self._current.name in {
-                e.name for e in self._enabled()
-            }:
-                # Transient probe miss — keep using current; let the send decide.
-                logger.warning("endpoint.probe_miss_keeping_current", current=self._current.name)
+            elif self._current is not None and self._current.name in {e.name for e in enabled}:
+                # Keep current. Silent during the periodic upgrade check (steady
+                # state); only warn on a full probe (a real send-failure probe).
+                if not upgrade_only:
+                    logger.warning(
+                        "endpoint.probe_miss_keeping_current", current=self._current.name
+                    )
             else:
                 self._current = None
-                logger.warning("endpoint.none_healthy", tried=[e.name for e in self._enabled()])
+                logger.warning("endpoint.none_healthy", tried=[e.name for e in enabled])
             return self._current
 
     async def run(self, stop_event: asyncio.Event) -> None:
-        """Background loop: re-select every ``probe_interval_s`` so a recovered
-        higher-priority endpoint is picked back up. Returns when stop is set."""
+        """Background loop: every ``probe_interval_s`` check only whether a
+        higher-priority endpoint came back (upgrade), without re-probing the
+        current one. Returns when stop is set."""
         while not stop_event.is_set():
-            await self.select()
+            await self.select(upgrade_only=True)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=self._probe_interval)
             except asyncio.TimeoutError:
