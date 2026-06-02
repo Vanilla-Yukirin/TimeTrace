@@ -11,7 +11,8 @@ import structlog
 from PIL import Image
 
 from timetrace.server.embedding.client import EmbeddingClient, EmbeddingError
-from timetrace.server.rules.engine import RuleSet, VlmPrediction, decide_category
+from timetrace.server.rules.engine import VlmPrediction, decide_category
+from timetrace.server.settings.overrides import build_ruleset, find_note, load_overrides
 from timetrace.server.vlm.client import VLMClient, VLMError, format_description
 from timetrace.server.vlm.health import VLMHealthGate
 
@@ -195,8 +196,18 @@ class AnalysisWorker:
             await self._fail(record_id, retry_count, f"image load failed: {exc}")
             return
 
+        # User per-app overrides (settings KV, empty by default). Loaded fresh
+        # per task so edits take effect without a restart — one indexed PK
+        # lookup, negligible next to the VLM call.
+        overrides = await load_overrides(self._db)
+        app_name = meta.get("app_name") or ""
+
         try:
-            payload = await self._vlm.describe(image, window_title=meta["window_title"])
+            payload = await self._vlm.describe(
+                image,
+                window_title=meta["window_title"],
+                app_note=find_note(overrides, app_name),
+            )
         except VLMError as exc:
             await self._gate.report_failure()
             await self._fail(record_id, retry_count, str(exc))
@@ -206,17 +217,17 @@ class AnalysisWorker:
         text = format_description(payload)
         await self._db.save_description(record_id, text)
 
-        # Classification: a deterministic rule (if any) outvotes the VLM's pick;
-        # with no rule the VLM's chosen category wins. RuleSet is empty for now —
-        # the hook is here for app/domain overrides later.
+        # Classification: a user rule (if any) deterministically outvotes the
+        # VLM's pick (rule weight 2.0 > vlm 1.5); with no matching rule the VLM's
+        # chosen category wins. Rules come from the per-app overrides setting.
         final_cat, _conf, _trace = decide_category(
-            app=meta.get("app_name") or "",
+            app=app_name,
             url=meta.get("url"),
             title=meta.get("window_title") or "",
             vlm_pred=VlmPrediction(
                 category=payload.get("category") or "uncategorized", confidence=1.0
             ),
-            rules=RuleSet(),
+            rules=build_ruleset(overrides),
         )
         await self._db.set_category_final(record_id, final_cat)
 

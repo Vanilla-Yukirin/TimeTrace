@@ -27,6 +27,7 @@ from timetrace.server.api.routes import (
     records,
     reports,
     search,
+    settings,
     skill,
     thumbs,
 )
@@ -123,6 +124,7 @@ def create_app(
     app.include_router(feedback.router, prefix="/v1", dependencies=business_deps)
     app.include_router(agent_routes.router, prefix="/v1", dependencies=business_deps)
     app.include_router(reports.router, prefix="/v1", dependencies=business_deps)
+    app.include_router(settings.router, prefix="/v1", dependencies=business_deps)
 
     # Phase 2 (login system): /thumbs is its own route module because the
     # FileResponse path-traversal logic doesn't belong on records/etc. — but

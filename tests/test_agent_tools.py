@@ -74,11 +74,36 @@ async def test_get_app_breakdown_clamps_negative_durations(db):
     assert res["total_seconds"] >= 0
 
 
-async def test_get_category_stats_buckets_uncategorized(db):
+async def test_get_app_breakdown_caps_sleep_inflated_spans(db):
+    """A record whose span exceeds the plausibility cap (laptop sleep / lid-
+    close left the last pre-sleep record open ~hours) contributes 0, not its
+    inflated duration — otherwise one 9h sleep gap dwarfs the real day."""
+    now = int(time.time() * 1000)
+    rid = await db.insert_record(
+        CaptureContext(app_name="QQ", process_name="qq.exe", window_title="x"),
+        reason="test",
+        ts_start=now - 9 * 3600 * 1000,  # 9h ago, inside the 24h window
+    )
+    await db.close_record(rid, ts_end=now)  # ~9h span = sleep artifact
+    res = await agent_tools.get_app_breakdown(db, hours_back=24)
+    qq = next((it for it in res["items"] if it["app_name"] == "QQ"), None)
+    assert qq is not None
+    assert qq["total_seconds"] == 0  # capped, not 32400
+    assert res["capped_per_record_seconds"] == 300
+
+
+async def test_get_category_stats_buckets_unclassified_not_uncategorized(db):
+    """A record with no analysis row yet is SYSTEM-INTERNAL backlog, not the
+    user-facing 'uncategorized' category. It must land in the distinct
+    '_unclassified' bucket (flagged is_unclassified) so reports don't narrate
+    it as real behaviour — this is the NULL-vs-uncategorized conflation fix."""
     await _insert(db)
     res = await agent_tools.get_category_stats(db, hours_back=24)
-    cats = {it["category"] for it in res["items"]}
-    assert "uncategorized" in cats
+    by_cat = {it["category"]: it for it in res["items"]}
+    assert "_unclassified" in by_cat
+    assert by_cat["_unclassified"].get("is_unclassified") is True
+    assert "uncategorized" not in by_cat  # NOT conflated with the real category
+    assert "work" in res["categories_legend"]
 
 
 async def test_apply_label_sets_category_final(db):

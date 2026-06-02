@@ -28,6 +28,47 @@ _MAX_LIMIT = 200
 _MAX_TOP_N = 50
 _MAX_HOURS = 720  # 30 days
 
+# A single record spanning more than this is a stale boundary artifact (laptop
+# sleep / lid-close left the last pre-sleep record open until wake), NOT real
+# activity time. Capture emits a heartbeat at least every 30s while active and
+# idle closes a record after 180s, so nothing legitimate exceeds this. Mirrors
+# the DB-side ``_cap_implausible_record_durations`` cap (db/sqlite.py) on the
+# READ path so stats/reports don't inflate by ~9h sleep gaps in the window
+# between server restarts (the DB cap only runs at init()).
+_MAX_PLAUSIBLE_RECORD_MS = 5 * 60 * 1000
+
+# Bucket for records that have NO category yet — either never analyzed, or
+# analyzed by an older worker that described but never classified them (the
+# pre-classification legacy backlog). This is a SYSTEM-INTERNAL state, NOT the
+# user-facing ``uncategorized`` category. Keeping them separate stops reports
+# from narrating "未分类 Nh" as if it were real user behavior.
+_UNCLASSIFIED = "_unclassified"
+_UNCLASSIFIED_NOTE = (
+    "已采集但分类尚未完成（旧数据待回填，或仍在排队）。这是系统内部处理状态，"
+    "不是用户真实的『未分类』行为，不要据此推断用户在做什么。"
+)
+
+# id → 中文名 for the flat-6 taxonomy (mirrors db/sqlite.py _BUILTIN_CATEGORIES).
+_CATEGORY_LEGEND = {
+    "work": "工作",
+    "study": "学习",
+    "social": "沟通",
+    "entertainment": "娱乐",
+    "system": "系统",
+    "uncategorized": "未分类",
+}
+
+
+def _clamped_dur_sql(prefix: str = "") -> str:
+    """SQL expression for one record's trustworthy duration in ms.
+
+    Negative spans (legacy ts_end<ts_start) floor to 0; spans over the
+    plausibility cap (sleep/lid-close artifacts) contribute 0.
+    """
+    p = f"{prefix}." if prefix else ""
+    span = f"COALESCE({p}ts_end, {p}ts_start) - {p}ts_start"
+    return f"CASE WHEN {span} > {_MAX_PLAUSIBLE_RECORD_MS} THEN 0 ELSE MAX(0, {span}) END"
+
 
 def ms_to_iso(ms: int | None) -> str:
     """epoch-ms → ISO 8601 local-tz, sortable + human-readable."""
@@ -120,12 +161,12 @@ async def get_app_breakdown(db: Database, hours_back: int = 24, top_n: int = 20)
     start_ms, end_ms = _window(hours_back)
     async with db.lock:
         async with db.conn.execute(
-            # MAX(0, ...) clamps per-record duration: a record whose ts_end
-            # predates ts_start (legacy data from before the ingest ts_start
-            # fix) must not subtract from the total.
-            """SELECT app_name,
+            # Per-record duration is clamped: negative spans floor to 0 and
+            # implausible (>5min, sleep/lid-close) spans contribute 0 — see
+            # _clamped_dur_sql. Otherwise a single 9h sleep gap dwarfs the day.
+            f"""SELECT app_name,
                       COUNT(*) AS records,
-                      SUM(MAX(0, COALESCE(ts_end, ts_start) - ts_start)) AS total_ms
+                      SUM({_clamped_dur_sql()}) AS total_ms
                FROM records
                WHERE ts_start BETWEEN ? AND ? AND app_name != ''
                GROUP BY app_name
@@ -145,6 +186,7 @@ async def get_app_breakdown(db: Database, hours_back: int = 24, top_n: int = 20)
     return {
         "hours_back": hours_back,
         "total_seconds": sum(it["total_seconds"] for it in items),
+        "capped_per_record_seconds": _MAX_PLAUSIBLE_RECORD_MS // 1000,
         "items": items,
     }
 
@@ -153,17 +195,31 @@ async def get_category_stats(db: Database, hours_back: int = 24, top_n: int = 20
     """Aggregate active duration per category over the window.
 
     ``category_final`` is the AI-assigned label (rule override, else the VLM's
-    pick). Records the worker hasn't classified yet bucket under
-    ``"uncategorized"``.
+    pick). TWO buckets are deliberately kept distinct because conflating them
+    produces misleading reports:
+
+    - ``"_unclassified"`` (``is_unclassified``): records with NO category yet —
+      never analyzed, or analyzed by an older worker that described but never
+      classified them. This is a SYSTEM-INTERNAL backlog, not user behavior.
+    - ``"uncategorized"`` (``is_genuinely_uncategorized``): the real catch-all
+      category the classifier assigned when nothing fit.
+
+    Per-record durations are clamped (see ``_clamped_dur_sql``) so sleep/lid-
+    close artifacts don't inflate totals. ``categories_legend`` maps the flat-6
+    ids to their 中文 names so a caller never has to guess what a category means.
     """
     hours_back = min(max(1, int(hours_back)), _MAX_HOURS)
     top_n = min(max(1, int(top_n)), _MAX_TOP_N)
     start_ms, end_ms = _window(hours_back)
     async with db.lock:
         async with db.conn.execute(
-            """SELECT COALESCE(a.category_final, 'uncategorized') AS category,
+            f"""SELECT CASE
+                        WHEN a.record_id IS NULL OR a.category_final IS NULL
+                          THEN '{_UNCLASSIFIED}'
+                        ELSE a.category_final
+                      END AS category,
                       COUNT(*) AS records,
-                      SUM(MAX(0, COALESCE(r.ts_end, r.ts_start) - r.ts_start)) AS total_ms
+                      SUM({_clamped_dur_sql("r")}) AS total_ms
                FROM records r
                LEFT JOIN analysis_results a ON a.record_id = r.id
                WHERE r.ts_start BETWEEN ? AND ?
@@ -173,17 +229,25 @@ async def get_category_stats(db: Database, hours_back: int = 24, top_n: int = 20
             (start_ms, end_ms, top_n),
         ) as cur:
             rows = await cur.fetchall()
-    items = [
-        {
-            "category": r["category"],
+    items = []
+    for r in rows:
+        cat = r["category"]
+        item = {
+            "category": cat,
             "records": r["records"],
             "total_seconds": int((r["total_ms"] or 0) / 1000),
         }
-        for r in rows
-    ]
+        if cat == _UNCLASSIFIED:
+            item["is_unclassified"] = True
+            item["note"] = _UNCLASSIFIED_NOTE
+        elif cat == "uncategorized":
+            item["is_genuinely_uncategorized"] = True
+        items.append(item)
     return {
         "hours_back": hours_back,
         "total_seconds": sum(it["total_seconds"] for it in items),
+        "capped_per_record_seconds": _MAX_PLAUSIBLE_RECORD_MS // 1000,
+        "categories_legend": _CATEGORY_LEGEND,
         "items": items,
     }
 
@@ -292,7 +356,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_category_stats",
-            "description": "统计某时间窗内每个分类的累计时长（秒），降序。未分类归 uncategorized。",
+            "description": (
+                "统计某时间窗内每个分类的累计时长（秒），降序，时长已对单条记录封顶剔除休眠伪影。"
+                "返回里 _unclassified(is_unclassified) 是『尚未分类的系统内部积压』、"
+                "与真正的 uncategorized 分类不是一回事；categories_legend 给出分类 id→中文名。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

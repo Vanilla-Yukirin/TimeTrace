@@ -35,7 +35,12 @@ class _StubVLM:
         self.error = error
         self.calls = 0
 
-    async def describe(self, image: Image.Image, window_title: str | None = None) -> dict:
+    async def describe(
+        self,
+        image: Image.Image,
+        window_title: str | None = None,
+        app_note: str | None = None,
+    ) -> dict:
         self.calls += 1
         if self.error is not None:
             raise self.error

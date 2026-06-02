@@ -199,8 +199,13 @@ class VLMClient:
         self,
         image: Image.Image,
         window_title: str | None = None,
+        app_note: str | None = None,
     ) -> dict:
         """Send an image to the VLM and return a validated 3-field dict.
+
+        ``app_note`` is optional user-provided context about the current app
+        (from the per-app overrides setting); when present it's appended as a
+        hint so the model has background for ambiguous windows.
 
         Raises VLMError on any failure (network, non-JSON, missing fields).
         """
@@ -208,6 +213,8 @@ class VLMClient:
         text = _DESCRIBE_PROMPT
         if window_title:
             text = f"{text}\n窗口标题（仅供辅助参考）：{window_title}"
+        if app_note:
+            text = f"{text}\n关于当前应用的额外背景（用户提供，仅供参考）：{app_note}"
 
         try:
             resp = await self._client.chat.completions.create(
