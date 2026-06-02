@@ -53,10 +53,22 @@
 | **新开发者** | [概览 → 执行摘要](overview/summary.md) → [架构总览](architecture/overview.md) → [开发路线图](overview/roadmap.md) |
 | **存储 / 数据库** | [存储策略](storage/overview.md) → [数据库 Schema](storage/schema.md) → [相似检索层](storage/vector-search.md) |
 | **AI 接入 / MCP** | [MCP Layer](architecture/mcp-layer.md) → [Local API Server](architecture/api-server.md) → [隐私策略](privacy/strategy.md) |
+| **Agent / 记忆架构（规划中）** | [PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) → [分层 schema](storage/pyramid-schema.md) → [写时管线](architecture/episode-and-rollup-pipeline.md) → [薄路由器](architecture/thin-router-agent.md) |
 
 ---
 
 ## 目录
+
+### 🧭 规划 / 设计草案（前瞻，未实装）
+
+> 这些是**前瞻性活计划**（非 v1 快照、非 devlog）。描述的是「更好的 Agent」的目标架构，会随推进更新；落地后再整理为 devlog 归档 + 翻新相关 wiki 子页。
+
+| 文件 | 内容 |
+|------|------|
+| [PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) | **总纲（先读）**：分层记忆金字塔 + 薄路由器 agent —— 问题陈述与 token 数学、prior-art 对比、金字塔/agent 设计、子 agent fallback、分阶段路线、评估、风险 |
+| [storage/pyramid-schema.md](storage/pyramid-schema.md) | 支撑 spec：L2 `episodes` / L3-L4 `digests` / `signals` 三表 DDL sketch、`episode_id` 迁移、幂等键与 watermark、回填、删除传播 |
+| [architecture/episode-and-rollup-pipeline.md](architecture/episode-and-rollup-pipeline.md) | 支撑 spec：写时 builder（分段 / rollup / 信号检测）如何挂 worker 状态机与 `bootstrap.serve()` 调度器、降级契约、并发预算 |
+| [architecture/thin-router-agent.md](architecture/thin-router-agent.md) | 支撑 spec：agent 从 raw-reader 重塑为 route→retrieve→light-reason 路由器、6 个分层工具、子 agent map-reduce、MCP 折叠注册消除 drift、前端协同清单 |
 
 ### 概览
 
