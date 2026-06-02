@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, Wrench } from 'lucide-react'
-import { reportsApi, type Report, type ReportEvent } from '@/lib/agentApi'
+import { reportsApi, parseReportData, type Report, type ReportEvent } from '@/lib/agentApi'
+import { ReportView } from '@/components/dashboard/ReportView'
 import { CatMascot } from '@/components/brand/CatMascot'
 
 const SCOPES = [
@@ -229,25 +230,20 @@ export function DashboardPage() {
               </div>
             )}
             {liveText && (
-              <pre
+              // The model is streaming raw JSON now (parsed + themed on completion),
+              // so show a friendly "writing" indicator instead of the raw payload.
+              <div
                 style={{
-                  margin: 0,
-                  maxHeight: 200,
-                  overflowY: 'auto',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-                  fontSize: 11.5,
-                  lineHeight: 1.5,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12.5,
                   color: 'var(--text-secondary)',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  background: 'var(--bg-base)',
-                  borderRadius: 'var(--radius-md)',
-                  padding: '10px 12px',
                 }}
               >
-                {liveText}
-                <span style={{ opacity: 0.6 }}> ▍</span>
-              </pre>
+                ✍️ 正在落笔写报告…
+                <span style={{ opacity: 0.6 }}>▍</span>
+              </div>
             )}
             {steps.length === 0 && !liveText && (
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>正在连接本地大模型…</div>
@@ -284,18 +280,23 @@ export function DashboardPage() {
               生成于 {fmtTime(report.created_at)}
               {report.model ? ` · ${report.model}` : ''}
             </div>
-            {/* The report body is a SELF-CONTAINED HTML poster authored by the
-                user's own local LLM (single-user, local-first threat model): it
-                carries its own opaque background + text colors (the prompt mandates
-                a poster that reads on any page). So we must NOT impose a surface
-                here — a forced bg/text fights the poster's own palette (an earlier
-                light-"paper" wrapper hid the model's light-on-dark text). Just give
-                it room + horizontal scroll for wide content. */}
-            <div
-              className="tt-report"
-              style={{ overflowX: 'auto' }}
-              dangerouslySetInnerHTML={{ __html: report.content }}
-            />
+            {(() => {
+              // New reports are format:'json' — the LLM gives only content text,
+              // and our themed <ReportView> owns all colour + layout, so it adapts
+              // to light/dark. Legacy format:'html' reports (pre-JSON) fall back to
+              // rendering the model's self-contained HTML as-is (don't impose a
+              // surface — it carries its own colours).
+              const data = report.format === 'json' ? parseReportData(report.content) : null
+              return data ? (
+                <ReportView data={data} />
+              ) : (
+                <div
+                  className="tt-report"
+                  style={{ overflowX: 'auto' }}
+                  dangerouslySetInnerHTML={{ __html: report.content }}
+                />
+              )
+            })()}
           </>
         ) : null}
       </div>

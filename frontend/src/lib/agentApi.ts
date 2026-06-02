@@ -82,10 +82,62 @@ export interface Report {
   scope: string
   period_start: number
   period_end: number
-  format: 'html' | 'markdown'
+  format: 'html' | 'markdown' | 'json'
   content: string
   model: string | null
   created_at: number
+}
+
+// Parsed shape of a format:'json' report's `content`. The LLM only supplies the
+// text fields; colour + layout are the frontend's themed <ReportView>, so reports
+// adapt to light/dark instead of the model baking (often-wrong) inline colours.
+export interface ReportInsight {
+  emoji: string
+  title: string
+  body: string
+}
+
+export interface ReportData {
+  scope_label: string
+  headline: string
+  headline_caption: string
+  top_app: { name: string; value: string } | null
+  caveat: string | null
+  insights: ReportInsight[]
+}
+
+// Defensively parse a json-report's content (the backend already validates, but
+// we re-check the shape). Returns null if it isn't renderable → caller falls back.
+export function parseReportData(content: string): ReportData | null {
+  let o: Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(content)
+    if (!parsed || typeof parsed !== 'object') return null
+    o = parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+  const top = o.top_app as Record<string, unknown> | null | undefined
+  const topApp =
+    top && typeof top === 'object' && str(top.name)
+      ? { name: str(top.name), value: str(top.value) }
+      : null
+  const insights: ReportInsight[] = Array.isArray(o.insights)
+    ? (o.insights as unknown[])
+        .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object')
+        .filter((x) => str(x.title) && str(x.body))
+        .map((x) => ({ emoji: str(x.emoji) || '•', title: str(x.title), body: str(x.body) }))
+    : []
+  if (!str(o.headline) && insights.length === 0) return null // nothing renderable
+  return {
+    scope_label: str(o.scope_label),
+    headline: str(o.headline),
+    headline_caption: str(o.headline_caption),
+    top_app: topApp,
+    caveat: str(o.caveat) || null,
+    insights,
+  }
 }
 
 // Events from POST /v1/reports/generate/stream — the agent's tool steps + live
