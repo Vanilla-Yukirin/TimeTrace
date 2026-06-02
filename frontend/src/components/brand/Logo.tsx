@@ -1,4 +1,4 @@
-import { Cat } from 'lucide-react'
+import catLogo from '@/assets/cat-mascot.png'
 
 interface LogoProps {
   /** Badge size in px (the rounded gradient square). */
@@ -25,9 +25,18 @@ export function Logo({ size = 30, withWordmark = false, tagline }: LogoProps) {
           justifyContent: 'center',
           flexShrink: 0,
           boxShadow: 'var(--shadow-glow)',
+          overflow: 'hidden',
         }}
       >
-        <Cat size={Math.round(size * 0.62)} color="#fff" strokeWidth={2.1} aria-hidden="true" />
+        <img
+          src={catLogo}
+          width={Math.round(size * 0.82)}
+          height={Math.round(size * 0.82)}
+          style={{ objectFit: 'contain', display: 'block' }}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+        />
       </div>
       {withWordmark && (
         <div style={{ lineHeight: 1.15 }}>
