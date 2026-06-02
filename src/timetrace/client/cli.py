@@ -152,6 +152,7 @@ async def _run(
             max_kbps=client_cfg.upload.max_kbps,
             max_image_bytes=int(client_cfg.upload.max_image_mb * 1024 * 1024),
             on_send_failure=_on_send_failure,
+            concurrency=client_cfg.upload.concurrency,
         )
         sender_stop = asyncio.Event()
 
@@ -295,6 +296,8 @@ def _print_config() -> None:
     print(f"device.description    = {cfg.device.description or '<unset>'}")
     print(f"outbox.root_dir       = {cfg.outbox.root_dir}")
     print(f"upload.max_kbps       = {cfg.upload.max_kbps}")
+    print(f"upload.max_image_mb   = {cfg.upload.max_image_mb}")
+    print(f"upload.concurrency    = {cfg.upload.concurrency}")
     print(f"storage.data_dir      = {cfg.storage.data_dir}")
     print(f"capture.min_interval  = {cfg.capture.min_capture_interval_s}s")
     print(f"capture.max_interval  = {cfg.capture.max_capture_interval_s}s")

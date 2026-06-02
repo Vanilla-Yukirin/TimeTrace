@@ -128,9 +128,13 @@ class OutboxSender:
         max_image_bytes: int = _MAX_IMAGE_BYTES,
         compact_every_n_acks: int = 200,
         on_send_failure: Callable[[], Awaitable[None]] | None = None,
+        concurrency: int = 1,
     ) -> None:
         self._outbox = outbox
         self._send = send
+        # >1 enables the sliding-window concurrent drain (latency hiding for
+        # high-latency links). 1 keeps the original strict-serial path.
+        self._concurrency = max(1, concurrency)
         # Called after each failed send (before backoff). Used to trigger a fast
         # endpoint re-selection so the next retry can hit a different path.
         self._on_send_failure = on_send_failure
@@ -154,7 +158,10 @@ class OutboxSender:
         stop_event = stop_event or asyncio.Event()
         try:
             while not stop_event.is_set():
-                drained = await self._drain_pending(stop_event)
+                if self._concurrency > 1:
+                    drained = await self._drain_window_concurrent(stop_event)
+                else:
+                    drained = await self._drain_pending(stop_event)
                 if drained == 0 and not stop_event.is_set():
                     # Nothing to do — wait either for the idle interval or for
                     # someone to flip the stop event, whichever comes first.
@@ -166,6 +173,23 @@ class OutboxSender:
             logger.info("outbox_sender.cancelled")
             raise
 
+    def _is_oversize_image(self, entry: OutboxEntry) -> bool:
+        """True if this entry's image blob exceeds the configured cap (cap > 0).
+        Logs the drop so it isn't a silent data loss."""
+        if (
+            self._max_image_bytes > 0
+            and entry.image_bytes is not None
+            and len(entry.image_bytes) > self._max_image_bytes
+        ):
+            logger.warning(
+                "outbox_sender.dropped_oversize_image",
+                entry_id=entry.entry_id,
+                image_bytes=len(entry.image_bytes),
+                limit=self._max_image_bytes,
+            )
+            return True
+        return False
+
     async def _drain_pending(self, stop_event: asyncio.Event) -> int:
         """Drain everything currently in the outbox; return count successfully sent."""
         sent = 0
@@ -175,17 +199,7 @@ class OutboxSender:
             # Drop oversize legacy screenshots that would otherwise wedge the
             # FIFO queue forever (they can't be uploaded reliably). Ack to step
             # past them; the record-only entry for the same capture still sends.
-            if (
-                self._max_image_bytes > 0
-                and entry.image_bytes is not None
-                and len(entry.image_bytes) > self._max_image_bytes
-            ):
-                logger.warning(
-                    "outbox_sender.dropped_oversize_image",
-                    entry_id=entry.entry_id,
-                    image_bytes=len(entry.image_bytes),
-                    limit=self._max_image_bytes,
-                )
+            if self._is_oversize_image(entry):
                 await self._outbox.ack_next(entry.entry_id)
                 self._acks_since_compact += 1
                 continue
@@ -211,6 +225,84 @@ class OutboxSender:
                 if reclaimed:
                     logger.info("outbox_sender.compacted_inline", reclaimed=reclaimed)
                 self._acks_since_compact = 0
+        return sent
+
+    async def _drain_window_concurrent(self, stop_event: asyncio.Event) -> int:
+        """Sliding-window concurrent drain: up to ``concurrency`` sends in flight,
+        a per-record_id barrier (record→screenshot→close stays ordered), and
+        strict in-order ack (advance the cursor over the contiguous-completed
+        prefix). Safe with the single-cursor outbox. See
+        infra/PLAN-MULTIPATH-CLIENT.md §6.2."""
+        window: list[OutboxEntry] = []
+        async for entry in self._outbox.iter_pending():
+            window.append(entry)
+            if len(window) >= self._concurrency:
+                break
+        if not window:
+            return 0
+
+        done: dict[str, asyncio.Event] = {e.entry_id: asyncio.Event() for e in window}
+        # Each entry's predecessor = the prior same-record entry in this window
+        # (None if first). Awaiting its completion enforces the ordering barrier.
+        prereq: dict[str, str | None] = {}
+        last_by_record: dict[str, str] = {}
+        for e in window:
+            rid = e.payload.get("client_record_id")
+            prereq[e.entry_id] = last_by_record.get(rid) if rid is not None else None
+            if rid is not None:
+                last_by_record[rid] = e.entry_id
+
+        sem = asyncio.Semaphore(self._concurrency)
+
+        async def _worker(e: OutboxEntry) -> None:
+            pre = prereq[e.entry_id]
+            if pre is not None:
+                await done[pre].wait()  # barrier: prior same-record entry finishes first
+            if stop_event.is_set():
+                return
+            if self._is_oversize_image(e):
+                done[e.entry_id].set()  # dropped counts as done so the prefix advances
+                return
+            async with sem:
+                if stop_event.is_set():
+                    return
+                await self._bucket.consume(_entry_size_bytes(e))
+                if stop_event.is_set():
+                    return
+                await self._send_with_backoff(e, stop_event)
+            if not stop_event.is_set():
+                done[e.entry_id].set()
+
+        tasks = [asyncio.create_task(_worker(e)) for e in window]
+        sent = 0
+        try:
+            for e in window:
+                # In-order ack: wait this entry's completion OR stop, first wins.
+                stop_task = asyncio.ensure_future(stop_event.wait())
+                done_task = asyncio.ensure_future(done[e.entry_id].wait())
+                _, pending = await asyncio.wait(
+                    {stop_task, done_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                for t in pending:
+                    t.cancel()
+                if not done[e.entry_id].is_set():
+                    break  # stop fired before this entry succeeded — leave it pending
+                await self._outbox.ack_next(e.entry_id)
+                sent += 1
+                self._acks_since_compact += 1
+                if (
+                    self._compact_every_n_acks > 0
+                    and self._acks_since_compact >= self._compact_every_n_acks
+                ):
+                    reclaimed = await self._outbox.compact()
+                    if reclaimed:
+                        logger.info("outbox_sender.compacted_inline", reclaimed=reclaimed)
+                    self._acks_since_compact = 0
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         return sent
 
     async def _send_with_backoff(self, entry: OutboxEntry, stop_event: asyncio.Event) -> None:

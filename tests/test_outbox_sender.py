@@ -265,6 +265,128 @@ async def test_pending_entry_stays_pending_when_stop_fires_before_success(outbox
 
 
 # --------------------------------------------------------------------------- #
+# P3 — sliding-window concurrent drain                                          #
+# --------------------------------------------------------------------------- #
+
+
+async def _until(cond, timeout: float = 2.0) -> None:
+    waited = 0.0
+    while waited < timeout:
+        if cond():
+            return
+        await asyncio.sleep(0.01)
+        waited += 0.01
+    raise AssertionError("condition not met within timeout")
+
+
+async def test_concurrent_drains_all_and_acks_in_order(outbox):
+    """concurrency>1 drains the whole queue. ack_next is strict-FIFO and raises
+    on out-of-order, so a full clean drain proves ack stayed in order."""
+    for i in range(6):
+        await outbox.append({"kind": "ingest", "client_record_id": f"r{i % 2}"})
+    stub = _StubSender()
+    sender = OutboxSender(outbox, stub, concurrency=3, idle_poll_interval_s=0.05)
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+    assert await outbox.pending_count() == 0
+    assert len(stub.calls) == 6
+
+
+async def test_concurrent_same_record_stays_ordered(outbox):
+    """Per-record barrier: entries sharing a client_record_id are sent in
+    submission order even with concurrency headroom."""
+    a0 = await outbox.append({"kind": "ingest", "client_record_id": "A"})
+    a1 = await outbox.append({"kind": "ingest", "client_record_id": "A"})
+    a2 = await outbox.append({"kind": "close", "client_record_id": "A"})
+    calls: list[str] = []
+
+    async def send(entry):  # noqa: ANN001
+        calls.append(entry.entry_id)
+        await asyncio.sleep(0)
+
+    sender = OutboxSender(outbox, send, concurrency=3, idle_poll_interval_s=0.05)
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+    assert calls == [a0, a1, a2]
+
+
+async def test_concurrent_different_records_overlap(outbox):
+    """Different records run concurrently (no false serialization)."""
+    await outbox.append({"kind": "ingest", "client_record_id": "A"})
+    await outbox.append({"kind": "ingest", "client_record_id": "B"})
+    in_flight = 0
+    max_in_flight = 0
+    gate = asyncio.Event()
+
+    async def send(entry):  # noqa: ANN001
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await gate.wait()
+        in_flight -= 1
+
+    sender = OutboxSender(outbox, send, concurrency=2, idle_poll_interval_s=0.05)
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+    await _until(lambda: max_in_flight >= 2)  # both A and B in flight at once
+    gate.set()
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+    assert max_in_flight == 2
+
+
+async def test_concurrent_drops_oversize_and_sends_rest(outbox):
+    """Oversize image entries are dropped (acked without send) in the concurrent
+    path too; the rest still send."""
+    await outbox.append({"kind": "ingest", "client_record_id": "A"}, image_bytes=b"X" * 4096)
+    await outbox.append(
+        {"kind": "ingest", "client_record_id": "B"}, image_bytes=b"X" * (3 * 1024 * 1024)
+    )  # oversize → dropped
+    stub = _StubSender()
+    sender = OutboxSender(
+        outbox, stub, concurrency=2, max_image_bytes=2 * 1024 * 1024, idle_poll_interval_s=0.05
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+    assert await outbox.pending_count() == 0  # both acked (one sent, one dropped)
+    assert len(stub.calls) == 1  # only the small one reached the wire
+
+
+async def test_concurrent_stop_leaves_unacked_pending(outbox):
+    """Stop before any send succeeds → nothing acked, all entries stay pending
+    (at-least-once: a sent-but-unacked entry replays next run)."""
+    for i in range(4):
+        await outbox.append({"kind": "ingest", "client_record_id": f"r{i}"})
+    gate = asyncio.Event()
+
+    async def send(entry):  # noqa: ANN001
+        await gate.wait()
+
+    sender = OutboxSender(outbox, send, concurrency=2, idle_poll_interval_s=0.05)
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+    await asyncio.sleep(0.05)  # workers enter send, block on gate
+    stop.set()
+    gate.set()  # let blocked sends observe stop and unwind
+    await asyncio.wait_for(task, timeout=2)
+    assert await outbox.pending_count() == 4
+
+
+# --------------------------------------------------------------------------- #
 # Periodic compaction                                                           #
 # --------------------------------------------------------------------------- #
 

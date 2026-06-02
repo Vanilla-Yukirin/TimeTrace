@@ -113,6 +113,10 @@ class UploadSection:
     # PNGs can't upload reliably and wedge the strict-FIFO queue. Bump it (or
     # set 0) for a fast LAN-direct session where big blobs upload fine.
     max_image_mb: float = 2.0
+    # Concurrent in-flight uploads (sliding-window sender). 1 = strict serial
+    # (default, unchanged). >1 hides per-request latency on slow/high-latency
+    # links while preserving record→screenshot→close order + in-order ack.
+    concurrency: int = 1
 
 
 @dataclass
@@ -183,6 +187,7 @@ class ClientConfig:
             upload=UploadSection(
                 max_kbps=int(upload_data.get("max_kbps", 0)),
                 max_image_mb=float(upload_data.get("max_image_mb", UploadSection.max_image_mb)),
+                concurrency=int(upload_data.get("concurrency", UploadSection.concurrency)),
             ),
             storage=_storage_from_toml(storage_data),
             capture=_capture_from_toml(capture_data),
@@ -274,6 +279,7 @@ class ClientConfig:
             "[upload]",
             _kv("max_kbps", self.upload.max_kbps),
             _kv("max_image_mb", self.upload.max_image_mb),
+            _kv("concurrency", self.upload.concurrency),
             "",
             "[storage]",
             _kv("data_dir", str(self.storage.data_dir)),
