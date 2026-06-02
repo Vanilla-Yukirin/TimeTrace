@@ -1,6 +1,7 @@
 # 设计：多路径客户端连接（endpoint 失效转移 + 原生 SSH 隧道 + 并发上传）
 
-**状态：** 设计中（P0 文档）。P1/P2/P3 待实现。
+**状态：** P0 文档 + P1/P2/P3 均已实现并测试通过（commits c32a7a4 / b241609 /
+66ba77c / 8247fcc，全量 451 passed）。P3+ 多活仍不做。
 **动机来源：** 2026-06-02 夜，用户（技术型、公网域名带宽小、网络环境多变）提出客户端应支持多连接路径 + 自动 failover。
 
 ---
@@ -138,9 +139,15 @@ remote_port = 18765
 - 健康探测自然覆盖：隧道没起来 → `http://127.0.0.1:19765/healthz` 探测失败 → 该 endpoint 视为不可达 → failover 到下一个。
 - `-o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3` 保证转发失败立刻退、断线快速感知。
 
-### 5.3 与 P1 的关系
+### 5.3 与 P1 的关系（实现修正）
 
-`type=ssh` 的 endpoint 在被 `EndpointSelector` **选中**时才起隧道（懒启动），降级走开后可停隧道省资源。P2 是 P1 的一个 endpoint 子类型，不改 P1 选路主干。
+设计初稿设想"被选中才起隧道（懒启动）"——**实现时发现不可行**：`EndpointSelector`
+只能选中 `/healthz` 探测通过的 endpoint，而探测又需隧道先通，鸡生蛋。故隧道
+**在启动时就为所有 enabled 的 ssh endpoint 拉起**（`SshTunnelManager`），探测通了
+才被选中。P2 仍是 P1 的一个 endpoint 子类型，不改 P1 选路主干。
+
+> 落地局限：隧道集合在启动时从 enabled+ssh endpoint 固定；托盘 toggle 改的是
+> *选路*（enabled），不动隧道进程生死——固定一条空闲隧道无害，全动态生命周期留待后续。
 
 ---
 
@@ -181,13 +188,13 @@ capture 往 outbox 按 `record` → `screenshot` → `close` 顺序 append。当
 
 ## 7. 分期与落地顺序
 
-| 阶段 | 交付 | 风险 | 服务端改动 |
+| 阶段 | 交付 | 状态 | 服务端改动 |
 |------|------|------|-----------|
-| **P0** | 本文档 | 无 | 无 |
-| **P1** | endpoint 列表 + 健康探测 failover + 托盘开关 | 中 | 无 |
-| **P2** | `type=ssh` endpoint + 原生隧道托管 | 中 | 无 |
-| **P3** | 滑动窗口并发 sender + 每路独立退避探测 | 中高 | 无 |
-| P3+（不做） | 多活 + outbox 每条目 ack | 高 | 可能 |
+| **P0** | 本文档 | ✅ c32a7a4 | 无 |
+| **P1** | endpoint 列表 + 健康探测 failover + 托盘开关 | ✅ b241609 | 无 |
+| **P2** | `type=ssh` endpoint + 原生隧道托管 | ✅ 66ba77c | 无 |
+| **P3** | 滑动窗口并发 sender + 每路独立退避探测 | ✅ 8247fcc | 无 |
+| P3+（不做） | 多活 + outbox 每条目 ack | 暂不做 | 可能 |
 
 **向后兼容**：每阶段都保持旧 `client.toml`（单 `url`、单 worker）可用——不写 `endpoints` 就是单 endpoint，`concurrency` 默认 1 就是旧串行行为。
 
