@@ -37,6 +37,7 @@ load_dotenv()
 from timetrace.client.capture.service import CaptureService  # noqa: E402
 from timetrace.client.core.backend import HttpBackend  # noqa: E402
 from timetrace.client.core.config import ClientConfig  # noqa: E402
+from timetrace.client.core.endpoints import EndpointSelector  # noqa: E402
 from timetrace.client.core.outbox import Outbox  # noqa: E402
 from timetrace.client.core.outbox_backend import OutboxBackend, make_http_sender  # noqa: E402
 from timetrace.client.core.outbox_sender import OutboxSender  # noqa: E402
@@ -92,6 +93,7 @@ def _warn_if_shares_data_dir_with_server(storage_cfg: StorageConfig) -> None:
 async def _run(
     client_cfg: ClientConfig,
     quit_event: asyncio.Event,
+    runtime: dict | None = None,
 ) -> None:
     # AsyncExitStack guarantees HttpBackend (and any future async-cleanup
     # resource) is closed even if a constructor below it throws — without
@@ -106,10 +108,21 @@ async def _run(
             pending=await outbox.pending_count(),
         )
 
-        # 2) Network transport — registered for aclose() before anything that
-        # could raise during construction.
+        # 2) Endpoint selection (multi-path failover) — pick an initial active
+        # endpoint before the first send so the transport has a base URL.
+        selector = EndpointSelector(client_cfg.server.all_endpoints())
+        if runtime is not None:
+            runtime["selector"] = selector  # let the tray read live health
+        await selector.select()
+
+        async def _on_send_failure() -> None:
+            # Fast failover: a failed send re-probes + may switch the active path.
+            await selector.select()
+
+        # 3) Network transport — base URL resolved per-request from the selector;
+        # registered for aclose() before anything that could raise.
         http = HttpBackend(
-            base_url=client_cfg.server.url,
+            base_url_provider=selector.current_url,
             auth_token=client_cfg.server.auth_token or None,
             device_id=client_cfg.device.id or None,
             data_dir=client_cfg.storage.data_dir,
@@ -137,6 +150,7 @@ async def _run(
             make_http_sender(http),
             max_kbps=client_cfg.upload.max_kbps,
             max_image_bytes=int(client_cfg.upload.max_image_mb * 1024 * 1024),
+            on_send_failure=_on_send_failure,
         )
         sender_stop = asyncio.Event()
 
@@ -151,6 +165,7 @@ async def _run(
         async with asyncio.TaskGroup() as tg:
             tg.create_task(capture_svc.run(), name="capture")
             tg.create_task(sender.run(sender_stop), name="sender")
+            tg.create_task(selector.run(sender_stop), name="endpoints")
             tg.create_task(_watch_quit(), name="quit_watcher")
     logger.info("client.shutdown_complete")
 
@@ -190,8 +205,16 @@ def main() -> None:
         path = client_cfg.save()
         logger.info("client.config_seeded", path=str(path), device_id=client_cfg.device.id)
 
+    # Materialize the endpoint list in-memory (legacy single `url` → one entry)
+    # so the tray + EndpointSelector share the same EndpointSection objects:
+    # toggling .enabled in the tray is then seen by the selector and persisted
+    # via client_cfg.save. Does NOT rewrite client.toml unless the user toggles.
+    if not client_cfg.server.endpoints:
+        client_cfg.server.endpoints = client_cfg.server.all_endpoints()
+
     _warn_if_shares_data_dir_with_server(client_cfg.storage)
 
+    runtime: dict = {}  # daemon stashes the EndpointSelector here for the tray
     loop = asyncio.new_event_loop()
     quit_event = asyncio.Event()
 
@@ -206,18 +229,24 @@ def main() -> None:
     # Tray is optional — only meaningful on a Windows desktop. The thread
     # daemonizes so a headless future variant (no display) can simply skip it.
     try:
-        start_tray_thread(client_cfg.privacy, _request_quit)
+        start_tray_thread(
+            client_cfg.privacy,
+            _request_quit,
+            endpoints=client_cfg.server.endpoints,
+            save_config=client_cfg.save,
+            runtime=runtime,
+        )
     except Exception:  # noqa: BLE001
         logger.warning("client.tray_start_failed", exc_info=True)
 
     logger.info(
         "client.starting",
-        server=client_cfg.server.url,
+        endpoints=[f"{e.name}={e.url}" for e in client_cfg.server.enabled_endpoints()],
         device_id=client_cfg.device.id,
     )
 
     try:
-        loop.run_until_complete(_run(client_cfg, quit_event))
+        loop.run_until_complete(_run(client_cfg, quit_event, runtime))
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
@@ -243,6 +272,17 @@ def _print_config() -> None:
     token_view = f"<{len(cfg.server.auth_token)} chars>" if cfg.server.auth_token else "<empty>"
     print(f"server.url            = {cfg.server.url}")
     print(f"server.auth_token     = {token_view}")
+    eps = cfg.server.all_endpoints()
+    src = "configured" if cfg.server.endpoints else "synthesized from url"
+    print(f"server.endpoints      = {len(eps)} ({src})")
+    for i, ep in enumerate(eps):
+        flag = "on " if ep.enabled else "off"
+        extra = (
+            f"  ssh={ep.ssh_host}:{ep.ssh_port}->{ep.remote_host}:{ep.remote_port}"
+            if ep.type == "ssh"
+            else ""
+        )
+        print(f"  [{i}] {flag} {ep.name:12} {ep.type:4} {ep.url}{extra}")
     print(f"device.id             = {cfg.device.id or '<unset>'}")
     print(f"device.name           = {cfg.device.name or '<unset>'}")
     print(f"device.description    = {cfg.device.description or '<unset>'}")

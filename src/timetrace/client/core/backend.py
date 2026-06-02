@@ -25,6 +25,7 @@ import hashlib
 import json
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -186,6 +187,7 @@ class HttpBackend:
         device_id: str | None = None,
         data_dir: Path | str | None = None,
         timeout_s: float = 30.0,
+        base_url_provider: Callable[[], str | None] | None = None,
     ) -> None:
         # Hold auth_token + device_id on the instance so they're injected on
         # every request regardless of whether the AsyncClient is owned (headers
@@ -196,19 +198,23 @@ class HttpBackend:
         # storage root (capture_active_window emits relative paths). Without it,
         # only absolute paths are accepted.
         self._data_dir: Path | None = Path(data_dir).resolve() if data_dir is not None else None
+        # When set, the active base URL is resolved per-request (multi-endpoint
+        # failover). The owned client then carries no base_url and every request
+        # passes an absolute URL. When None, the fixed base_url is used as before.
+        self._base_url_provider = base_url_provider
         if client is not None:
             self._client = client
             self._owns_client = False
         else:
-            if base_url is None:
-                raise ValueError("HttpBackend needs either base_url or an AsyncClient")
+            if base_url is None and base_url_provider is None:
+                raise ValueError("HttpBackend needs base_url, base_url_provider, or an AsyncClient")
             headers: dict[str, str] = {}
             if self._auth_token:
                 headers["Authorization"] = f"Bearer {self._auth_token}"
             if self._device_id:
                 headers["X-Device-Id"] = self._device_id
             self._client = httpx.AsyncClient(
-                base_url=base_url,
+                base_url=base_url or "",
                 headers=headers or None,
                 timeout=timeout_s,
             )
@@ -263,7 +269,7 @@ class HttpBackend:
         """
         server_id = self._record_id_for.get(record_id, record_id)
         resp = await self._client.post(
-            f"/v1/ingest/record/{server_id}/close",
+            self._url(f"/v1/ingest/record/{server_id}/close"),
             json={"ts_end": ts_end},
             headers=self._extra_headers(),
         )
@@ -327,6 +333,20 @@ class HttpBackend:
     def _resolve_path(self, raw: str, *, kind: str) -> Path:
         return resolve_path_under_data_dir(raw, self._data_dir, kind=kind)
 
+    def _url(self, path: str) -> str:
+        """Resolve a request path to send.
+
+        With a ``base_url_provider`` (multi-endpoint mode) build an absolute URL
+        against the currently-selected endpoint, raising if none is healthy so
+        the outbox keeps the entry pending. Without one, return the relative
+        path (the owned client carries the fixed ``base_url``)."""
+        if self._base_url_provider is not None:
+            base = self._base_url_provider()
+            if not base:
+                raise BackendError("no healthy endpoint available")
+            return base.rstrip("/") + path
+        return path
+
     def _extra_headers(self) -> dict[str, str] | None:
         """Per-request headers that need to be added even when the AsyncClient
         was supplied externally (test path with ASGITransport-bound clients).
@@ -373,7 +393,7 @@ class HttpBackend:
 
         try:
             resp = await self._client.post(
-                "/v1/ingest/record",
+                self._url("/v1/ingest/record"),
                 data=data,
                 files=files or None,
                 headers=self._extra_headers(),

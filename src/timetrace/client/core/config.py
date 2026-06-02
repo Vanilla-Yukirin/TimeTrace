@@ -48,9 +48,47 @@ _DEFAULT_OUTBOX_DIR = Path.home() / "TimeTraceData" / "outbox"
 
 
 @dataclass
+class EndpointSection:
+    """One reachable path to the (single, shared) backend.
+
+    Multiple endpoints = multiple network routes to the SAME box/DB; the client
+    uses the first ``enabled`` + healthy one (see EndpointSelector). ``type`` is
+    ``"http"`` (plain URL) or ``"ssh"`` (client manages an ``ssh -L`` tunnel and
+    talks to ``url`` = the local forward end). The ssh_* fields are ignored for
+    http endpoints. See infra/PLAN-MULTIPATH-CLIENT.md.
+    """
+
+    name: str = "default"
+    url: str = "http://127.0.0.1:8765"
+    enabled: bool = True
+    type: str = "http"  # "http" | "ssh"
+    # SSH tunnel spec (type == "ssh"): equivalent to
+    # ssh -N -L <local port from url>:<remote_host>:<remote_port> <ssh_host>
+    ssh_host: str = ""
+    ssh_port: int = 22
+    remote_host: str = "127.0.0.1"
+    remote_port: int = 0
+    identity_file: str = ""
+
+
+@dataclass
 class ServerSection:
     url: str = "http://127.0.0.1:8765"
     auth_token: str = ""
+    # Ordered priority list (first = most preferred). Empty → the legacy single
+    # `url` is synthesized into one endpoint, so old client.toml keeps working.
+    endpoints: list[EndpointSection] = field(default_factory=list)
+
+    def all_endpoints(self) -> list[EndpointSection]:
+        """Configured endpoints, or a single one synthesized from ``url`` when
+        none are declared (backward compatibility with the old single-url form)."""
+        if self.endpoints:
+            return self.endpoints
+        return [EndpointSection(name="default", url=self.url)]
+
+    def enabled_endpoints(self) -> list[EndpointSection]:
+        """``all_endpoints`` filtered to enabled, preserving priority order."""
+        return [e for e in self.all_endpoints() if e.enabled]
 
 
 @dataclass
@@ -111,10 +149,26 @@ class ClientConfig:
         capture_data = data.get("capture", {})
         privacy_data = data.get("privacy", {})
 
+        endpoints = [
+            EndpointSection(
+                name=str(e.get("name", EndpointSection.name)),
+                url=str(e.get("url", EndpointSection.url)),
+                enabled=bool(e.get("enabled", True)),
+                type=str(e.get("type", "http")),
+                ssh_host=str(e.get("ssh_host", "")),
+                ssh_port=int(e.get("ssh_port", 22)),
+                remote_host=str(e.get("remote_host", "127.0.0.1")),
+                remote_port=int(e.get("remote_port", 0)),
+                identity_file=str(e.get("identity_file", "")),
+            )
+            for e in server_data.get("endpoints", [])
+        ]
+
         return cls(
             server=ServerSection(
                 url=server_data.get("url", ServerSection.url),
                 auth_token=server_data.get("auth_token", ServerSection.auth_token),
+                endpoints=endpoints,
             ),
             device=DeviceSection(
                 id=device_data.get("id", DeviceSection.id),
@@ -193,6 +247,22 @@ class ClientConfig:
             _kv("url", self.server.url),
             _kv("auth_token", self.server.auth_token),
             "",
+        ]
+        for ep in self.server.endpoints:
+            lines.append("[[server.endpoints]]")
+            lines.append(_kv("name", ep.name))
+            lines.append(_kv("url", ep.url))
+            lines.append(_kv("enabled", ep.enabled))
+            lines.append(_kv("type", ep.type))
+            if ep.type == "ssh":
+                lines.append(_kv("ssh_host", ep.ssh_host))
+                lines.append(_kv("ssh_port", ep.ssh_port))
+                lines.append(_kv("remote_host", ep.remote_host))
+                lines.append(_kv("remote_port", ep.remote_port))
+                if ep.identity_file:
+                    lines.append(_kv("identity_file", ep.identity_file))
+            lines.append("")
+        lines += [
             "[device]",
             _kv("id", self.device.id),
             _kv("name", self.device.name),

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 if TYPE_CHECKING:
+    from timetrace.client.core.config import EndpointSection
     from timetrace.common.config import PrivacyConfig
 
 logger = structlog.get_logger(__name__)
@@ -37,9 +38,21 @@ class TrayIcon:
         self,
         privacy_cfg: PrivacyConfig,
         on_quit: Callable[[], None],
+        *,
+        endpoints: list[EndpointSection] | None = None,
+        save_config: Callable[[], Any] | None = None,
+        runtime: dict[str, Any] | None = None,
     ) -> None:
         self._privacy = privacy_cfg
         self._on_quit = on_quit
+        # Shared (same objects the EndpointSelector reads) so toggling .enabled
+        # here is picked up on the selector's next periodic re-probe. None →
+        # no "连接" submenu (headless / single-endpoint legacy).
+        self._endpoints = endpoints or []
+        self._save_config = save_config
+        # Holder set by the daemon once the EndpointSelector exists; used to show
+        # live health (● active / ○ healthy / ✕ down) without a hard dependency.
+        self._runtime = runtime if runtime is not None else {}
         self._icon = None
 
     # ------------------------------------------------------------------ #
@@ -88,19 +101,73 @@ class TrayIcon:
             icon.stop()
             self._on_quit()
 
-        return pystray.Menu(
-            pystray.MenuItem(pause_label, on_pause),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("退出 TimeTrace", on_quit),
-        )
+        items = [pystray.MenuItem(pause_label, on_pause)]
+        if self._endpoints:
+            items.append(pystray.MenuItem("连接", self._build_endpoint_menu(pystray)))
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem("退出 TimeTrace", on_quit))
+        return pystray.Menu(*items)
+
+    def _endpoint_glyph(self, ep: EndpointSection) -> str:
+        """Live status glyph for an endpoint, read best-effort from the selector
+        the daemon stashed in ``runtime``. ● active / ○ healthy / ✕ down / ? n/a."""
+        selector = self._runtime.get("selector")
+        if selector is None:
+            return "?"
+        current = selector.current()
+        if current is not None and current.name == ep.name:
+            return "●"
+        health = selector.health.get(ep.name)
+        if health is True:
+            return "○"
+        if health is False:
+            return "✕"
+        return "?"
+
+    def _build_endpoint_menu(self, pystray):
+        """One checkable item per endpoint: toggle enabled, persist, let the
+        selector pick it up on its next re-probe. Order is config-only (not here)."""
+
+        def make_toggle(ep: EndpointSection):
+            def _toggle(icon, item) -> None:  # noqa: ANN001
+                ep.enabled = not ep.enabled
+                logger.info("tray.endpoint_toggle", name=ep.name, enabled=ep.enabled)
+                if self._save_config is not None:
+                    try:
+                        self._save_config()
+                    except Exception:  # noqa: BLE001
+                        logger.warning("tray.endpoint_save_failed", exc_info=True)
+
+            return _toggle
+
+        items = []
+        for ep in self._endpoints:
+            items.append(
+                pystray.MenuItem(
+                    (lambda item, ep=ep: f"{self._endpoint_glyph(ep)} {ep.name}  ({ep.url})"),
+                    make_toggle(ep),
+                    checked=(lambda item, ep=ep: ep.enabled),
+                )
+            )
+        return pystray.Menu(*items)
 
 
 def start_tray_thread(
     privacy_cfg: PrivacyConfig,
     on_quit: Callable[[], None],
+    *,
+    endpoints: list[EndpointSection] | None = None,
+    save_config: Callable[[], Any] | None = None,
+    runtime: dict[str, Any] | None = None,
 ) -> threading.Thread:
     """Start the tray icon in a daemon thread.  Returns the thread."""
-    tray = TrayIcon(privacy_cfg, on_quit)
+    tray = TrayIcon(
+        privacy_cfg,
+        on_quit,
+        endpoints=endpoints,
+        save_config=save_config,
+        runtime=runtime,
+    )
     t = threading.Thread(target=tray.run, name="tray", daemon=True)
     t.start()
     logger.info("tray.thread_started")

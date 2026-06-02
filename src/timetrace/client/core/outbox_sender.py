@@ -127,9 +127,13 @@ class OutboxSender:
         max_kbps: int = 0,
         max_image_bytes: int = _MAX_IMAGE_BYTES,
         compact_every_n_acks: int = 200,
+        on_send_failure: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._outbox = outbox
         self._send = send
+        # Called after each failed send (before backoff). Used to trigger a fast
+        # endpoint re-selection so the next retry can hit a different path.
+        self._on_send_failure = on_send_failure
         self._backoff_initial = backoff_initial_s
         self._backoff_max = backoff_max_s
         self._idle_interval = idle_poll_interval_s
@@ -238,6 +242,13 @@ class OutboxSender:
                     backoff_s=backoff,
                     error=str(exc),
                 )
+                # Fast failover: let the selector re-probe + switch the active
+                # endpoint so the next retry can take a different path.
+                if self._on_send_failure is not None:
+                    try:
+                        await self._on_send_failure()
+                    except Exception:  # noqa: BLE001
+                        logger.warning("outbox_sender.on_failure_hook_error", exc_info=True)
                 # Wait with cancellable sleep that wakes on stop too.
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=backoff)
