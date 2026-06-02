@@ -202,15 +202,19 @@ async def serve(
         if config.vlm is None:
             logger.info("report.scheduler_disabled", reason="no_vlm")
             return
-        from timetrace.server.report.generator import DEFAULT_SCOPE, ReportGenerator
+        from timetrace.server.report.generator import SCOPE_HOURS, ReportGenerator
 
         gen = ReportGenerator(components.db, config.vlm)
         await asyncio.sleep(_REPORT_INITIAL_DELAY_S)
         while True:
-            try:
-                await gen.generate(DEFAULT_SCOPE)
-            except Exception:  # noqa: BLE001
-                logger.warning("report.scheduler_generate_failed", exc_info=True)
+            # Refresh EVERY scope (recent_3h / recent_24h / recent_7d), each isolated
+            # so one scope's failure doesn't skip the others. ~10-60s per report on a
+            # single GPU → up to ~3min per round; fine at the 30-min cadence.
+            for sc in SCOPE_HOURS:
+                try:
+                    await gen.generate(sc)
+                except Exception:  # noqa: BLE001
+                    logger.warning("report.scheduler_generate_failed", scope=sc, exc_info=True)
             await asyncio.sleep(_REPORT_INTERVAL_S)
 
     try:
