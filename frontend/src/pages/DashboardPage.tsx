@@ -284,26 +284,16 @@ export function DashboardPage() {
               生成于 {fmtTime(report.created_at)}
               {report.model ? ` · ${report.model}` : ''}
             </div>
-            {/* The report body is HTML authored by the user's own local LLM from
-                their own activity data (single-user, local-first threat model).
-                The prompt asks for theme-adaptive styling but the model isn't
-                reliable about it — it bakes solid light-mode card colors, which
-                look wrong on the dark theme. So we render reports on a fixed light
-                "paper" surface (colorScheme:light + light bg + dark base text):
-                light-baked HTML then reads as an intentional document in BOTH
-                themes, and any color:inherit text falls back to dark (readable on
-                the paper) rather than the white --text-primary it used to get. */}
+            {/* The report body is a SELF-CONTAINED HTML poster authored by the
+                user's own local LLM (single-user, local-first threat model): it
+                carries its own opaque background + text colors (the prompt mandates
+                a poster that reads on any page). So we must NOT impose a surface
+                here — a forced bg/text fights the poster's own palette (an earlier
+                light-"paper" wrapper hid the model's light-on-dark text). Just give
+                it room + horizontal scroll for wide content. */}
             <div
-              className="tt-report-paper"
-              style={{
-                colorScheme: 'light',
-                background: '#f5f6f8',
-                color: '#1b1e27',
-                borderRadius: 'var(--radius-lg)',
-                border: '1px solid var(--bg-border)',
-                padding: 16,
-                overflowX: 'auto',
-              }}
+              className="tt-report"
+              style={{ overflowX: 'auto' }}
               dangerouslySetInnerHTML={{ __html: report.content }}
             />
           </>
