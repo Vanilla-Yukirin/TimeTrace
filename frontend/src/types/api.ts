@@ -154,3 +154,15 @@ export interface TokenCreated {
   value: string
   created_at: number | null
 }
+
+/** One per-app override: a pinned category (null = don't force one) and/or a
+ *  free-text note injected into the AI's prompts as background for that app. */
+export interface AppOverride {
+  category: string | null
+  note: string
+}
+
+export interface AppOverrides {
+  version: number
+  apps: Record<string, AppOverride>
+}

@@ -5,6 +5,7 @@ import { useIsMobile } from '@/hooks/useIsMobile'
 import { AccountSection } from '@/components/admin/AccountSection'
 import { TokenManager } from '@/components/admin/TokenManager'
 import { EmbeddingDiagnostics } from '@/components/admin/EmbeddingDiagnostics'
+import { AppOverridesSection } from '@/components/admin/AppOverridesSection'
 
 export function SettingsPage() {
   const isMobile = useIsMobile()
@@ -23,6 +24,8 @@ export function SettingsPage() {
       <TokenManager />
 
       <EmbeddingDiagnostics />
+
+      <AppOverridesSection />
 
       <div>
         <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 16 }}>

@@ -1,5 +1,6 @@
 import type {
   ApiRecordDetail,
+  AppOverrides,
   AuthMe,
   CategoriesResponse,
   ChangePasswordRequest,
@@ -150,5 +151,15 @@ export const api = {
   revokeToken: (label: string) =>
     apiFetch<void>(`/v1/admin/tokens/${encodeURIComponent(label)}`, {
       method: 'DELETE',
+    }),
+
+  // ---- settings: per-app classification overrides ----------------------
+  getAppOverrides: () =>
+    apiFetch<AppOverrides>('/v1/settings/app-overrides'),
+
+  putAppOverrides: (body: AppOverrides) =>
+    apiFetch<AppOverrides>('/v1/settings/app-overrides', {
+      method: 'PUT',
+      body: JSON.stringify(body),
     }),
 }
