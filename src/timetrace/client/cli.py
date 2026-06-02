@@ -41,6 +41,7 @@ from timetrace.client.core.endpoints import EndpointSelector  # noqa: E402
 from timetrace.client.core.outbox import Outbox  # noqa: E402
 from timetrace.client.core.outbox_backend import OutboxBackend, make_http_sender  # noqa: E402
 from timetrace.client.core.outbox_sender import OutboxSender  # noqa: E402
+from timetrace.client.core.ssh_tunnel import SshTunnelManager  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
 from timetrace.common.config import StorageConfig  # noqa: E402
 
@@ -154,6 +155,10 @@ async def _run(
         )
         sender_stop = asyncio.Event()
 
+        # 6) SSH tunnels for any type=ssh endpoints — started up front so the
+        # selector's healthz probe can succeed against the local forward.
+        tunnels = SshTunnelManager(client_cfg.server.enabled_endpoints())
+
         async def _watch_quit() -> None:
             await quit_event.wait()
             logger.info("client.stop_requested")
@@ -166,6 +171,8 @@ async def _run(
             tg.create_task(capture_svc.run(), name="capture")
             tg.create_task(sender.run(sender_stop), name="sender")
             tg.create_task(selector.run(sender_stop), name="endpoints")
+            if tunnels.count:
+                tg.create_task(tunnels.run(sender_stop), name="ssh_tunnels")
             tg.create_task(_watch_quit(), name="quit_watcher")
     logger.info("client.shutdown_complete")
 
