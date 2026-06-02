@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-06-02
+**最后更新：** 2026-06-03
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -57,6 +57,7 @@ devlogs/
 | [archive-202606011146-outbox-test-contamination-incident.md](backend/archive-202606011146-outbox-test-contamination-incident.md) | **事故归档（教训为主）**：主 agent 反复跑全量 pytest 污染用户**正在用的生产 outbox**——根因 `test_two_process_smoke` 用 `ClientConfig.load_or_default(不存在文件)` 导致 `outbox.root_dir` 取生产默认 `~/TimeTraceData/outbox`，只隔离 data_dir 漏了 outbox；测试把真实条目偷发临时 server（删）+ 推进 acked + 塞 smoke.py 假记录 → 后续 close 永久 404 堵死队列 → 客户端崩；直查 outbox 内容+box DB（不盲信 4-agent workflow，其 2 子 agent 给了引用真 file:line 的错误根因）锁定真相；救数据=备份后原子推进 acked 跳毒丸（193 条仅 1 毒丸，192 真实数据零丢）；修测试 pin tmp 目录+回归守卫；精确删 box 10 条 smoke.py 垃圾；教训=跑碰文件系统的测试前确认隔离目录、数字说话不空安慰 |
 | [archive-202606021128-llm-classification-6cat-knn-removal.md](backend/archive-202606021128-llm-classification-6cat-knn-removal.md) | LLM 自动分类接入：补 worker"描述了却从不分类"的缺口（线上 534 条有 vlm_desc 仅 2 条有 category）；taxonomy 15 类两级→6 类单级(work/study/social/entertainment/system/uncategorized)；VLM describe 多吐 category(enum 约束 + off-list 回退)→worker 走 decide_category 写 category_final；**删 KNN**(给小固定分类集投票弱；embedding+最近邻能力留给将来标签收束)；同步 SKILL/MCP/docstring + 全测改新类；含分类 vs 标签设计讨论 + commit message 误用 PowerShell `@'...'@` 混入 @ 的修正(改 Bash heredoc)；commit 26ccbd5，部署后实测自动分类 work736/social372/system34/study18 质量合理；box 旧 14 类清理待授权 |
 | [archive-202606021757-dashboard-report-accuracy-phase0.md](backend/archive-202606021757-dashboard-report-accuracy-phase0.md) | **看板报告准确性 Phase 0**：只读取证 box 推翻报告前提——"未分类/Vanish/Claude 是隐藏 BOSS"是臆造，真 uncategorized 全库 0 条，那 3063 条(72%)是旧 worker(pre-26ccbd5)描述过却没分类的 NULL 遗留被 `COALESCE(...,'uncategorized')` 误标；VLM 早认得 Vanish 是 IM(只是逐帧撕成 social/work)；附带 2014 条 ~9h window_switch 睡眠伪影撑爆时长。四层修复(全纯代码/数据卫生)：①`tools.py` 拆桶(`_unclassified`≠`uncategorized`+标志)+读侧时长封顶(镜像 `_cap_implausible_record_durations` 5min)+legend；②重写 `_REPORT_SYSTEM` 教 6 类/区分 NULL/存疑时长/引导配规则/删"摸鱼·反差亮点"臆造诱因；③per-app 覆盖后端 `server/settings/overrides.py`(单一来源喂 worker RuleSet+VLM note+路由，空默认零行为变化)；④前端 KV 编辑器 `AppOverridesSection.tsx`(PaaS 风格，分类下拉硬编码 flat-6)。467 passed；commit 1e0d134+9cb754f；授权回填 box 231 条 Vanish/Claude NULL→work(dry-run+备份+种 app_overrides 规则)；部署验证(route 401/healthz 200)；pyramid 排周三演示后 |
+| [archive-202606030351-report-fixes-classification-roadmap.md](backend/archive-202606030351-report-fixes-classification-roadmap.md) | 看板两 bug 修复 + 分类管线现状深挖 + 部署卡 frp + 路线图：①「重新生成」network error——同机 curl 实测流式 200/405 事件/67s 通，**推翻卡片"clash 挡流式"根因**，真因=浏览器长连 HTTP/2 + 链路 ~60s 空闲超时(流式持续有数据免疫、非流式静默被掐、服务端照样落库)→`regenerate` 自愈(流式→非流式→轮询 latest 按 created_at 捞回，`0e1daca`+`c5994d3`)；②定时器只刷 24h 属实→遍历 SCOPE_HOURS(`59d5d34`)；③后端 deploy 3 连败=CI-SSH 的 `2v4G` frp 隧道断(121.43.33.13，frpc 在跑但控制连接掉、API 隧道仍活)，scheduler 修复已 push 未部署、改手动预填 3h/7d；④只读 box DB：5900/7885 NULL(3428 有图排队/2474 无图短路)，证实用户**确写硬规则** vanish/claude→work(各 211/91 生效)、规则不回溯(social 101=规则前老记录)、硬规则在 VLM 之后跑不提速；⑤路线图=分类与描述解耦/规则前置/小模型/回溯 sweep。含纠正自己两处错断言(无图"bug"、规则"提速") |
 
 ---
 
