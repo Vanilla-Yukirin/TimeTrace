@@ -19,7 +19,10 @@ export function Logo({ size = 30, withWordmark = false, tagline }: LogoProps) {
           width: size,
           height: size,
           borderRadius: Math.round(size * 0.32),
-          background: 'var(--grad-brand)',
+          // Lighter pastel badge (pink-purple → light blue) just for this logo
+          // lockup; intentionally NOT the global --grad-brand (which stays the
+          // deeper brand gradient used by the wordmark + other badges).
+          background: 'linear-gradient(135deg, #e6c9ff 0%, #bcd4ff 100%)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
