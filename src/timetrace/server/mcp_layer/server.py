@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from openai import AsyncOpenAI
 
 from timetrace.server.agent import tools as agent_tools
@@ -42,6 +43,29 @@ logger = structlog.get_logger(__name__)
 _ASK_AGENT_MAX_RECORDS = 80
 _ASK_AGENT_RECORD_DESC_CHARS = 160
 _ASK_AGENT_TIMEOUT_S = 180.0
+
+# DNS-rebinding allowlist for the streamable-HTTP transport. FastMCP silently
+# turns DNS-rebinding protection ON whenever no transport_security is passed and
+# the (default) bind host is 127.0.0.1, and then only honors localhost Host
+# headers (see fastmcp/server.py). Behind nginx the Host arrives as the public
+# domain, so that implicit default 421s every public request — local/tunnel
+# (Host=localhost) kept working, public domain never did. Keep protection ON but
+# re-grant the public domain explicitly. The bearer gate is the real boundary;
+# this is defense-in-depth, not the lock.
+_MCP_ALLOWED_HOSTS = [
+    "timetrace.yukirin.me",  # public 443 → Host carries no port
+    "timetrace.yukirin.me:*",  # explicit port, just in case
+    "127.0.0.1:*",
+    "localhost:*",
+    "[::1]:*",
+]
+# Claude Code / MCP machine clients send no Origin (non-browser), so this only
+# matters for a browser-based MCP tool (e.g. Inspector); mirror the host grant.
+_MCP_ALLOWED_ORIGINS = [
+    "https://timetrace.yukirin.me",
+    "http://127.0.0.1:*",
+    "http://localhost:*",
+]
 
 
 def _ms_to_iso(ms: int | None) -> str:
@@ -89,6 +113,11 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
         stateless_http=True,
         json_response=True,
         streamable_http_path="/",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=_MCP_ALLOWED_HOSTS,
+            allowed_origins=_MCP_ALLOWED_ORIGINS,
+        ),
     )
     # Cache an OpenAI client per server (not per tool call) so the underlying
     # httpx connection pool gets reused across requests. None if VLM unset.
