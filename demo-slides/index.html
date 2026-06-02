@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TimeTrace · 演示</title>
+<style>
+  :root{
+    --bg:#f7f4ee; --paper:#fffdf8; --ink:#23232b; --muted:#74737e;
+    --accent:#5b54e0; --accent-soft:#ece9ff; --amber:#dd8a16; --line:#e3ded2;
+    --maxw:920px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg); color:var(--ink); overflow:hidden;
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  #progress{position:fixed;top:0;left:0;height:3px;background:var(--accent);width:0;transition:width .35s ease;z-index:50}
+
+  .slide{
+    position:fixed; inset:0; display:flex; flex-direction:column; justify-content:center;
+    padding:clamp(28px,6vw,84px);
+    opacity:0; visibility:hidden; transition:opacity .35s ease;
+  }
+  .slide.dense{padding:clamp(20px,3.4vw,46px)}
+  .slide.active{opacity:1; visibility:visible}
+  .inner{width:100%; max-width:var(--maxw); margin:0 auto}
+  .inner.wide{max-width:1200px}
+
+  .eyebrow{
+    display:inline-block; color:var(--accent); font-weight:800; font-size:clamp(12px,1.5vw,15px);
+    letter-spacing:.16em; margin-bottom:18px;
+  }
+  h1.headline{
+    font-size:clamp(26px,4.6vw,48px); line-height:1.18; font-weight:800;
+    letter-spacing:-.01em; margin:0;
+  }
+  h1.headline .hl{color:var(--accent)}
+  .body{font-size:clamp(15px,2.1vw,21px); color:#3c3c46; line-height:1.75; margin-top:22px; max-width:780px}
+  .body .soft{color:var(--muted)}
+  .body b{color:var(--ink)}
+  code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:6px;font-size:.88em;font-weight:700}
+  .tag{
+    display:inline-block; margin-top:26px; padding:8px 16px; border-radius:999px;
+    background:var(--accent-soft); color:var(--accent); font-weight:700; font-size:clamp(13px,1.8vw,16px);
+  }
+  .tag.amber{background:#fbf0d8; color:#a9690a}
+
+  .flow{display:flex; align-items:center; flex-wrap:wrap; gap:14px; margin-top:38px}
+  .node{
+    padding:14px 18px; border-radius:14px; border:1.6px solid var(--line);
+    background:var(--paper); font-weight:600; font-size:clamp(14px,1.9vw,18px);
+    box-shadow:0 1px 0 var(--line); white-space:nowrap;
+  }
+  .node.me{border-color:#cdb89a;background:#fbf3e6}
+  .node.ai{border-color:#cbc7f4;background:#f1effe}
+  .node.mem{border-color:#b8ddc0;background:#eefbf0}
+  .node .sub{display:block;font-weight:500;font-size:.78em;color:var(--muted);margin-top:3px}
+  .arrow{display:flex;flex-direction:column;align-items:center;color:var(--muted);min-width:64px}
+  .arrow b{font-size:24px;line-height:1;color:#b9b4a6}
+  .arrow span{font-size:12px;margin-top:5px;text-align:center;max-width:130px;line-height:1.35}
+
+  /* cover */
+  .cover{align-items:flex-start}
+  .cover .brand{font-size:clamp(56px,11vw,128px);font-weight:900;letter-spacing:-.03em;line-height:.95;margin:0}
+  .cover .brand .dot{color:var(--accent)}
+  .cover .tagline{font-size:clamp(18px,3vw,30px);font-weight:700;margin-top:18px}
+  .cover .tagline em{color:var(--accent);font-style:normal}
+  .cover .sub{font-size:clamp(14px,2vw,19px);color:var(--muted);margin-top:14px;line-height:1.7;max-width:680px}
+  .cover .meta{margin-top:40px;color:var(--muted);font-size:14px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  .cover .meta .kbd{border:1px solid var(--line);background:var(--paper);border-radius:6px;padding:2px 8px;font-size:12px}
+
+  /* architecture (page 5) */
+  .arch{display:flex;gap:26px;align-items:stretch;margin-top:16px}
+  .arch-flow{flex:1;min-width:0;display:flex;flex-direction:column}
+  .band{padding:10px 14px;border-radius:14px;border:1.5px solid var(--line);background:var(--paper)}
+  .band .lbl{font-size:12px;font-weight:800;letter-spacing:.03em;margin-bottom:8px;color:var(--muted)}
+  .band.client{border-color:#e0d2bb} .band.client .lbl{color:#a9690a}
+  .band.link{border-color:#d6d6dd} .band.link .lbl{color:#6b6b76}
+  .band.server{border-color:#cbc7f4} .band.server .lbl{color:var(--accent)}
+  .band.consumer{border-color:#bfe0c6} .band.consumer .lbl{color:#2f8f54}
+  .boxes{display:flex;flex-wrap:wrap;gap:8px}
+  .b{padding:7px 11px;border-radius:10px;border:1.4px solid var(--line);background:#fbfaf6;font-size:13px;font-weight:600;line-height:1.25}
+  .b span{display:block;font-weight:500;font-size:11px;color:var(--muted);margin-top:2px}
+  .band.client .b{background:#fbf3e6;border-color:#ead9bf}
+  .band.server .b{background:#f3f1fe;border-color:#dcd8f6}
+  .band.consumer .b{background:#eefbf0;border-color:#cbe9d2}
+  .down{align-self:center;color:#bdb8aa;font-size:17px;margin:3px 0}
+  .arch-shot{width:288px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center}
+  .arch-shot img{width:100%;border-radius:12px;border:1px solid var(--line);box-shadow:0 8px 26px rgba(40,30,80,.13);display:block}
+  .arch-shot .cap{font-size:12px;color:var(--muted);margin-top:9px;text-align:center;line-height:1.5}
+
+  /* two AI entrances (page 6) */
+  .two-col{display:flex;gap:24px;margin-top:14px;align-items:stretch}
+  .panel{flex:1;min-width:0;display:flex;flex-direction:column}
+  .panel h3{font-size:clamp(16px,2.4vw,22px);font-weight:800;margin:0 0 10px}
+  .panel .shot{flex:1;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px;box-shadow:0 6px 22px rgba(40,30,80,.10)}
+  .panel .shot img{max-width:100%;max-height:40vh;border-radius:7px;display:block}
+  .panel .desc{font-size:13.5px;color:#3c3c46;line-height:1.6;margin-top:11px}
+  .panel .desc .q{display:inline-block;margin-top:7px;background:var(--accent-soft);color:var(--accent);border-radius:9px;padding:5px 10px;font-weight:600;font-size:12.5px}
+  .strip{display:flex;gap:14px;margin-top:16px}
+  .strip .mini{display:flex;align-items:center;gap:11px;flex:1;min-width:0;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:9px 12px}
+  .strip .mini img{height:58px;width:auto;max-width:200px;border-radius:6px;border:1px solid var(--line);flex-shrink:0;object-fit:cover;object-position:left top}
+  .strip .mini .t{font-size:12.5px;color:#3c3c46;line-height:1.5}
+  .strip .mini .t b{color:var(--ink)}
+
+  /* cards / qa / bubbles / future (pages 7-14) */
+  .cards{display:flex;gap:16px;margin-top:22px;flex-wrap:wrap}
+  .card{flex:1;min-width:230px;background:var(--paper);border:1.5px solid var(--line);border-radius:14px;padding:16px 18px}
+  .card .ic{font-size:24px;line-height:1}
+  .card h4{margin:8px 0;font-size:clamp(15px,2vw,19px);font-weight:800}
+  .card p{margin:0;font-size:14px;color:#3c3c46;line-height:1.62}
+  .bubbles{display:flex;flex-wrap:wrap;gap:10px;margin-top:24px}
+  .bubble{background:var(--accent-soft);color:var(--accent);border-radius:14px;padding:10px 15px;font-size:clamp(13px,1.9vw,16px);font-weight:600}
+  .bubble.hard{background:#fbe7e7;color:#c0392b}
+  .ph-row{display:flex;gap:14px;margin-top:22px}
+  .ph{flex:1;border:1.7px dashed #cbc6b8;border-radius:12px;background:#faf8f2;color:var(--muted);display:flex;align-items:center;justify-content:center;font-size:13px;min-height:140px;text-align:center;padding:10px}
+  .qa{margin-top:16px}
+  .qa .item{margin-bottom:16px;padding-left:14px;border-left:3px solid var(--accent-soft)}
+  .qa .q2{font-weight:800;font-size:clamp(15px,2.1vw,19px)}
+  .qa .a{font-size:clamp(13px,1.8vw,15.5px);color:#3c3c46;line-height:1.65;margin-top:5px}
+  .dim{opacity:.5}
+  .wip{display:inline-block;font-size:11px;font-weight:700;color:#a9690a;background:#fbf0d8;border-radius:6px;padding:1px 7px;margin-left:4px;vertical-align:middle}
+  .flow-col{display:flex;flex-direction:column;gap:8px}
+  /* RRF formula card (search slide, right side) */
+  .rrf{margin-left:auto;align-self:center;width:290px;flex-shrink:0;background:var(--paper);border:1.5px solid var(--line);border-radius:16px;padding:18px 20px;box-shadow:0 4px 18px rgba(40,30,80,.07)}
+  .rrf-t{font-size:12px;font-weight:800;color:var(--accent);letter-spacing:.04em;margin-bottom:14px}
+  .rrf-eq{display:flex;align-items:center;gap:8px;font-size:clamp(15px,1.7vw,19px);color:var(--ink);font-family:"Cambria Math",Georgia,"Times New Roman",serif}
+  .rrf-eq .sumw{display:inline-flex;flex-direction:column;align-items:center;line-height:1}
+  .rrf-eq .sum{font-size:1.7em}
+  .rrf-eq .sums{font-size:.5em;color:var(--muted);white-space:nowrap}
+  .rrf-eq .frac{display:inline-flex;flex-direction:column;text-align:center}
+  .rrf-eq .frac .num{border-bottom:2px solid currentColor;padding:0 8px 2px}
+  .rrf-eq .frac .den{padding:2px 8px 0;white-space:nowrap}
+  .rrf-k{margin-top:13px;font-weight:800;font-size:15px;color:var(--accent)}
+  .rrf-n{margin-top:10px;font-size:12px;color:var(--muted);line-height:1.55}
+  .future{display:flex;gap:12px;flex-wrap:wrap}
+  .future .f{font-size:12.5px;color:var(--muted);background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:9px 13px;line-height:1.5;max-width:300px}
+  /* phone showcase */
+  .phones{display:flex;gap:34px;justify-content:center;align-items:flex-start;margin-top:16px;flex-wrap:wrap}
+  .pgroup{display:flex;flex-direction:column;align-items:center;gap:9px}
+  .plabel{font-size:13px;font-weight:800;color:var(--muted)}
+  .prow{display:flex;gap:12px}
+  .prow img{height:54vh;max-height:560px;width:auto;border-radius:18px;border:1px solid var(--line);box-shadow:0 12px 32px rgba(40,30,80,.18);display:block}
+
+  #hud{position:fixed; right:22px; bottom:18px; display:flex; align-items:center; gap:10px; z-index:50; color:var(--muted)}
+  #hud button{width:36px;height:36px;border-radius:10px;border:1px solid var(--line);background:var(--paper);color:var(--ink);font-size:18px;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center}
+  #hud button:hover{border-color:var(--accent);color:var(--accent)}
+  #counter{font-size:13px;font-variant-numeric:tabular-nums;min-width:48px;text-align:center}
+  .hint{position:fixed;left:22px;bottom:22px;color:var(--muted);font-size:12px;z-index:50;opacity:.8}
+</style>
+</head>
+<body>
+  <div id="progress"></div>
+
+  <main id="deck">
+
+    <!-- ① 封面 -->
+    <section class="slide cover active">
+      <div class="inner">
+        <p class="brand">TimeTrace<span class="dot">.</span></p>
+        <p class="tagline">给 <em>AI</em> 用的 · 本地活动记忆层</p>
+        <p class="sub">让你的 AI 伙伴“能看见”并且“能记住”你某时某刻在做什么。</p>
+        <div class="meta">
+          <span>heshaohong</span><span>·</span><span>2026.06.03</span>
+          <span class="kbd">← →</span><span>翻页</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ② 起因 -->
+    <section class="slide">
+      <div class="inner">
+        <span class="eyebrow">起因 · 我遇到的麻烦</span>
+        <h1 class="headline">组里推荐用 OpenClaw 写日报，<br/>可它<span class="hl">根本不知道我今天干了啥</span>。</h1>
+        <p class="body">想让 AI 帮我写日报、帮我回答"我今天都忙了些什么"——结果每次都得我自己把事儿一条条敲给它。AI 看不见我的屏幕，它只能等我投喂。</p>
+        <div class="flow">
+          <div class="node me">我 😪<span class="sub">脑子里记着今天干了啥</span></div>
+          <div class="arrow"><b>→</b><span>手动一条条敲给它</span></div>
+          <div class="node ai">🤖 OpenClaw<span class="sub">一无所知，只能干等</span></div>
+        </div>
+        <span class="tag amber">我的记性非常差，并且晚上通常下班都比较晚，每天都来回忆一遍就有点太费时了。</span>
+      </div>
+    </section>
+
+    <!-- ③ 土办法 -->
+    <section class="slide">
+      <div class="inner">
+        <span class="eyebrow">我现在的办法</span>
+        <h1 class="headline">写了个 <span class="hl">/archive</span> skill，<br/>让 Claude Code 自己总结、自己归档。</h1>
+        <p class="body">做完一个任务，在对话框里面再打一行 <code>/archive</code>，cc 就按我定的规矩把过程总结&归档成一份 markdown，然后我再把这份 md 甩给 OpenClaw。</p>
+        <div class="flow">
+          <div class="node">干完一段活</div>
+          <div class="arrow"><b>→</b><span>打 /archive</span></div>
+          <div class="node">总结 + 归档</div>
+          <div class="arrow"><b>→</b><span>生成 .md</span></div>
+          <div class="node">手动甩给 OpenClaw</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ④ 启发 → 想要的东西 -->
+    <section class="slide">
+      <div class="inner">
+        <span class="eyebrow">写着写着，冒出一个念头</span>
+        <h1 class="headline">能不能让 OpenClaw 干脆<span class="hl">自己「看见」</span>我在做什么？</h1>
+        <p class="body">日报这事点醒了我。我真正想要的，是让 OpenClaw 能直接、主动地看到我某时某刻在干嘛，而且长期记着。顺着这个念头，做出了 <b>TimeTrace</b>——一层给 OpenClaw 用的本地记忆。它就做两件朴素的事：<b>老老实实地记录</b>，再配上<b>一套高级的检索</b>。这样一来，OpenClaw 从一个等我投喂的工具，长成了能看我屏幕、有长期记忆的伙伴。</p>
+        <div class="flow">
+          <div class="node me">我的屏幕<span class="sub">某时某刻在干啥</span></div>
+          <div class="arrow"><b>→</b><span>自动记录·描述·分类</span></div>
+          <div class="node mem">本地记忆层<span class="sub">持久 · 可检索</span></div>
+          <div class="arrow"><b>←</b><span>主动翻阅</span></div>
+          <div class="node ai">AI 伙伴</div>
+        </div>
+        <span class="tag">如果把 OpenClaw/Hermes 当伙伴的话，这东西也许就有点用。</span>
+      </div>
+    </section>
+
+    <!-- ⑤ 完整架构图 -->
+    <section class="slide dense">
+      <div class="inner wide">
+        <span class="eyebrow">完整架构 · 从你的屏幕，到 AI 的眼睛</span>
+        <div class="arch">
+          <div class="arch-flow">
+            <div class="band client">
+              <div class="lbl">① 客户端 · 你的电脑（采集端）</div>
+              <div class="boxes">
+                <div class="b">采集<span>活跃窗口 · 关键帧截图 · 时间</span></div>
+                <div class="b">隐私过滤<span>黑名单 / 暂停</span></div>
+                <div class="b">Outbox 队列<span>幂等 · 断点续传</span></div>
+                <div class="b">托盘 · 多路径选路</div>
+              </div>
+            </div>
+            <div class="down">↓</div>
+            <div class="band link">
+              <div class="lbl">② 链路 · 自动选最优的一条</div>
+              <div class="boxes">
+                <div class="b">在家 → 局域网直连 192.168.*.*<span>就近、最快</span></div>
+                <div class="b">在外 → 域名 → 香港 VPS(nginx) → FRP 隧道<span>无公网 IP，绕一圈；延迟不重要、带宽重要</span></div>
+              </div>
+            </div>
+            <div class="down">↓</div>
+            <div class="band server">
+              <div class="lbl">③ 服务端 · 家里小主机（常驻 · RTX 3080）· 数据不出门</div>
+              <div class="boxes">
+                <div class="b">API（FastAPI）</div>
+                <div class="b">存储<span>SQLite + 本地文件</span></div>
+                <div class="b">分析 Worker<span>VLM 看图 → 描述 + 分类</span></div>
+                <div class="b">本地模型<span>VLM 35B · Embedding</span></div>
+                <div class="b">三路检索<span>关键词 FTS5 · 以图搜图 pHash · 语义向量</span></div>
+                <div class="b">分析队列<span>状态机 · 崩了自愈</span></div>
+                <div class="b">看板生成器<span>定时出 AI 报告</span></div>
+              </div>
+            </div>
+            <div class="down">↓</div>
+            <div class="band consumer">
+              <div class="lbl">④ 谁在用它</div>
+              <div class="boxes">
+                <div class="b">你 → Web（域名 · 登录）<span>时间轴 · 看板 · 搜索</span></div>
+                <div class="b">AI → Agent 问答 · MCP 导出<span>OpenClaw / Claude Code 主动来读</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="arch-shot">
+            <img src="images/24h-1.png" alt="看板报告示例" />
+            <div class="cap">架构跑完，你每天看到的看板就长这样 👆</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ⑥ 两个 AI 入口 -->
+    <section class="slide dense">
+      <div class="inner wide">
+        <span class="eyebrow">两个 AI 入口 · 定位不一样</span>
+        <div class="two-col">
+          <div class="panel">
+            <h3>💬 Agent · 你问，它答</h3>
+            <div class="shot"><img src="images/agent-1.png" alt="Agent 问答" /></div>
+            <div class="desc">用大白话问，它自己调工具去翻你的活动记忆，再回答你。
+              <span class="q">例：今天主要用了哪些应用？各花了多久？</span></div>
+          </div>
+          <div class="panel">
+            <h3>📊 看板 · 它主动给你看</h3>
+            <div class="shot"><img src="images/3h-1.png" alt="看板报告" /></div>
+            <div class="desc">每 30 分钟自动出一份「最近在干嘛」的洞察，像网易云年报。你打开就看，不用开口问。</div>
+          </div>
+        </div>
+        <div class="strip">
+          <div class="mini"><img src="images/interesting-摸鱼.png" alt="看板洞察卡片" /><div class="t"><b>很会抓特点</b><br/>摸鱼大师…？</div></div>
+          <div class="mini"><img src="images/3h-1-processing.png" alt="看板实时生成" /><div class="t"><b>全程 AI 实时生成</b><br/>调工具 → 落笔写报告</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ⑦ 可能可以问他什么 -->
+    <section class="slide dense">
+      <div class="inner wide">
+        <span class="eyebrow">可能可以问他什么</span>
+        <h1 class="headline">从随口一问，到<span class="hl">有点刁钻</span>的，它都能接。</h1>
+        <div class="two-col" style="margin-top:18px">
+          <div class="panel">
+            <h3 style="font-size:clamp(14px,1.9vw,17px)">「我最近 1 小时有没有在摸鱼？」</h3>
+            <div class="shot"><img src="images/q1.png" alt="摸鱼问答" /></div>
+          </div>
+          <div class="panel">
+            <h3 style="font-size:clamp(14px,1.9vw,17px)">「昨天上班 10–21 点，有没有跟人聊天？什么软件、跟谁？」</h3>
+            <div class="shot"><img src="images/q2.png" alt="聊天问答" /></div>
+          </div>
+        </div>
+        <div class="bubbles" style="margin-top:16px">
+          <div class="bubble">这周工作多久？</div>
+          <div class="bubble">写代码 vs 开会？</div>
+          <div class="bubble">最近 3 小时在干嘛？</div>
+          <div class="bubble">用得最多的 app？</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 手机适配 + 深浅双主题 -->
+    <section class="slide dense">
+      <div class="inner wide">
+        <span class="eyebrow">一点小美化？</span>
+        <h1 class="headline">手机（竖屏）也能看，<span class="hl">白天黑夜双主题</span>也有。</h1>
+        <div class="phones">
+          <div class="pgroup">
+            <div class="plabel">☀️ 白天模式</div>
+            <div class="prow">
+              <img src="images/phone-1-white.jpg" alt="手机白天 · 时间轴" />
+              <img src="images/phone-2-white.jpg" alt="手机白天" />
+            </div>
+          </div>
+          <div class="pgroup">
+            <div class="plabel">🌙 夜间模式</div>
+            <div class="prow">
+              <img src="images/phone-3-black.jpg" alt="手机夜间 · 搜索" />
+              <img src="images/phone-4-black.jpg" alt="手机夜间" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ⑧ 取舍 · 为什么搭这么大 -->
+    <section class="slide">
+      <div class="inner wide">
+        <span class="eyebrow">取舍 · 为什么搭得这么大</span>
+        <h1 class="headline">我的决定：<span class="hl">隐私第一</span>。</h1>
+        <div class="cards">
+          <div class="card">
+            <div class="ic">🔒</div>
+            <h4>隐私第一</h4>
+            <p>不调任何外来模型——描述、分类、问答全用自己显卡（RTX 3080）上的本地模型。数据一步都不出门。</p>
+          </div>
+          <div class="card">
+            <div class="ic">🖥️</div>
+            <h4>服务端常驻 → 客户端/服务端分离</h4>
+            <p>服务端在家里小主机后台一直跑。电脑关了，它照样消化白天堆积的分析、照样出看板；手机打开网站也能看。</p>
+          </div>
+          <div class="card">
+            <div class="ic">🛣️</div>
+            <h4>多路径 · 两条线自动切</h4>
+            <p>在家走局域网 192.168.*.*（最快）；在外走域名 → VPS → FRP 隧道（因为没有公网 IP 所以得绕一圈）。带宽比延迟更重要。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ⑨ 小模型上做 agent + 未来 -->
+    <section class="slide">
+      <div class="inner">
+        <span class="eyebrow">隐私的代价 · 与未来</span>
+        <h1 class="headline">模型只能跑在自己卡上，<br/>那怎么让<span class="hl">小小的量化模型</span>回答正确？</h1>
+        <p class="body">为了隐私，只能用本地这张卡跑得动的、还经过量化的小模型。让其作为能够「调工具 → 查记忆 → 回答」agent 的模型基座感觉还是很难的……我现在主要是2方面的想法：<b>① 在 prompt 里仔细引导它该怎么做；② 在数据构成上下功夫</b>（目前还只有帧级别的原始数据）。</p>
+        <p class="body" style="margin-top:14px"><span class="soft">目前的局限：只有 5 个工具、50k 上下文窗口小、小模型过度/无限思考，无 subagent / 分层检索。问得复杂一点就会回答不出来。</span></p>
+        <span class="tag">未来改进方向（？）：把数据一层层往上聚合（关键帧 → 片段 → 摘要），agent 想深入哪段就顺着往下钻；让工具更全面更多样；引导 agent 探索路径。让 agent 看到的信息更完整、有粗有细。</span>
+      </div>
+    </section>
+
+    <!-- ⑩ 问题① · 多模态搜索 -->
+    <section class="slide dense">
+      <div class="inner wide">
+        <span class="eyebrow"> 问题① · 多模态搜索</span>
+        <h1 class="headline">三条路一起找，再<span class="hl">融合</span>排个序。</h1>
+        <div class="flow" style="margin-top:30px">
+          <div class="flow-col">
+            <div class="node">🔤 关键词<span class="sub">FTS5 trigram · BM25 · 中文友好</span></div>
+            <div class="node">🖼️ 以图搜图<span class="sub">pHash + BK-tree · 按时间过滤</span></div>
+            <div class="node dim">🧠 语义向量 <span class="wip">施工中</span><span class="sub">embedding + 余弦已实现，还没接进搜索入口</span></div>
+          </div>
+          <div class="arrow"><b>→</b><span>RRF 融合<br/>(k=60)</span></div>
+          <div class="node mem">融合排序<span class="sub">多条通道同时命中，排得越前</span></div>
+          <div class="rrf">
+            <div class="rrf-t">RRF · 倒数排名融合</div>
+            <div class="rrf-eq">
+              <span>score =</span>
+              <span class="sumw"><span class="sum">Σ</span><span class="sums">通道 c</span></span>
+              <span class="frac"><span class="num">1</span><span class="den">k + rank<sub>c</sub></span></span>
+            </div>
+            <div class="rrf-k">k = 60</div>
+            <div class="rrf-n">某结果在某条通道里排得越靠前（rank 越小），这一票越值钱；几条通道同时把它排前面，总分就越高。k 是个缓冲常数，防第一名一家独大。</div>
+          </div>
+        </div>
+        <p class="body" style="margin-top:26px;font-size:15px"><span class="soft">关键词 + 以图搜图 + RRF 融合是成功的；语义向量这条基建写好了但还没接进搜索入口。</span></p>
+      </div>
+    </section>
+
+    <!-- ⑪ 问题② · 几个会被问到的硬问题 -->
+    <section class="slide dense">
+      <div class="inner wide">
+        <span class="eyebrow">问题 ② · 几个会被问到的硬问题</span>
+        <div class="qa">
+          <div class="item">
+            <div class="q2">Q：一直来回切窗口，岂不是疯狂截图？</div>
+            <div class="a">你来回切窗口，总不能每切一次就咔一张吧——一分钟能攒一堆废图。所以加了几道闸：切到一个新窗口先<b>等 1.5 秒再拍</b>，这 1.5 秒里你又切走了就干脆不拍（很多切窗只是手滑、找东西，没真停留）；就算停下来了，同一个画面<b>最快也得隔 2 秒</b>；要是你人离开了（<b>180 秒没碰键鼠</b>）就直接停止采集、不浪费；但又怕时间轴断档，所以<b>最多 30 秒补拍一帧</b>。说白了：只在你「真的在看某样东西」的时候才记。</div>
+          </div>
+          <div class="item">
+            <div class="q2">Q：程序跑着突然关机 / 崩了，会丢数据吗？</div>
+            <div class="a">采集到的东西不会马上发走，先落到本地一个「待发件箱」。它是只追加的日志、每写一条都强制刷盘、还用原子改名——意思是写到一半断电，也不会写出半条脏数据。每条都带一个唯一 id，发到服务端后按 id 去重。所以哪怕正写着突然断电：重启后那几条没收到确认的会原样再发一遍，服务端一看是重复的就丢掉——<b>不丢、也不重</b>。服务端那边，分析任务是个状态机（待分析 → 分析中 → 完成），万一卡在「分析中」（比如干活的进程崩了），每 5 分钟有个巡检自动把它打回「待分析」重来。</div>
+          </div>
+          <div class="item">
+            <div class="q2">Q：上传会不会把网占满 / 一直失败死磕？</div>
+            <div class="a">上传可以限速（默认不限、想限自己配），不会把你的网占满。万一服务端连不上，它不会傻乎乎一直猛敲，而是退一步再试：失败等 1 秒、再失败等 2 秒、4 秒…<b>最多等到 60 秒</b>，一通就立刻恢复。服务端分析这边也一样：一帧失败最多<b>重试 5 次</b>（从 1 分钟退到 10 分钟）；要是连着失败 3 次（多半是本地大模型挂了），就触发<b>熔断</b>——先歇 30 秒，派个探针去试探它活没活，活了再恢复，免得对着空气一直撞墙。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ⑫ 问题③ · 分类是怎么定的 -->
+    <section class="slide">
+      <div class="inner">
+        <span class="eyebrow">问题 ③ · 分类是怎么定的</span>
+        <h1 class="headline">绕了一圈，最后<span class="hl">选了最朴素的那条</span>。</h1>
+        <p class="body">一开始想搞复杂的：把画面里的文字抽出来，再用嵌入 / KNN 投票来分类（相当于让它「持续学习」）。后来发现这条路不划算——这种持续学习本身就难调，而且它得靠你不停地给记录打标签来喂数据，可谁会闲到天天给自己打标签呢。其实就 6 个固定分类 + 一个能看懂截图的 VLM，已经够用了。</p>
+        <p class="body" style="margin-top:14px">于是删掉 KNN，改成最朴素的：<b>让 VLM 在描述每一帧时，顺手从 6 类里挑一个</b>；再加上<b>你自己写的规则</b>，规则的分量更重、会盖过 VLM 的猜测（比如把 Vanish 永远归「工作」）。<span class="soft">谁说了算，靠一个简单的加权投票——有规则就听规则，没规则才听 AI。</span></p>
+        <span class="tag">未来：agent 发现一个没见过的新软件，可以在聊天里提醒你、问你归哪类、为什么，然后直接帮你写进规则。</span>
+      </div>
+    </section>
+
+    <!-- ⑬ 老实交代 -->
+    <section class="slide">
+      <div class="inner wide">
+        <span class="eyebrow">AI Slop？</span>
+        <h1 class="headline">时间很赶，<span class="hl">这个项目完全（100%）是 AI 堆出来的</span>。</h1>
+        <div class="cards">
+          <div class="card">
+            <div class="ic">🧱</div>
+            <h4>大量时间花在重构</h4>
+            <p>客户端 / 服务端分离这套重构占了很多精力，绝大部分（100%）代码是 AI 写的。</p>
+          </div>
+          <div class="card">
+            <div class="ic">🎨</div>
+            <h4>不会前端，也不知道如何驾驭 AI 写前端</h4>
+            <p>很多地方只能靠自己截图 + 描述跟 AI 来回对；后端我也只懂一点点架构和逻辑而已。</p>
+          </div>
+          <div class="card">
+            <div class="ic">🐛</div>
+            <h4>调试靠 AI</h4>
+            <p>全靠 Claude Code + SSH 看日志、远程联调，还有不少小 bug——但目前至少跑得起来。</p>
+          </div>
+        </div>
+        <span class="tag">现状：有域名、有登录、有网站，简单的加密也做了。</span>
+      </div>
+    </section>
+
+    <!-- ⑭ 收尾 + 未来畅想 -->
+    <section class="slide">
+      <div class="inner wide">
+        <span class="eyebrow">结束</span>
+        <h1 class="headline">希望我还会继续完善这个项目 🙏<br/><span class="hl">继续烧 token</span>。</h1>
+        <p class="body">目前刚能跑。剩下的就是堆时间和 Token 把它打磨完整。</p>
+        <div style="margin-top:32px">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:11px;font-weight:700">随便畅想几个未来的方向 ❓</div>
+          <div class="future">
+            <div class="f">多设备一起接 ❓</div>
+            <div class="f">连手机：截图 / 相册文件夹无感知自动上传，做到准实时（手机用得更多）</div>
+            <div class="f">拍照文件夹也自动传 ❓</div>
+            <div class="f">桌面摆个小工业摄像头当本地监控——纯本地，不怕隐私 ❓</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <div id="hud">
+    <button id="prev" aria-label="上一页">‹</button>
+    <span id="counter">1 / 1</span>
+    <button id="next" aria-label="下一页">›</button>
+  </div>
+  <div class="hint">← → / 空格 翻页</div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  let i = slides.findIndex(s => s.classList.contains('active'));
+  if (i < 0) i = 0;
+  const counter = document.getElementById('counter');
+  const progress = document.getElementById('progress');
+
+  function show(n){
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, k) => s.classList.toggle('active', k === i));
+    counter.textContent = (i + 1) + ' / ' + slides.length;
+    progress.style.width = (i / Math.max(1, slides.length - 1) * 100) + '%';
+  }
+  const next = () => show(i + 1);
+  const prev = () => show(i - 1);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); next(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); prev(); }
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(slides.length - 1);
+  });
+  document.getElementById('next').addEventListener('click', next);
+  document.getElementById('prev').addEventListener('click', prev);
+  show(i);
+</script>
+</body>
+</html>
