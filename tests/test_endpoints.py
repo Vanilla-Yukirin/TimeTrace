@@ -120,6 +120,28 @@ async def test_selector_skips_disabled_even_if_healthy():
     assert chosen is not None and chosen.name == "pub"
 
 
+async def test_selector_sticky_keeps_current_on_probe_miss():
+    """A transient all-probe-miss must NOT blackhole current to None — keep the
+    last-good endpoint so the send's own retry decides liveness."""
+    healthy = {"u_pub"}
+
+    async def probe(url: str) -> bool:
+        return url in healthy
+
+    sel = EndpointSelector(_eps(("lan", "u_lan", True), ("pub", "u_pub", True)), probe=probe)
+    assert (await sel.select()).name == "pub"  # pub healthy → current=pub
+    healthy.clear()  # everything transiently down
+    kept = await sel.select()
+    assert kept is not None and kept.name == "pub"  # sticky: still pub, not None
+    assert sel.current_url() == "u_pub"
+
+
+async def test_selector_none_when_all_down_and_no_current():
+    """With no current to keep, all-down → None (a real 'nowhere to send')."""
+    sel = EndpointSelector(_eps(("lan", "u_lan", True)), probe=_probe_for(set()))
+    assert await sel.select() is None
+
+
 async def test_selector_upgrades_back_to_higher_priority():
     healthy = {"u_pub"}
 

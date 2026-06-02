@@ -7,6 +7,7 @@ Provides pause/resume and quit controls.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -71,9 +72,28 @@ class TrayIcon:
                 menu=self._build_menu(pystray),
             )
             self._icon = icon
+            # Windows pystray caches menu text at build time; refresh so the
+            # endpoint health glyphs (●/○/✕) track the selector. Only needed
+            # when we actually render the connection submenu.
+            if self._endpoints:
+                threading.Thread(
+                    target=self._refresh_menu_loop, name="tray-refresh", daemon=True
+                ).start()
             icon.run()
         except Exception:
             logger.warning("tray.failed_to_start", exc_info=True)
+
+    def _refresh_menu_loop(self) -> None:
+        """Periodically force a menu refresh so the live health glyphs update."""
+        while True:
+            time.sleep(5.0)
+            icon = self._icon
+            if icon is None:
+                continue
+            try:
+                icon.update_menu()
+            except Exception:  # noqa: BLE001
+                pass
 
     def stop(self) -> None:
         if self._icon is not None:

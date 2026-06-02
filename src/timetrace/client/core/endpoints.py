@@ -26,7 +26,9 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 HealthProbe = Callable[[str], Awaitable[bool]]
-_PROBE_TIMEOUT_S = 3.0
+# Generous so a slow-but-alive remote (e.g. a laggy cross-region path) isn't
+# falsely marked down by a tight probe window.
+_PROBE_TIMEOUT_S = 8.0
 _DEFAULT_PROBE_INTERVAL_S = 30.0
 
 
@@ -84,7 +86,14 @@ class EndpointSelector:
     async def select(self) -> EndpointSection | None:
         """Probe enabled endpoints in priority order; set ``current`` to the
         first healthy one. Probes all enabled (cheap) so the tray gets full
-        health, but the first healthy in priority order always wins."""
+        health, but the first healthy in priority order always wins.
+
+        Sticky on a probe miss: if *nothing* probes healthy we KEEP the current
+        endpoint (when still enabled) rather than blackholing sends to None — a
+        probe is only a hint; the send's own retry is the real liveness test.
+        This stops a flaky link from flapping current → None → "no healthy
+        endpoint" on every transient probe failure. Only drop to None when there
+        is no current to keep."""
         async with self._lock:
             chosen: EndpointSection | None = None
             for ep in self._enabled():
@@ -93,12 +102,21 @@ class EndpointSelector:
                 if ok and chosen is None:
                     chosen = ep
             prev = self._current.name if self._current is not None else None
-            self._current = chosen
-            if chosen is None:
+            if chosen is not None:
+                self._current = chosen
+                if chosen.name != prev:
+                    logger.info(
+                        "endpoint.selected", name=chosen.name, url=chosen.url, previous=prev
+                    )
+            elif self._current is not None and self._current.name in {
+                e.name for e in self._enabled()
+            }:
+                # Transient probe miss — keep using current; let the send decide.
+                logger.warning("endpoint.probe_miss_keeping_current", current=self._current.name)
+            else:
+                self._current = None
                 logger.warning("endpoint.none_healthy", tried=[e.name for e in self._enabled()])
-            elif chosen.name != prev:
-                logger.info("endpoint.selected", name=chosen.name, url=chosen.url, previous=prev)
-            return chosen
+            return self._current
 
     async def run(self, stop_event: asyncio.Event) -> None:
         """Background loop: re-select every ``probe_interval_s`` so a recovered
