@@ -73,8 +73,20 @@ export function DashboardPage() {
       for await (const ev of reportsApi.generateStream(scope)) {
         applyEvent(ev)
       }
-    } catch (e) {
-      setError(String(e))
+    } catch {
+      // The streaming endpoint is an SSE-over-fetch POST. Some client networks (a
+      // local proxy/VPN in TUN mode, strict corporate proxies) drop long-lived
+      // streaming responses while ordinary request/response POSTs still go through.
+      // Fall back to the non-streaming endpoint — we lose the live tool-step preview
+      // but still get the finished report (the spinner keeps covering the wait).
+      try {
+        setSteps([])
+        setLiveText('')
+        const report = await reportsApi.generate(genScopeRef.current ?? scope)
+        setReport(report)
+      } catch (fallbackErr) {
+        setError(String(fallbackErr))
+      }
     } finally {
       setGenerating(false)
       setLiveText('')
