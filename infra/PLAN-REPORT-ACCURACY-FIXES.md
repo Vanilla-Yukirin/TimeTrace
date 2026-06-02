@@ -93,3 +93,13 @@
 - **`_MAX_PLAUSIBLE_RECORD_MS=5min` cap**：会低估「单条记录连续 >5min」的场景；但按 capture 设计（≤30s 心跳 + 180s idle 关闭）正常无单条 >5min，>5min 几乎只来自睡眠，故 cap 安全。若将来 capture 改为长记录需重审。
 - **box 旧 20-cat 与 flat-6 并存**：`apply_label` by-id 校验会认旧 id，规则下拉直读 `get_categories` 会冒废弃项——读取处一律白名单过滤到 6 个。
 - **返回形状变化**（多 `is_unclassified` / `categories_legend` / `capped_per_record_seconds` 等）对 Python 消费方 additive-safe（runner JSON 序列化整体、MCP 原样返回，无 parser 依赖）；前端两处 `get_category_stats` 引用只是工具名→标签显示映射，不消费返回形状。
+
+---
+
+## 6. 暂缓 / 先再说（用户决定先不做，记在此处，不进会话 todolist）
+
+这三件都不阻塞明早演示，等想做时再从这里捡起：
+
+1. **【周三 2026-06-03 演示之后】pyramid Phase 1 + 给 4 篇架构文档补评审修正** —— 演示前冻结，细节见 §2 Phase 2。
+2. **【可选 · 需用户授权 · box 写】扩回填其余 ~2800 条旧 NULL + 清理旧 20 类两级 taxonomy** —— 当前报告会诚实显示这批为「尚未分类/待回填」，不影响准确性；若嫌占比大、想让报告更满，可扩到高频应用规则回填。清旧 taxonomy 是另一条 `DELETE FROM categories`（先核对无记录引用旧 id）。两者都需明确授权 + dry-run + 备份。
+3. **【infra agent / 用户】前端 scp 到 VPS + 公网看板验证** —— 后端已上线；前端 KV 编辑器与新看板要在公网（`timetrace.yukirin.me`）看到，还需把 `frontend-dist/` scp 到 VPS（属 infra agent 域）。
