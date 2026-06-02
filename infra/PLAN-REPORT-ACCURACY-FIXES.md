@@ -1,6 +1,6 @@
 # PLAN：看板报告准确性修复 + per-app 覆盖 + Pyramid 落地排期
 
-> 状态：Phase 0 已落地（本会话，纯代码、零 DB 写），Phase 1+ 待办。
+> 状态（2026-06-02）：**Phase 0 已部署上线 + 已验证**（box 跑新代码：`/v1/settings/app-overrides` 返 401、healthz 200）；**Phase 1 前端编辑器已完成**（`9cb754f`，npm build 过）；**P1.2 回填已部分完成**（授权范围内：Vanish/Claude 共 231 条 NULL→work，已备份）。**Phase 2（pyramid）+ 给 4 篇架构文档补评审修正 —— 排期到周三（2026-06-03）演示之后再开始，演示前冻结不动。**
 > 综合来源：4 篇架构文档评审（[PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) + [pyramid-schema](storage/pyramid-schema.md) + [episode-pipeline](architecture/episode-and-rollup-pipeline.md) + [thin-router](architecture/thin-router-agent.md)）+ 线上 box DB 只读取证 + 2 个功能设计 + 完备性批判（14-agent workflow）。
 > **核心结论：看板报告不是因为 AI 不认识应用而出错，而是『数据标签 + Prompt + 死规则』三层 bug。** 三个廉价修复即可让报告准确；pyramid 是正确的长期方向，但必须 gate 在数据清洗之后。
 
@@ -49,21 +49,25 @@
 
 > Phase 0 全量 **467 passed**（新增 12 测试）、ruff check/format 全绿。需经 deploy 工作流部署到 box 才对线上报告生效。
 
-### Phase 1 — 用户可配 UI + 历史回填（待办）
+### Phase 1 — 用户可配 UI + 历史回填
 
-- **P1.1 前端 Settings KV 编辑器**（待用户确认是否现在做；UI 审美归用户）
-  - `AppOverridesSection.tsx`：每行 `[app 名] [分类下拉(6 builtin)] [说明] [−]` + `[+ 添加]` + 保存；react-query/apiFetch 模式照 `AccountSection`/`TokenManager`（**不是** `EmbeddingDiagnostics`，那是 localStorage-only），视觉 style 常量照 `EmbeddingDiagnostics`。
+- **P1.1 ✅ 前端 Settings KV 编辑器**（`9cb754f`，npm build 过；公网可见仍需 scp 到 VPS，属 infra）
+  - `AppOverridesSection.tsx`：每行 `[app 名] [分类下拉(6 builtin)] [说明] [−]` + `[+ 添加]` + 保存；react-query/apiFetch 模式照 `AccountSection`/`TokenManager`，视觉 style 常量照 `EmbeddingDiagnostics`。
   - 分类 `<select>` **客户端硬过滤到 6 个 builtin id**（别信 `getCategories`，box 上还有旧 20-cat 残留）。
   - `api.ts` + `queryKeys.ts` 加 `getAppOverrides`/`putAppOverrides` + `appOverrides` key。后端路由已就绪。
-- **P1.2 一次性遗留回填（⚠️ 需授权，见 §3）**
-  - 对 `status=vlm_done AND category_final IS NULL` 的 3063 行：规则命中写 override 分类，否则保持 NULL 或从 `vlm_desc` 重新派生。**约束**：没有独立存的 VLM 分类列可恢复——非规则行只能拿 override 分类或维持 NULL，除非重调 VLM。做成「应用到历史」按钮 + 受影响条数预览，不要 auto-on-save。
+- **P1.2 🟡 遗留回填（已部分完成，授权范围内）**
+  - ✅ 已做：Vanish/Claude 共 **231 条** `category_final IS NULL` → `work`（规则命中，已备份 `category_backfill_backup_20260602.json`）；并种下 `app_overrides`（vanish/claude→work）。
+  - ⏸️ 未做：其余 ~2800 条旧 NULL 仍未回填（报告会诚实显示为「尚未分类/待回填」）。若要更满的报告，可扩到高频应用规则回填——**需用户授权**（见 §3）。约束：没有独立存的 VLM 分类列可恢复，非规则行只能拿 override 分类或重调 VLM。
 
-### Phase 2 — Pyramid + thin-router（gate 在 Phase 0 之后，effort L）
+### Phase 2 — Pyramid + thin-router + 4 篇架构文档补评审修正（⏸️ **周三 2026-06-03 演示之后再开始**）
 
-- 先发 **L2 episodes + day digest**；推迟 L4 周/月、deep_scan map-reduce、双 token-budget SSE、第二个 summary_embedding 索引。
+> **冻结期**：演示前不碰这一段——它是多天工程，且 critic 明确"建在未清洗数据上的金字塔会自信地错"。Phase 0 已把承重前提（拆桶/封顶/防臆造/规则）落地，演示后可安全往上盖。
+
+- **给 4 篇架构文档补评审修正**（不是现在改，记在此处排期）：把本次评审发现的 4 个通病补进 [PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) / [pyramid-schema](storage/pyramid-schema.md) / [episode-pipeline](architecture/episode-and-rollup-pipeline.md) / [thin-router](architecture/thin-router-agent.md)：①时长封顶要引用 `_cap_implausible_record_durations` 别只用 `MAX(0,...)`；② episode 分类投票要 NULL-aware；③ 冷启回填要含 L1 `category_final` 回填；④ 报告 persona 要去臆造化。并加一节"Phase 0 已完成"前置。
+- **pyramid 本体**：先发 **L2 episodes + day digest**；推迟 L4 周/月、deep_scan map-reduce、双 token-budget SSE、第二个 summary_embedding 索引。
 - 在 episode/digest builder 处**应用时长封顶 + NULL-aware 分类投票**，承重层不浇在脏混凝土上。
 - CI 用 **capped SUM-invariant**（不是 raw）+ 补 mixed-stitching 测试。
-- 整理 MCP/tool 计数 off-by-one 与过期 docstring 再做 Phase-3 fold。
+- 整理 MCP/tool 计数 off-by-one（实际 7 个含 `ask_agent`）与过期 docstring 再做 Phase-3 fold。
 
 ---
 
