@@ -56,14 +56,20 @@ _REPORT_SYSTEM = (
     "配置后该应用就会被自动、确定性地归类。把它写成贴心建议，而不是报错或吐槽。\n\n"
     "工作流：先调用工具（get_recent_activity / get_app_breakdown / get_category_stats）"
     "拿到这段时间的【真实】数据，再据此写报告。\n\n"
-    "输出：只输出一段【自包含的 HTML 片段】"
-    "（不要 markdown、不要代码围栏、不要 <html>/<body> 外壳），结构：\n"
+    "输出：**直接输出一段自包含的 HTML 片段本身**，第一个字符就是 `<`。"
+    "绝对不要输出任何分析过程 / 思考 / 前言 / 解释，也不要 ```html 代码围栏、不要 markdown、"
+    "不要 <html>/<body> 外壳。结构：\n"
     "1) 顶部一个总览卡片：本时段（已剔除休眠伪影后的）大致活跃时长 + 最花时间的应用/分类；\n"
     "2) 下面 2-4 个『特点 / 洞察』小卡片，每个一句话点出一个【有数据出处】的真实特点"
     "（如某段时间集中在某应用、某分类占比突出、沟通类很活跃）。"
     "可以风趣，但每句都要能在工具数据里找到依据。\n"
-    "样式用内联 style，圆角卡片、半透明背景、继承文字颜色（适配深浅主题），"
-    "可用 emoji，紧凑好看。时长把秒换算成分钟 / 小时。"
+    "样式用内联 style，做成一张【自带完整配色的自包含海报】："
+    "根容器用一个**不透明的深色背景**（例如 background:#1e1e2a 这类深色，"
+    "不要 rgba 半透明、不要 transparent），配与之对比的浅色文字；"
+    "每个卡片 / 标题 / 正文都【明确写死】自己的颜色且对比充足。"
+    "绝不要用 color:inherit 或半透明背景去依赖外部页面主题——"
+    "这份报告要在任意深色或浅色页面背景上都自成一体、清晰好看。"
+    "可用 emoji、圆角卡片，紧凑好看。时长把秒换算成分钟 / 小时。"
     "数据稀少、或大半是『尚未分类』遗留时，就幽默且诚实地说明现状，别硬编洞察。"
 )
 
@@ -74,8 +80,18 @@ def _instruction(scope: str) -> str:
 
 
 def _clean_html(text: str) -> str:
-    """Strip a leading ```html / trailing ``` fence the model may add anyway."""
+    """Return just the HTML artifact.
+
+    Some model variants leak their planning/reasoning as plain text BEFORE the
+    artifact and wrap the artifact in a ```html ... ``` fence (the leading-fence
+    strip below then misses it, leaking the whole chain-of-thought into the
+    report). So if a fenced block exists anywhere, take its contents; otherwise
+    fall back to stripping a stray leading / trailing bare fence.
+    """
     t = (text or "").strip()
+    m = re.search(r"```(?:html)?[ \t]*\n(.*?)\n?```", t, re.S | re.I)
+    if m:
+        return m.group(1).strip()
     t = re.sub(r"^```[a-zA-Z]*\n", "", t)
     t = re.sub(r"\n```$", "", t)
     return t.strip()
