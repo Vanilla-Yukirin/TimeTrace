@@ -41,11 +41,18 @@
 # new deploy.sh + `gh workflow run --ref <branch>` runs THAT version.
 #
 # === Trigger ==================================================================
-# workflow_dispatch only — no push/tag automation in v1. Run from the GH
-# Actions UI (Actions tab → "deploy" → Run workflow) or locally:
-#
-#     gh workflow run deploy.yml --ref main
-#     gh run watch
+# Two ways in:
+#   1. Push-to-deploy (GitOps): pushing to the `deploy` branch auto-deploys
+#      origin/deploy. Normal work pushes to feature/refactor-split (NO deploy);
+#      when you actually want to ship, one command does it:
+#          git push origin feature/refactor-split:deploy
+#      (fast-forwards the remote `deploy` branch to feature's HEAD → fires this
+#      workflow → box resets to origin/deploy). Only push `deploy` when you mean
+#      to deploy; WIP commits go to feature.
+#   2. workflow_dispatch (manual escape hatch): deploy ANY ref from the GH
+#      Actions UI (Actions → "deploy" → Run workflow) or locally:
+#          gh workflow run deploy.yml --ref <branch|tag|sha>
+#          gh run watch
 #
 # === Fork safety ==============================================================
 # Two layers prevent forks from accidentally deploying to MY machine:
@@ -89,6 +96,11 @@
 name: deploy
 
 on:
+  # Push-to-deploy: a push to the `deploy` branch ships it. main stays frozen at
+  # legacy v1 (pywin32 has no platform marker there → Linux uv sync fails), so
+  # `deploy` tracks feature/refactor-split's HEAD, not main.
+  push:
+    branches: [deploy]
   workflow_dispatch:
     inputs:
       ref:
@@ -98,8 +110,9 @@ on:
 
 jobs:
   deploy:
-    # Double guard: fork-safe + manual-only.
-    if: github.repository == 'Vanilla-Yukirin/TimeTrace' && github.event_name == 'workflow_dispatch'
+    # Double guard: fork-safe (repo check) + only our two intended triggers
+    # (manual dispatch or a push to `deploy`).
+    if: github.repository == 'Vanilla-Yukirin/TimeTrace' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     runs-on: ubuntu-latest
     # First deploy on a slow home upstream can take a while: pip wheels for
     # numpy / Pillow / fastapi etc. add up. 30 min is generous; reduce later.
@@ -151,7 +164,10 @@ jobs:
         env:
           TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
           TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
-          REF: ${{ github.event.inputs.ref }}
+          # workflow_dispatch → the chosen input ref; push → the pushed branch
+          # name (github.ref_name = "deploy"). inputs.ref is empty on push, so
+          # the || picks github.ref_name.
+          REF: ${{ github.event.inputs.ref || github.ref_name }}
         run: |
           set -euo pipefail
           echo "Target  : ${TARGET}:${TARGET_PORT}"
@@ -170,6 +186,7 @@ jobs:
           {
             echo "## Deploy summary"
             echo "- Repo: ${{ github.repository }}"
-            echo "- Ref: ${{ github.event.inputs.ref }}"
+            echo "- Trigger: ${{ github.event_name }}"
+            echo "- Ref: ${{ github.event.inputs.ref || github.ref_name }}"
             echo "- Outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
