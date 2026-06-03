@@ -640,6 +640,43 @@ class SqliteDatabase:
             )
             await self.conn.commit()
 
+    async def requeue_skipped_for_vlm(self, record_id: str) -> bool:
+        """Re-enqueue a record short-circuited to ``vlm_done`` with no image.
+
+        Ingest delivers a record's metadata first and its screenshot seconds
+        later as a separate call (HttpBackend's record-then-screenshot pattern
+        + the 1.5s capture delay + outbox/network lag → a 2–30s gap). The
+        1s-poll worker routinely claims the record before the screenshot lands,
+        finds ``screenshot_path`` empty, and parks it in ``vlm_done`` with no
+        description (``worker.vlm_skipped_no_image``). When the screenshot
+        finally arrives we flip that exact terminal state back to ``pending_vlm``
+        so the worker re-describes + classifies it WITH the image.
+
+        Gated on ``vlm_desc IS NULL``: the success path always writes
+        ``vlm_desc`` before ``vlm_done``, so only the no-image skip leaves
+        ``vlm_done`` with a NULL description — a genuinely-described record is
+        never disturbed. Idempotent (no-op once re-enqueued / already described).
+        Returns True iff a row was re-enqueued.
+        """
+        now = _now_ms()
+        async with self._lock:
+            async with self.conn.execute(
+                """UPDATE analysis_results
+                   SET status='pending_vlm', locked_at=NULL, next_retry_at=NULL,
+                       updated_at=?
+                   WHERE record_id=? AND status='vlm_done' AND vlm_desc IS NULL""",
+                (now, record_id),
+            ) as cur:
+                changed = cur.rowcount > 0
+            if changed:
+                await self.conn.execute(
+                    "UPDATE records SET status='pending_vlm', updated_at=?"
+                    " WHERE id=? AND status='vlm_done'",
+                    (now, record_id),
+                )
+            await self.conn.commit()
+        return changed
+
     async def query_records(
         self,
         start_ms: int,

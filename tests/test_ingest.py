@@ -251,6 +251,80 @@ async def test_ingest_screenshot_attach_after_record_only(db, blob_storage):
 
 
 # --------------------------------------------------------------------------- #
+# Screenshot-after-skip re-enqueue (metadata-arrives-first race fix)           #
+# --------------------------------------------------------------------------- #
+
+
+async def test_ingest_screenshot_requeues_skipped_no_image_record(db, blob_storage):
+    """Race fix: metadata arrives first, the 1s-poll worker claims the record and
+    short-circuits it to vlm_done with no image (worker.vlm_skipped_no_image),
+    THEN the screenshot lands. The screenshot ingest must re-enqueue the record to
+    pending_vlm so the worker re-describes it WITH the image — otherwise the
+    screenshot is orphaned and never classified (the 3508-record prod bug).
+    """
+    app = create_app(db, blob_storage=blob_storage)
+    image_data = _png_bytes()
+    record_with_image = _record_payload(
+        "client-race", image_md5=_md5(image_data), image_width=16, image_height=16
+    )
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/ingest/record", data={"record": _record_payload("client-race")}
+        ).json()
+        rid = first["record_id"]
+
+        # Worker grabs it before the screenshot and skips (no image) → vlm_done,
+        # NULL vlm_desc. Mirrors loop.py's short-circuit exactly.
+        await db.transition(rid, "vlm_done")
+        assert await db.claim_next_task("pending_vlm") is None  # nothing queued now
+
+        # Screenshot finally arrives (second call, same client_record_id).
+        client.post(
+            "/v1/ingest/record",
+            data={"record": record_with_image},
+            files={"image": ("a.png", image_data, "image/png")},
+        )
+
+    # Re-enqueued: the worker can claim it again, now with the screenshot attached.
+    task = await db.claim_next_task("pending_vlm")
+    assert task is not None
+    assert task["record_id"] == rid
+    shots = await db.get_screenshots_for_record(rid)
+    assert len(shots) == 1
+
+
+async def test_ingest_screenshot_does_not_requeue_described_record(db, blob_storage):
+    """The re-enqueue is gated on vlm_desc IS NULL: a record the worker already
+    described (success path writes vlm_desc before vlm_done) must NOT be disturbed
+    when a replayed screenshot arrives, or we'd clobber a finished result.
+    """
+    app = create_app(db, blob_storage=blob_storage)
+    image_data = _png_bytes()
+    record_with_image = _record_payload(
+        "client-described", image_md5=_md5(image_data), image_width=16, image_height=16
+    )
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/ingest/record", data={"record": _record_payload("client-described")}
+        ).json()
+        rid = first["record_id"]
+        # Worker genuinely processed it: description written, then vlm_done.
+        await db.save_description(rid, "VSCode 编辑器，main.py")
+        await db.transition(rid, "vlm_done")
+
+        client.post(
+            "/v1/ingest/record",
+            data={"record": record_with_image},
+            files={"image": ("a.png", image_data, "image/png")},
+        )
+
+    # Not re-enqueued — stays vlm_done, nothing claimable.
+    assert await db.claim_next_task("pending_vlm") is None
+
+
+# --------------------------------------------------------------------------- #
 # pHash side-index                                                             #
 # --------------------------------------------------------------------------- #
 

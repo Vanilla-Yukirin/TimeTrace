@@ -141,6 +141,13 @@ async def ingest_record(
         if screenshot_was_new and payload.image_phash is not None and phash_index is not None:
             phash_index.insert(screenshot_id, payload.image_phash, record_ts_start)
 
+        # The screenshot just landed. If the worker already short-circuited this
+        # record to vlm_done with no image (metadata arrives first, screenshot
+        # seconds later — the 1s-poll worker usually wins that race), re-enqueue
+        # it so it gets described + classified now that the image is here.
+        if screenshot_was_new and await db.requeue_skipped_for_vlm(record_id):
+            logger.info("ingest.requeued_after_screenshot", record_id=record_id)
+
     # mark_pending is idempotent (INSERT OR IGNORE under the hood) so it's safe
     # to call on every ingest, including replays where was_new=False.
     await db.mark_pending(record_id)
