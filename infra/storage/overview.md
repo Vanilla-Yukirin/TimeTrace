@@ -10,14 +10,16 @@
 |----|------|---------|------|
 | **结构化元数据** | SQLite（单文件） | records、screenshots 元信息（含 `phash` BLOB）、analysis_results、feedback、settings | Serverless / zero-config，事务，便于分发 |
 | **文件系统** | 本地目录 | 截图原图（PNG）、缩略图（JPG） | 支持"删图不删记录"；I/O 与 SQLite 解耦 |
-| **相似检索层** | 内存 BK-tree + 未来 SQLite FTS5 | pHash 按天分桶的 BK-tree（视觉）；VLM 描述文本的倒排索引（语义） | SQLite 是真源；内存索引启动时重建。见 [相似检索](vector-search.md) |
+| **相似检索层** | 内存 BK-tree（视觉）+ 已实装 SQLite FTS5 trigram/BM25（语义关键词通道） | pHash 按天分桶的 BK-tree（视觉）；VLM 描述文本的倒排索引（语义） | SQLite 是真源；内存索引启动时重建。见 [相似检索](vector-search.md) |
+
+> SQLite FTS5 倒排索引已实装：`server/db/sqlite.py:170` 建 `records_fts` 虚表（trigram tokenizer），`search_records` 用 `bm25(records_fts) MATCH` 真实排序（`sqlite.py:725-748`），并有冷启动 backfill + insert/update 同步。MCP `search_activity` 与 `/v1/records?q=` 走该路径。注意区分：by-image 搜索的语义通道 `_bm25_search`（`server/api/routes/search.py`）目前仍是 `vlm_desc` 上的 LIKE 兜底，尚未切到 FTS5 MATCH。
 
 ---
 
 ## SQLite 配置要点
 
 ```python
-# 启动时执行（database.py 中已配置）
+# 启动时执行（server/db/sqlite.py 的 _SCHEMA 常量中已配置）
 PRAGMA journal_mode = WAL;      -- 读写并发更友好
 PRAGMA synchronous = NORMAL;    -- 性能与安全平衡
 ```
@@ -50,8 +52,10 @@ PRAGMA synchronous = NORMAL;    -- 性能与安全平衡
 - Capture Service 与 Analysis Worker 可能同时写 SQLite
 - WAL 模式已大幅缓解读写冲突
 - 写操作使用**小事务**（单条 insert / update），不批量累积
-- 若出现 `SQLITE_BUSY`：短退避重试（10–50ms 抖动，最多 3 次）
-- **可选**：连接级 `busy_timeout`（`PRAGMA busy_timeout = N`）让 SQLite 在锁冲突时自动 sleep 累计到 N ms 后才返回错误，比应用层手动重试逻辑更简单；当前实现使用应用层退避，二者选其一即可
+- **当前实现**：单一共享 aiosqlite 连接 + `asyncio.Lock` 串行化所有读写（见 `server/db/sqlite.py` 模块 docstring），从设计上规避锁冲突，因此既不用应用层 `SQLITE_BUSY` 退避，也不设 `busy_timeout`
+- 以下为多连接场景下的备选方案（**当前未使用**）：
+  - 若出现 `SQLITE_BUSY`：短退避重试（10–50ms 抖动，最多 3 次）
+  - 连接级 `busy_timeout`（`PRAGMA busy_timeout = N`）让 SQLite 在锁冲突时自动 sleep 累计到 N ms 后才返回错误，比应用层手动重试逻辑更简单；二者选其一即可
 
 ---
 

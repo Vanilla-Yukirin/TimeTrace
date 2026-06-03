@@ -48,7 +48,7 @@ frps (VPS 上的 FRP 服务端)
 
 - 所有业务路由（records / search / feedback / thumbs）都被 `require_principal` 守，公网访客没 cookie 也没 bearer → 401
 - 默认 admin/admin **首登强制改密**，且改密闸是后端 403（curl 也绕不过）
-- 登录端点双层限速：nginx `limit_req` + server 内存 per-IP 锁定
+- 登录端点限速由 server 内存 per-IP 锁定承担（失败超阈值 → 429）；nginx 侧目前**未**加 `limit_req`（可作为可补的 TODO）
 - `/docs` `/openapi.json` 藏在 `require_session_password_set` 后，不向公网扫描器泄露 API 地图
 
 **部署默认假设公网可达，所以登录系统不是可选项**——`AuthConfig` 永远被构造，`UserStore` 永远 seed admin。
@@ -66,7 +66,7 @@ nginx vhost（[`deploy/nginx-timetrace.yukirin.me.conf`](../../deploy/nginx-time
 - `client_max_body_size 50M`（multipart ingest 可能较大；见 `deploy/nginx-timetrace.yukirin.me.conf`）
 - MCP 的 SSE / streamable-HTTP：`proxy_buffering off` + `proxy_read_timeout 3600s`，否则分块不 flush
 
-前端 SPA 静态资源由 nginx 直接从磁盘 `/var/www/timetrace` 提供，`try_files ... /index.html` 兜底 SPA 路由。后端拥有的路径（`/v1` `/healthz` `/mcp` `/thumbs` `/docs` `/openapi.json`）才 `proxy_pass` 给隧道。
+前端 SPA 静态资源由 nginx 直接从磁盘 `/var/www/timetrace` 提供，`try_files ... /index.html` 兜底 SPA 路由。后端拥有的路径（`/v1` `/v1/agent`（SSE）`/v1/reports`（长阻塞）`/healthz` `/mcp` `/thumbs` `/blob` `/skill` `/docs` `/openapi.json`）才 `proxy_pass` 给隧道。
 
 ---
 
@@ -107,7 +107,7 @@ nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给
 - **fork 安全双保险**：
   1. `if: github.repository == 'Vanilla-Yukirin/TimeTrace'` —— fork 跑不起来这个 job
   2. GH secret 不被 fork 继承 —— 即便 fork 改了 guard 也拿不到 SSH key
-- 部署流程（[`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)）：checkout → 用 secret 里的 SSH key 经 FRP 隧道连家用主机 → `ssh ... 'bash -s' < deploy/deploy.sh <ref>` → smoke-check `/healthz`
+- 部署流程（[`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)）：workflow **不 checkout、不 pipe 脚本**，它只持 SSH key + 让 box 自取——经 FRP 隧道 `ssh` 到家用主机，由 box 自己 `git fetch origin <ref>` → `git checkout FETCH_HEAD -- deploy/deploy.sh` → `bash deploy/deploy.sh`。`deploy.sh` 内部再做 `git reset --hard` + `uv sync` + restart + healthz 探针（healthz smoke-check 在脚本里，不在 workflow 里）
 - CI（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)）：push 到 `main` / `feature/refactor-split` 或对其 PR 触发，plain `uv sync` → `ruff check` → `ruff format --check` → `pytest`。`uv sync` 不带 `--extra embserver`，所以 CI 不拉 torch/transformers
 
 ---
@@ -122,7 +122,7 @@ nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给
 - 部署一律走工作流，**禁止手动 ssh 改部署机 git / 重启 systemd**——那样没 CI 留痕、跳过 healthz 探针 / unit 同步 / 沙箱目录预建。唯一例外是 deploy.sh 不管的 LM Studio 模型加载（`lms load/unload`），本就在流程外
 - `uv sync`（plain）：deploy.sh 第 138 行实跑 plain `uv sync`（读 pyproject + uv.lock），不带 `--extra embserver`，所以部署机不拉 torch/transformers
 - schema 无显式迁移步骤：app 首次 touch DB 时幂等建表
-- embserver unit 只在已安装时才重启（`systemctl --user cat` 探测），torch/transformers 走 optional extra，`deploy.sh` 的 plain `uv sync` 不拉
+- `deploy.sh` 只管 `timetrace-server.service`（安装/更新 unit + restart）；embserver 完全在 deploy 流程之外——unit 文件存在但需手动 enable / 手动重启。torch/transformers 走 optional extra，`deploy.sh` 的 plain `uv sync` 不拉
 
 ### systemd 用户单元
 

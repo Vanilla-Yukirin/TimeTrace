@@ -36,7 +36,7 @@ TimeTrace 是一个 **Windows Only、本地优先**的桌面活动记忆层。�
 - **VLM 已实装**（非桩）：后台 worker 调 LM Studio（Qwen3-VL）为截图生成结构化描述，写回 `analysis_results.vlm_desc` + `category_final`。**VLM 产出的描述既进 FTS5 关键词索引、又是文本 embedding 的输入**，已是检索的核心语义通道之一。
 - **文本 embedding 已实装**：worker `vlm_done` 后 best-effort 把描述向量化（nomic 768 维，packed float32 BLOB）写进 `analysis_results.text_embedding`，并有一次性回填扫（`_backfill_embeddings`，双失败模式：单行 poison skip / 连续失败 abort）。向量搜索（`db.vector_search`，numpy 余弦全表扫）已就绪，**接线进 search 路由是下一步**（见 [roadmap](roadmap.md) P2c）。
 - **登录 + 公网**：bcrypt 用户 + HttpOnly cookie session + bearer token 双通道鉴权（`server/auth.py`，`require_principal`）；已通过家里小主机 + 云 VPS + nginx + frp + Cloudflare 部署到 `timetrace.yukirin.me`（鉴权后才开公网）。
-- **Agent 友好**：通过 MCP 暴露 4 个工具（`search_activity` / `get_recent_activity` / `get_app_breakdown` / `ask_agent`），Claude 等可直接调用。
+- **Agent 友好**：通过 MCP 暴露 6 个工具（`search_activity` / `get_recent_activity` / `get_app_breakdown` / `get_category_stats` / `apply_label` / `ask_agent`），Claude 等可直接调用。其中 `apply_label` 是唯一的写工具——只能给记录打/换分类标签，不能删/改记录本身。
 
 ---
 
@@ -75,7 +75,7 @@ TimeTrace 是一个 **Windows Only、本地优先**的桌面活动记忆层。�
 
 1. **P2c 向量通道接线**：把已实装的 `db.vector_search` 接进 `/v1/search` 的 RRF，形成关键词 + 视觉 + 语义向量三路融合（当前向量是"沉睡的第三路"）。
 2. **P3a 双进程接线收尾**：让 `timetrace-client` 默认 `OutboxBackend` 全链路打通。
-3. MCP 个别 stub 收尾（`tools.py:get_category_stats`）。
+3. 清理 `server/mcp_layer/tools.py` 死 stub 文件（其 `get_category_stats` 已被 `server/mcp_layer/server.py:183` 委托 `server/agent/tools.py:194` 的真实聚合实现取代，全仓库无人 import 该文件）。
 4. P5 PostgreSQL + pgvector（`server/db/__init__.py` 的 `Database` 别名升级为 Protocol 后接入）。
 
 ---

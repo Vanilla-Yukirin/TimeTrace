@@ -53,7 +53,7 @@ auth_sessions
 
 首次启动（DB 里没有任何 user）时，`UserStore.ensure_admin_seeded()` 写入一行 `admin` / `hash("admin")` 且 `password_must_change=1`。该方法幂等：只要已有任意 user 就不覆盖。
 
-- 默认账密由 `AuthConfig`（[`common/config.py`](../../src/timetrace/common/config.py)）的 `admin_username` / `admin_initial_password` 决定，可经 `TIMETRACE_ADMIN_USERNAME` / `TIMETRACE_ADMIN_PASSWORD` env 覆盖
+- 默认账密由 `AuthConfig`（[`common/config.py`](../../src/timetrace/common/config.py)）的 `admin_username` / `admin_initial_password` 决定，可经 `TIMETRACE_ADMIN_USERNAME` / `TIMETRACE_ADMIN_INITIAL_PASSWORD` env 覆盖
 - 日志只在**随机生成**初始密码（operator 没设 env、却又是公网部署）时打出明文，因为那是 operator 唯一能学到密码的途径；**字面量 "admin" 默认不打**（无意义），**operator 自己设的密码也不打**（他已经知道）
 
 **强制改密不是前端把戏**：`password_must_change` 一旦置位，带这个会话的请求在 `require_principal` / `require_session_password_set` 里被 **403** 拒（注意是 403 不是 401——它已认证，只是被改密这道闸挡住）。这一点很关键：
@@ -97,9 +97,15 @@ path     = /
 
 **这里的 IP 不能信 `X-Forwarded-For`**。nginx 用 `$proxy_add_x_forwarded_for` 把真实 peer **追加**到客户端传来的 XFF 之后，其最左值完全受攻击者控制——攻击者每次请求换一个 XFF 就拿到全新的限速桶，锁定永不触发。所以 `_client_ip()` 信的是 nginx 用 `$remote_addr` **覆盖**（非追加）写入的 `X-Real-IP`，回退到直连 ASGI peer（loopback / dev 没有 nginx 时）。信任边界细节见 [公网部署文档](web-deployment.md#x-real-ip-信任边界)。
 
-### 登录限速的两层防御
+### 登录限速
 
-注意 server 端的内存限速**不是唯一一层**：nginx vhost 在 `/v1/auth/login` 上还挂了 `limit_req zone=tt_login`（5 r/s + burst 10）。nginx 那层在请求到 Python 之前就削掉洪峰；server 那层即便绕过 nginx（直连 loopback）也拦得住。
+实际生效的只有 server 端的**内存限速**这一层（`_LoginRateLimiter`，见上节）：即便绕过 nginx 直连 loopback 也拦得住。
+
+## **⚠️ nginx 层 limit_req 未实装，下文描述与仓库不符**
+
+下面这段"两层防御"里的 nginx `limit_req zone=tt_login` 在签入仓库的 `deploy/nginx-timetrace.yukirin.me.conf` 中并不存在——登录走的是通用 `location /v1/` 块，无任何 `limit_req` 指令。这一层若要落地，需把 zone + `/v1/auth/login` 专属 location 回写进该 conf。在那之前，限速只有 server 内存这一层。
+
+> 注意 server 端的内存限速**不是唯一一层**：nginx vhost 在 `/v1/auth/login` 上还挂了 `limit_req zone=tt_login`（5 r/s + burst 10）。nginx 那层在请求到 Python 之前就削掉洪峰；server 那层即便绕过 nginx（直连 loopback）也拦得住。
 
 ---
 
@@ -163,10 +169,15 @@ token 存在 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600，Wi
 | `/v1/auth/{me,logout,change-password}` | `require_session` | |
 | `/v1/admin/tokens` (GET/POST/DELETE) | `require_session_password_set`（cookie-only）| 管 token 是交互式 admin 操作，持 bearer 的脚本不该对自己做 |
 | `/v1/records` `/v1/search/*` `/v1/feedback` 等业务 | `require_principal`（cookie 或 bearer）| 浏览器走 cookie，脚本走 bearer |
+| `/v1/agent/*` `/v1/reports/*` `/v1/settings/*` | `require_principal`（cookie 或 bearer）| 同业务面，与 records 一并挂 `business_deps` |
 | `/thumbs/{path}` | `require_principal` | 见下"thumbs 改造" |
+| `/blob/{path}` | `require_principal` | 全分辨率原图（lightbox 缩放），同 thumbs 的 auth + path-traversal 姿态 |
 | `/v1/ingest/*` | **专用 bearer**（`make_bearer_dependency`）| 写入面，**绝不**该被人类会话调用，所以不接 cookie |
 | `/mcp/*` | **专用 bearer**（`BearerOnlyMiddleware`）| 机器对机器，无 cookie 流 |
+| `/skill` | **无** | Claude Code skill 下载，开放（它本身是 docs，描述的 MCP 仍受 bearer 守卫）|
 | `/docs` `/openapi.json` | `require_session_password_set` | 不向公网扫描器泄露 API 地图；本地登录后仍可看 |
+
+新增业务路由一律继承 `require_principal`（在 `create_app` 里与 records 共用 `business_deps`），下次加 router 时默认就该挂上。
 
 注意 `ingest` 用的是 `make_bearer_dependency` 这个**独立的** bearer 依赖（在 `auth.py`），不是 `require_principal`——ingest 是写入面，永远不该从人类会话进来，所以连 cookie 通道都不给。
 

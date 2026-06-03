@@ -17,7 +17,7 @@ TimeTraceData/
 │   └── YYYY/
 │       └── MM/
 │           └── DD/
-│               └── <YYYYMMDD_HHMMSS>_<record_id>.png   ← 截图原图
+│               └── <YYYYMMDD_HHMMSS>_<record_id>.jpg   ← 截图原图（JPEG，限长边 2560px、q88）
 │
 ├── thumbs/
 │   └── YYYY/
@@ -40,6 +40,10 @@ TimeTraceData/
 | `thumbs/YYYY/MM/DD/` | 缩略图独立目录，方便批量清理（比原图小 10–20×） |
 | `logs/` | 按天滚动，保留最近 N 天（可配置） |
 
+## **⚠️ logs/ 落盘未实装**
+
+上方目录树里的 `logs/timetrace-YYYYMMDD.jsonl` 与"按天滚动/保留 N 天"目前**仅为设计意图，尚未实装**。`logs_dir` 属性虽在 `common/config.py:126` 定义，但全仓库没有任何代码往 `TimeTraceData/logs/` 写日志文件——结构化日志当前只输出到 stdout/console（`main.py` / `client/cli.py` / `embserver/cli.py` 均只 `logging.basicConfig` + structlog console），无文件落盘、无滚动。（仓库内唯一的 `.jsonl` 是 client outbox 队列的 `log.jsonl`，落在 outbox 根下，不在 `logs/`。）
+
 ---
 
 ## 文件命名规则
@@ -47,11 +51,13 @@ TimeTraceData/
 文件名格式为 `{YYYYMMDD_HHMMSS}_{record_id}`，时间戳取自截图实际拍摄时刻：
 
 ```
-screenshots/2026/04/10/20260410_143022_550e8400-e29b-41d4-a716-446655440000.png
+screenshots/2026/04/10/20260410_143022_550e8400-e29b-41d4-a716-446655440000.jpg
 thumbs/2026/04/10/20260410_143022_550e8400-e29b-41d4-a716-446655440000.jpg
 ```
 
 时间戳前缀固定 15 位，保证文件名按字典序排列即为时间顺序；后缀 UUID 保证唯一性。
+
+> **命名规则仅描述单进程 / InProcessBackend 路径**（`client/capture/screenshot.py:101-105` `_build_path`）。双进程 server 端 ingest 路由（HttpBackend 上传）落地为裸 `{record_id}.{ext}`，无时间戳前缀：`server/api/routes/ingest.py:121` `screenshots/{date}/{record_id}.{ext}`、:126 thumb 同理。其 date 目录取自 `record.ts_start`（活动发生时刻），不是上传时刻。两条路径命名不一致。
 
 SQLite 中 `screenshots.path` 与 `screenshots.thumb_path` 存储相对路径（相对 `TimeTraceData/`）。
 
@@ -71,12 +77,12 @@ SQLite 中 `screenshots.path` 与 `screenshots.thumb_path` 存储相对路径（
 
 ## 配置来源
 
-`src/timetrace/config.py` — `StorageConfig` 数据类：
+`src/timetrace/common/config.py` — `StorageConfig` 数据类：
 
 ```python
 @dataclass
 class StorageConfig:
-    data_dir: Path = Path.home() / "TimeTraceData"
+    data_dir: Path = field(default_factory=lambda: Path.home() / "TimeTraceData")
 
     @property
     def db_path(self) -> Path:

@@ -21,7 +21,7 @@
 
 - **时间轴回放**：日历选择、缩放/滚动、多轨道渲染
 - **检索与过滤**：关键词 / 应用 / 分类 / 时间范围
-- **详情面板**：帧缩略图（可点击放大）、窗口信息、描述、分类、置信度、decision_trace
+- **详情面板**：帧缩略图（可点击放大）、窗口信息、描述、分类、置信度（`decision_trace` 已存库但尚未在 UI 暴露，属未来工作）
 - **反馈交互**：确认/修改分类、标签编辑、黑名单与隐私模式设置
 
 ---
@@ -52,8 +52,7 @@ function TimelineCanvas(props: {
   date: Date;                  // 当前查看日期（用于初始化视口）
   selectedRecordId: string | null;
   onSelectRecord: (id: string | null) => void;
-  onGoToday: () => void;
-}) { /* Canvas 2D 渲染，双轨道：Activity + Frames */ }
+}) { /* Canvas 2D 渲染，双轨道：Activity + Frames；goToday 由组件内部 useTimelineState 提供 */ }
 ```
 
 > Phase 1.5+：多轨道（App / Category）时再引入 `TimelineItem` 抽象层做统一转换。
@@ -63,7 +62,7 @@ function TimelineCanvas(props: {
 
 ### RecordDetailPanel
 
-展示单帧信息与反馈按钮：缩略图、窗口标题、应用名、VLM 描述、分类、confidence、decision_trace 折叠展示。缩略图点击后触发 `ImageLightbox` 进入放大查看模式。
+展示单帧信息与反馈按钮：缩略图、窗口标题、应用名、VLM 描述、分类、confidence。缩略图点击后触发 `ImageLightbox` 进入放大查看模式。（`decision_trace` 已存库但尚未在 UI 暴露。）
 
 ### ImageLightbox
 
@@ -120,10 +119,34 @@ function TimelineCanvas(props: {
 
 ### SettingsPage
 
+## **⚠️ 下列四类编辑器属未实装的未来设想，当前 SettingsPage 不是这套**
+
 - 采集参数（min/max 间隔、idle 阈值）
 - 隐私黑名单（应用/标题关键词列表）
 - 存储配额（图片保留天数、最大占用）
 - 模型配置（API Key、模型选择）
+
+**当前实装**（`frontend/src/pages/SettingsPage.tsx`）：
+- **Account**（`components/admin/AccountSection.tsx`）：改密 + 退出
+- **API Tokens**（`components/admin/TokenManager.tsx`）：Token CRUD
+- **Embedding 诊断**（`components/admin/EmbeddingDiagnostics.tsx`）
+- **App 覆盖**（`components/admin/AppOverridesSection.tsx`）：per-app 覆盖
+- **后端状态**：只读块，展示版本 / 数据目录 / API 地址（来自 `GET /v1/runtime-info`）
+
+### DashboardPage / ReportView
+
+> 2026-05 后落地，路由 `/dashboard`（`App.tsx`）。
+
+AI 自动分析时段内真实活动并生成报告，含应用 / 分类时长统计。
+
+- **DashboardPage**（`frontend/src/pages/DashboardPage.tsx`）：时段切换（最近 3h / 24h / 7 天）、「重新生成」触发本地大模型流式分析（SSE-over-fetch，附非流式与轮询兜底）、展示工具步骤进度。
+- **ReportView**（`frontend/src/components/dashboard/ReportView.tsx`）：渲染 JSON 格式报告（新报告）；旧 `format:'html'` 报告回退为自带样式的 HTML 直出。
+
+### AgentPage
+
+> 2026-05 后落地，路由 `/agent`（`App.tsx`）。
+
+`ask_agent` 对话页（`frontend/src/pages/AgentPage.tsx`），流式对话 + 工具调用展示（`components/agent/{AgentSidebar,TurnView}.tsx`），本地多会话持久化。
 
 ### FeedbackControls
 
@@ -143,7 +166,7 @@ Web UI ──POST /v1/feedback──► Local API ──► feedback 表
        ◄── {ok} ─────────────
 
 Web UI ──POST /v1/search/by-image──► Local API ──► pHash Index（视觉）
-       ◄── {items, channels} ──          └───► FTS5 / LIKE（语义 / 关键词）
+       ◄── {items, channels} ──          └───► LIKE（语义 / 关键词，FTS5 为规划升级）
                                          └───► RRF 融合
 
 Web UI ──GET /v1/apps───────► Local API ──► records 聚合
@@ -157,8 +180,10 @@ Web UI ──GET /v1/apps───────► Local API ──► records �
 | Phase | UI 复杂度 |
 |-------|----------|
 | Phase 1 | 单日时间轴、少轨道、详情面板、搜索页（关键词 + pHash 视觉通道 + 筛选） |
-| Phase 1.5 | VLM 描述展示、语义通道启用、摘要触发 |
-| Phase 2 | 批量反馈、统计面板、多轨道、高级隐私设置 |
+| Phase 1.5 | VLM 描述展示 ✅已实装、语义通道启用 ✅已实装、摘要触发 |
+| Phase 2 | 批量反馈、统计面板（✅已实装为 Dashboard 页 + ReportView）、多轨道、高级隐私设置 |
+
+> ✅ 标记项已落地：VLM 描述展示见 `RecordDetailPanel.tsx`，语义通道（VLM describe → `_bm25_search` → RRF）见 `server/api/routes/search.py`，统计面板已实装为 `/dashboard`（`DashboardPage.tsx` + `components/dashboard/ReportView.tsx`）。
 
 ---
 

@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS digests (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_digests_grain_scope ON digests(grain, scope_key);
 ```
 
-`metrics_json` 形状（全部纯 SQL，复用 `get_app_breakdown` 的时长 clamp 表达式 `SUM(MAX(0, COALESCE(ts_end,ts_start)-ts_start))`）：
+`metrics_json` 形状（全部纯 SQL，复用 `get_app_breakdown` 的时长 clamp —— 现已抽成 `server/agent/tools.py::_clamped_dur_sql()`，不只是裸 `MAX(0, ...)`，还多一层超 `_MAX_PLAUSIBLE_RECORD_MS`（5min）封顶：`CASE WHEN span > cap THEN 0 ELSE MAX(0, span) END`，照抄时别漏封顶段）：
 
 ```jsonc
 {

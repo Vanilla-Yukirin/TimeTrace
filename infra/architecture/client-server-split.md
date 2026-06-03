@@ -94,6 +94,7 @@ capture_svc = CaptureService(config.capture, config.privacy, backend, storage_cf
 - `mark_pending` 是 **no-op**——ingest 路由对每个成功 POST 已经自动 `mark_pending`，采集层那次显式调用在此传输上是冗余的
 - 路径解析：截图写盘时是相对 data_dir 的相对路径，`HttpBackend` 用 `resolve_path_under_data_dir` 解析（拒绝 `data_dir` 外的逃逸路径，防恶意 ScreenshotSubmission 把宿主机密文件喂进上传管线）
 - 鉴权：`auth_token`（Bearer）+ `device_id`（`X-Device-Id`）双 header，自有 client 在构造时烤进 headers、借用 client（测试用 ASGITransport）则每请求 `_extra_headers()` 注入
+- 多端点：构造可传 `base_url_provider`（取代固定 `base_url`），多端点 failover 模式下每请求从选择器解析 active base URL；`timeout_s` 可配（默认 30，client 侧实际传 120，应对住宅上行慢链路）
 
 `HttpBackend` 还额外暴露 `post_ingest` / `post_close` 两个 wire 级方法，供 `OutboxSender` 重放队列条目用（见下）。
 
@@ -107,14 +108,19 @@ capture_svc = CaptureService(config.capture, config.privacy, backend, storage_cf
 
 这样采集与上传 **解耦**：网络断了、server 重启了，采集照常落 outbox，恢复后 sender 自动补发。
 
-`client/cli.py` 的接线全貌：
+`client/cli.py` 的接线全貌（已演进为多端点 + 隧道 + 并发上传，详见 [`infra/PLAN-MULTIPATH-CLIENT.md`](../PLAN-MULTIPATH-CLIENT.md)）：
 
 ```python
-outbox  = Outbox(client_cfg.outbox.root_dir)
-http    = HttpBackend(base_url=..., auth_token=..., device_id=..., data_dir=...)
-backend = OutboxBackend(outbox, data_dir=client_cfg.storage.data_dir)   # 喂给 CaptureService
-sender  = OutboxSender(outbox, make_http_sender(http), max_kbps=...)     # 后台 drain
-# TaskGroup: capture(backend) ‖ sender ‖ quit_watcher
+outbox   = Outbox(client_cfg.outbox.root_dir)
+selector = EndpointSelector(client_cfg.server.all_endpoints())          # 多端点失效转移
+http     = HttpBackend(base_url_provider=selector.current_url,          # 每请求解析 active URL
+                       auth_token=..., device_id=..., data_dir=..., timeout_s=120.0)
+backend  = OutboxBackend(outbox, data_dir=client_cfg.storage.data_dir)  # 喂给 CaptureService
+sender   = OutboxSender(outbox, make_http_sender(http), max_kbps=...,
+                        max_image_bytes=..., on_send_failure=...,        # 失败回调驱动 failover
+                        concurrency=client_cfg.upload.concurrency)      # 后台 drain
+tunnels  = SshTunnelManager(client_cfg.server.enabled_endpoints())      # 原生 SSH 隧道
+# TaskGroup: capture(backend) ‖ sender ‖ endpoints(selector) ‖ ssh_tunnels(条件) ‖ quit_watcher
 ```
 
 ---
@@ -127,7 +133,7 @@ sender  = OutboxSender(outbox, make_http_sender(http), max_kbps=...)     # 后�
 
 - **`ServerComponents`**（frozen dataclass）——握住每个 server 单例的句柄
 - **`build_server_components(config)`**——实例化整张图：`db.init()` → `PHashIndex.from_db` → VLM/Embedding（缺 key/model 则 None 跳过，不报错）→ Blob → `ServerAuth.load_or_generate`（首启自动生成 `tt_live_` token 并 log）→ `UserStore.ensure_admin_seeded`（首启 seed admin，幂等）→ Worker → `create_app(...)`
-- **`serve(components, config, quit_event, *, extra_tasks=...)`**——在一个 `asyncio.TaskGroup` 里跑 `worker / api(uvicorn) / quit_watcher / reclaim`，`quit_event` fire 即优雅退出，finally 里 `aclose` VLM/Embedding httpx 池 + `db.close`
+- **`serve(components, config, quit_event, *, extra_tasks=...)`**——在一个 `asyncio.TaskGroup` 里跑 `worker / api(uvicorn) / quit_watcher / reclaim / report_scheduler`（`report_scheduler` 是后加的 AI 看板定时调度任务，定时让 agent 生成 HTML 洞察报告；无 VLM 时直接退出，`server/bootstrap.py:199-218`、`:226`），`quit_event` fire 即优雅退出，finally 里 `aclose` VLM/Embedding httpx 池 + `db.close`
 
 关键设计是 **`extra_tasks`**：单进程的 `main.py` 不 fork `serve`，而是把采集协程作为命名任务注入：
 
@@ -137,9 +143,9 @@ await serve(components, config, quit_event, extra_tasks={"capture": capture_svc.
 
 `_watch_quit` 退出时会连 `extra_tasks` 的名字一起 cancel，TaskGroup 不论谁加了什么都干净收尾。于是：
 
-- **单进程** = bootstrap 全套 server 任务 + 注入的 `capture` 任务，共 5 个任务
-- **双进程 server** = bootstrap 全套，无 `extra_tasks`，4 个任务
-- **双进程 client** = `client/cli.py` 自己的小 TaskGroup（capture + sender + quit_watcher），不碰 bootstrap
+- **单进程** = bootstrap 全套 server 任务 + 注入的 `capture` 任务，共 6 个任务
+- **双进程 server** = bootstrap 全套，无 `extra_tasks`，5 个任务
+- **双进程 client** = `client/cli.py` 自己的小 TaskGroup（capture + sender + endpoints + ssh_tunnels(条件) + quit_watcher），不碰 bootstrap
 
 两端的 server 组装代码因此 100% 共享，永不再漂移。
 
@@ -184,13 +190,15 @@ at-least-once 之所以安全，靠服务端幂等：`/v1/ingest/record` 用 `cl
 
 ### 严格 FIFO + 单 sender
 
-`ack_next(entry_id)` 只允许 ack 当前队头，id 对不上就抛。一个 Outbox 配一个 sender。为什么必须严格按序：采集产生的是 `submit_record → submit_screenshot → close_record` 这个有序序列，服务端也期望这个顺序（`/close` 只有在对应 record 已存在时才成功）。FIFO 免费给了这个保证。若将来引入并行 sender 共享一个 outbox，这条不变式就破了，要么每次 close 走 by-client-id 兜底（每次多一次 SELECT），要么 sender 显式按 record_id 排序。
+`ack_next(entry_id)` 只允许 ack 当前队头，id 对不上就抛。一个 Outbox 配一个 sender。为什么必须严格按序：采集产生的是 `submit_record → submit_screenshot → close_record` 这个有序序列，服务端也期望这个顺序（`/close` 只有在对应 record 已存在时才成功）。FIFO 免费给了这个保证。`concurrency > 1` 时启用 `_drain_window_concurrent` 滑动窗口并发 drain（高延迟链路下隐藏延迟），正是用文档早先预言的方案保住这个顺序：per-record_id barrier（`prereq` / `last_by_record`，同一 record 的 record→screenshot→close 串行）+ 严格按序 ack（只推进 contiguous-completed 前缀的游标），单游标 outbox 仍安全，见 `outbox_sender._drain_window_concurrent` 与 [`infra/PLAN-MULTIPATH-CLIENT.md`](../PLAN-MULTIPATH-CLIENT.md) §6.2。
 
 ### OutboxSender 的发送循环（`client/core/outbox_sender.py`）
 
 - **指数 backoff**：每次连续失败翻倍，封顶 `backoff_max_s`，成功即重置。失败的条目**永不跳过**——一直重试到成功或 stop（at-least-once + 幂等服务端 = 持久性故事）
 - **token bucket 限速**：`max_kbps > 0` 时，每条发送前先 `consume(entry_size)` 阻塞到预算够（预抢占式，发之前就把这次的字节量算进配额）；`max_kbps=0` 时限速器零开销空转
 - **inline compaction**：每 `compact_every_n_acks`（默认 200）次成功 ack 后，在同一循环里调 `outbox.compact()`，保持围绕 outbox 锁单线程、ack 与重写之间无竞态
+- **超大图丢弃**：`_is_oversize_image` 把超过 `max_image_bytes`（默认 2MB，经 `client.toml [upload] max_image_mb` 配置）的图片条目直接 ack 跳过并记日志，防老的 5MB PNG 永久堵死 FIFO（同 capture 的 record-only 条目仍正常上传）
+- **失败回调驱动 failover**：每次发送失败（backoff 之前）触发 `on_send_failure`，让端点选择器快速重选，下次重试可命中另一条路径
 - **idle 轮询**：队列空时 sleep `idle_poll_interval_s`（当前无文件 watcher，未来可在同进程 `append` 时同步唤醒）
 
 ### Compaction 的崩溃安全顺序（load-bearing，别翻）

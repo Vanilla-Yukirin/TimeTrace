@@ -10,9 +10,9 @@
 |------|------|--------|---------|
 | 隐私泄露 | 高 | 中 | 本地优先；外部 API 不返原图；黑名单前置；日志脱敏 |
 | 性能过高（CPU/内存） | 高 | 中 | min/max 间隔；缩略图优先；采集与分析分离；WAL + 小事务 |
-| 分类误判 | 中 | 高 | 规则层兜底；用户反馈强样本；KNN 衰减投票；decision_trace 可回溯 |
+| 分类误判 | 中 | 高 | 规则层兜底；用户反馈强样本；规则层优先 + VLM 选类加权投票（decide_category）；decision_trace 可回溯 |
 | 存储膨胀 | 中 | 高 | 配额策略：删图不删记录；保留描述与向量；UI 提示 |
-| 前端复杂度 | 低 | 高 | 渐进式 UI：Phase 1 只做单日视图，批量/统计推到 1.5/2 |
+| 前端复杂度 | 低 | 高 | 渐进式 UI（历史规划：Phase 1 单日视图，统计推后）；现状：时间轴 / 搜索 / 统计报表 / Agent 问答 / 登录设置均已上线 |
 | Worker 崩溃卡死 | 中 | 低 | locked_at 超时回收；TaskGroup 异常捕获；日志记录 |
 
 ---
@@ -22,10 +22,10 @@
 **场景**：截图包含密码、银行账户、个人通讯等敏感信息。
 
 **缓解**：
-1. **黑名单优先**（Phase 1）：应用/进程/标题关键词 → 不采集
-2. **暂停模式**（Phase 1）：托盘一键暂停，不留任何记录
-3. **不存图模式**（Phase 1）：只记录元数据，不保存截图
-4. **外部接口不返原图**（Phase 1.5）：MCP/API 响应仅含描述/统计
+1. **黑名单优先**（已实装）：应用/进程/标题关键词 → 不采集（`client/capture/privacy.py:12-20` `should_capture()`）
+2. **暂停模式**（已实装）：托盘一键暂停，不留任何记录（`should_capture()` paused 短路）
+3. **不存图模式**（已实装）：只记录元数据，不保存截图（`PrivacyConfig.store_images`，消费点 `client/capture/service.py:229`）
+4. **外部接口不返原图**（已实装）：MCP/API 响应仅含描述/统计（`server/mcp_layer/server.py`，工具返回元数据/聚合/文本，不回传原图字节）
 5. **区域模糊**（Phase 2）：OCR 检测后对敏感区域打码
 
 ---
@@ -38,7 +38,7 @@
 1. `min_capture_interval_s = 2–3s` 防止高频切窗爆炸
 2. `max_capture_interval_s = 20–60s` 限制补帧频率
 3. 采集层（Capture）与分析层（Worker）异步解耦
-4. Worker 使用 semaphore 限制最大并发
+4. Worker 以 `vlm_concurrency` 个消费协程限制最大并发
 5. 优先加载缩略图，避免 UI 频繁解码大图
 6. SQLite WAL 模式 + 小事务，减少写锁争用
 
@@ -51,7 +51,12 @@
 **缓解**：
 1. **规则层兜底**：人工编写的确定性规则优先级最高
 2. **用户反馈强样本**：`user_edit` 权重 5.0，一次纠错影响后续分类
-3. **decision_trace 可回溯**：每条记录保留完整决策过程，方便调参
+3. **decision_trace 可回溯**：`decide_category` 内部已构造 decision_trace 对象（含 candidates/signals），但当前**未持久化**到 `analysis_results.decision_trace` 列（worker 拿到 trace 后即丢弃，该列恒为 NULL）
+
+## **⚠️ §4 置信度阈值未实装**
+
+下方"置信度阈值"为未落地的设想：当前 `confidence` 不持久化（`decide_category` 返回值被 worker 丢弃，`analysis_results.confidence` 恒为 NULL），前端 `CategoryBadge.tsx` 也没有 0.5 阈值的"待确认"态（只有"未分析"与"展示百分比"两态）。原文保留备查。
+
 4. **置信度阈值**：confidence < 0.5 时 UI 展示"待确认"状态
 
 ---

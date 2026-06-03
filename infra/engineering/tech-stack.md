@@ -15,7 +15,7 @@
 
 - **common**：配置（`common/config.py`）、wire 协议（`common/protocol.py`）等 client/server 共享物
 - **client**：采集、托盘、outbox、backend、init 命令
-- **server**：API、DB、queue、blob、worker、vlm、phash、mcp、auth、admin 命令、bootstrap
+- **server**：API、DB、queue、blob、worker、vlm、phash、mcp、auth、admin 命令、bootstrap，以及 rules（分类引擎）/ agent（MCP 工具实现）/ settings（per-app 覆盖）/ report（看板）/ users（登录）
 - **embserver**：独立的本地 embedding 推理服务（Qwen3-VL），自带 torch optional extra
 
 运行时仍有两种入口拓扑（单进程 `timetrace` vs 双进程 `timetrace-server` + `timetrace-client`），详见 [packaging.md](../architecture/packaging.md) 与 CLAUDE.md 的「运行模式」表。
@@ -33,18 +33,18 @@
 | mss | 屏幕截图 | ✅ 已用 |
 | pillow | 图像处理（缩略图、pHash 输入） | ✅ 已用 |
 | pywin32 | Windows API（窗口/进程信息），`win32` marker | ✅ 已用 |
-| httpx | 异步 HTTP 客户端（VLM / embedding / HttpBackend） | ✅ 已用 |
-| imagehash | 感知哈希（pHash 去重 / 以图搜图） | ✅ 已用 |
-| numpy | 向量运算（余弦相似度全表扫、packed BLOB 解码） | ✅ 已用 |
+| openai | VLM / embedding / ask_agent 的 OpenAI 兼容 chat+embeddings 客户端（`AsyncOpenAI`） | ✅ 已用 |
+| httpx | 异步 HTTP 客户端（HttpBackend，client 侧） | ✅ 已用 |
+| numpy | 向量运算（余弦相似度全表扫、packed BLOB 解码、手写 pHash DCT） | ✅ 已用 |
 | python-dotenv | `.env` 加载（main.py 在 `AppConfig()` 前调 `load_dotenv()`） | ✅ 已用 |
-| mcp / fastmcp | MCP 协议导出（streamable HTTP 挂 `/mcp`） | ⚠️ 部分（`tools.py::get_category_stats` 仍是 stub） |
+| mcp / fastmcp | MCP 协议导出（streamable HTTP 挂 `/mcp`） | ✅ 已用 |
 | bcrypt | 登录密码哈希（auth_users） | ✅ 已用 |
 
 ## 数据存储
 
 - **SQLite（WAL 模式）**：单文件数据库，`server/db/sqlite.py::SqliteDatabase`。`server/db/__init__.py` 导出 `Database = SqliteDatabase` 别名（P5 引入 PostgresDatabase 时这条别名升级为 `typing.Protocol`）
 - **本地文件系统**：截图 / 缩略图 PNG 存 `%USERPROFILE%/TimeTraceData/`（不在仓库内）
-- **表**：`records / screenshots / analysis_results / records_fts`（FTS5 trigram）+ 登录用 `auth_users / auth_sessions`（worker 任务队列复用 `analysis_results.status` 状态机，无独立任务表）
+- **表**：`records / screenshots / analysis_results / records_fts`（FTS5 trigram）+ 登录用 `auth_users / auth_sessions` + `categories / tags / record_tags / feedback / settings / reports`（worker 任务队列复用 `analysis_results.status` 状态机，无独立任务表）。此处只列核心表，完整 schema 见 `server/db/sqlite.py` / [infra/readme.md](../readme.md)
   - `analysis_results` 含 `text_embedding`（packed float32 BLOB）+ `text_embedding_model`
   - 幂等索引：`records.client_record_id` UNIQUE（record 级）+ `screenshots(record_id, hash_sha256)` UNIQUE（防 outbox at-least-once replay 双插）
 
@@ -99,7 +99,7 @@
 
 ## MCP 导出
 
-`server/mcp_layer/server.py::build_mcp_server`，FastMCP stateless_http 挂 `/mcp`（`streamable_http_path` 设为根，避免 `/mcp/mcp/` 双前缀），`session_manager.run` 在 lifespan 内。4 工具：`search_activity / get_recent_activity / get_app_breakdown / ask_agent`。`tools.py::get_category_stats` 仍是 stub。
+`server/mcp_layer/server.py::build_mcp_server`，FastMCP stateless_http 挂 `/mcp`（`streamable_http_path` 设为根，避免 `/mcp/mcp/` 双前缀），`session_manager.run` 在 lifespan 内。6 工具：`search_activity / get_recent_activity / get_app_breakdown / get_category_stats / apply_label / ask_agent`，全部 close over 并委托 `server/agent/tools.py` 的真实现。`mcp_layer/tools.py` 是已废弃的死 stub，不再被 `server.py` 引用（现走 `server/agent/tools.py`）。
 
 ## 前端
 
@@ -109,7 +109,6 @@
 
 - PostgreSQL 后端（多端部署，P5；届时 `Database` 别名升级为 Protocol）
 - 向量检索接入 search 路由（当前 `vector_search` 已实装但休眠）
-- MCP `get_category_stats` 去桩
 
 ---
 

@@ -6,6 +6,10 @@
 
 ## 单元测试（当前）
 
+## **⚠️ 测试清单已过期（仅列 MVP 6 文件，现有 ~40 文件 447 测试）**
+
+下表停留在早期 MVP 快照，只列了 6 个测试文件。实际 `tests/` 已扩展到约 40 个文件、共 ~447 个 test 函数，新增覆盖 auth/login（登录系统）、mcp（MCP 工具）、agent（ask_agent / 看板）、reports（看板报告）、embedding/retrieval（向量检索）、ingest/http_backend/outbox/two_process（双进程链路）、app_overrides（per-app 覆盖）等。**完整且权威的测试清单以 [CLAUDE.md](../../CLAUDE.md) 「## 测试」段为准。** 下表保留作历史参考。
+
 测试文件位于 `tests/`，使用 `pytest` + `pytest-asyncio`：
 
 | 文件 | 覆盖范围 |
@@ -13,7 +17,7 @@
 | `tests/test_storage.py` | Database 初始化、insert_record、mark_pending、claim_next_task、schema 迁移 |
 | `tests/test_api.py` | FastAPI 路由、/healthz、/v1/records |
 | `tests/test_privacy.py` | `should_capture()` 黑名单、暂停模式 |
-| `tests/test_rules.py` | `decide_category()` 规则匹配、KNN 投票、decision_trace 格式 |
+| `tests/test_rules.py` | `decide_category()` 规则优先匹配 + VLM 选类的加权投票（KNN 已删）、decision_trace 格式 |
 | `tests/test_phash_index.py` | pHash 计算、BK-tree 范围搜索 vs 暴力扫比对、PHashIndex 日桶过滤、`from_db` roundtrip、旧 DB 加 `phash` 列的幂等迁移 |
 | `tests/test_search.py` | `/v1/search/by-image` 视觉 / 语义 / 融合通道、多图上限、半开时间窗口、LIKE 元字符转义、`/v1/apps` 与 `/v1/records` 的 apps/categories 多选 |
 
@@ -35,7 +39,7 @@ uv run pytest -v --tb=short
 | 以图搜图（视觉） | 上传参考图后返回 pHash 距离升序的相似截图；搜索结果可"跳转时间轴"并高亮定位 |
 | 隐私模式 | 暂停后无新记录写入；黑名单应用的截图 0 条 |
 | 数据恢复 | 进程强制终止后重启，pending 任务可被正确 reclaim；pHash 索引从 SQLite 亚秒级重建 |
-| 导出 summary | 指定时间段触发摘要，返回 100–200 字文本 |
+| 导出 summary | 指定时间段触发摘要，返回 100–200 字文本（已实装并演化为 AI 看板报告 + SSE 流式：`/v1/reports/latest`、`/v1/reports/generate`、`/generate/stream`，见 `server/api/routes/reports.py` + `server/report/generator.py`） |
 
 ---
 
@@ -66,7 +70,7 @@ uv run pytest -v --tb=short
 | 指标 | 目标 | 说明 |
 |------|------|------|
 | 分类 Top-1 准确率 | ≥ 80% | 以用户反馈标签为 ground truth |
-| 误判可解释性 | 100% | 每条记录有完整 decision_trace |
+| 误判可解释性 | 100% | 每条记录有完整 decision_trace（已实装：`decide_category()` 返回 `(final_category, confidence, decision_trace)`，见 `server/rules/engine.py:47-54`） |
 | 误判可纠正性 | 100% | 用户修改后下次同类记录分类改善 |
 
 ---

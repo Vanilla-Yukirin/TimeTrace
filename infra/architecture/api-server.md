@@ -42,6 +42,12 @@
 | GET | `/v1/runtime-info` | version / data_dir / api_host / api_port（Settings 页只读） | records.py |
 | POST | `/v1/feedback` | 用户确认 / 修正分类 | feedback.py |
 | POST | `/v1/search/by-image` | 多模态搜索（pHash + BM25 + RRF） | search.py |
+| POST | `/v1/agent/chat` | Web 端 agent 对话（工具调用循环，SSE 流式） | [agent.py](../../src/timetrace/server/api/routes/agent.py) |
+| GET | `/v1/reports/latest` | 取最新已存看板（无则 404） | [reports.py](../../src/timetrace/server/api/routes/reports.py) |
+| POST | `/v1/reports/generate` | 立即生成看板（同步，返回结果） | reports.py |
+| POST | `/v1/reports/generate/stream` | 立即生成看板（SSE 流式 agent 步骤 + token） | reports.py |
+| GET | `/v1/settings/app-overrides` | 取 per-app 分类覆盖 KV | [settings.py](../../src/timetrace/server/api/routes/settings.py) |
+| PUT | `/v1/settings/app-overrides` | 校验并持久化覆盖 KV（非法 → 400） | settings.py |
 | GET | `/thumbs/{path:path}` | 缩略图（path-traversal 防护 + `Cache-Control: private`） | thumbs.py |
 
 ### 认证路由
@@ -75,6 +81,8 @@
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
 | GET | `/healthz` | **无** | 探活，systemd / nginx / CI smoke 打 |
+| GET | `/blob/{path:path}` | `require_principal` | 原图灯箱（全分辨率截图原件，path-traversal 防护） |
+| GET | `/skill` | **无** | 返回 `skills/timetrace/SKILL.md`（文档非访问，MCP 仍 bearer-gated） |
 | ANY | `/mcp/*` | `BearerOnlyMiddleware`（专用 bearer） | MCP streamable-HTTP，见 [MCP Layer](mcp-layer.md) |
 | GET | `/docs` `/openapi.json` | `require_session_password_set` | 不向公网泄露 API 地图；默认 `docs_url=None`，登录后重新挂出 |
 
@@ -113,7 +121,8 @@ GET /v1/records
     &app=<name>               # 单 app_name（保留，向后兼容）
     &apps=<a,b,c>             # 多 app_name（逗号分隔，多选）
     &categories=<c1,c2>       # 多 category_final（逗号分隔）
-    &q=<keyword>             # window_title OR vlm_desc，LIKE %q%
+    &q=<keyword>             # ≥3 字符走 FTS5 trigram + BM25 相关性排序，<3 字符多字段 LIKE 兜底；
+                             #   检索字段：window_title / app_name / process_name / url / vlm_desc
     &limit=200               # ≤ 500
     &cursor=<record_id>      # keyset 分页：上页最后一条 id
 → { items: [...], next_cursor: <id|null> }
@@ -144,8 +153,9 @@ POST /v1/search/by-image  (multipart)
 {
   "items": [
     {
-      "screenshot_id": "...", "record_id": "...", "ts_start": 1712345678000,
-      "app_name": "Chrome", "window_title": "...",
+      "screenshot_id": "...", "record_id": "...",
+      "ts_start": 1712345678000, "ts_end": 1712345699000,
+      "app_name": "Chrome", "window_title": "...", "url": null,
       "thumb_path": "2026/04/22/xxx.jpg",
       "vlm_desc": null, "category_final": null,
       "match": {
@@ -162,7 +172,7 @@ POST /v1/search/by-image  (multipart)
 
 融合策略（RRF k=60）见 [相似检索层](../storage/vector-search.md)。`unavailable` = 通道被选中但产不出结果（pHash 索引为空、VLM 未接入等）。
 
-> **向量检索通道休眠中**：`db.vector_search`（numpy 余弦全表扫，配合 [embedding](../../src/timetrace/server/embedding/client.py) 写入的 `analysis_results.text_embedding`）已实装，但 search 路由当前还未调用它——语义通道目前走 VLM 描述 → FTS5 BM25。详见 [vector-search.md](../storage/vector-search.md)。
+> **向量检索通道休眠中**：`db.vector_search`（numpy 余弦全表扫，配合 [embedding](../../src/timetrace/server/embedding/client.py) 写入的 `analysis_results.text_embedding`）已实装，但 search 路由当前还未调用它——语义通道目前走 VLM 描述 → LIKE 计分 fallback（search.py 的 `_bm25_search`，尚未切到 FTS5 MATCH）。详见 [vector-search.md](../storage/vector-search.md)。
 
 ---
 
@@ -188,11 +198,16 @@ src/timetrace/server/api/
     ├── records.py    ← /v1/records(/{id}) /apps /runtime-info
     ├── search.py     ← /v1/search/by-image（pHash + BM25 + RRF）
     ├── feedback.py   ← /v1/feedback /categories
+    ├── agent.py      ← /v1/agent/chat（Web 端 agent 对话，SSE）
+    ├── reports.py    ← /v1/reports/{latest,generate,generate/stream}（看板）
+    ├── settings.py   ← /v1/settings/app-overrides（GET/PUT 分类覆盖 KV）
     ├── ingest.py     ← /v1/ingest/record(/{id}/close)（双进程上行，bearer-only）
+    ├── blob.py       ← /blob/{path}（原图灯箱，带 auth + path-traversal 防护）
+    ├── skill.py      ← /skill（返回 SKILL.md，无 auth）
     └── thumbs.py     ← /thumbs/{path}（带 auth + path-traversal 防护）
 ```
 
-**共享状态**（`app.state`）：`db` / `phash_index` / `vlm_client` / `blob_storage` / `auth`（ServerAuth）/ `users`（UserStore）/ `auth_cfg` / `data_dir` / `thumbs_dir` / `api_host` / `api_port`。
+**共享状态**（`app.state`）：`db` / `phash_index` / `vlm_client` / `blob_storage` / `auth`（ServerAuth）/ `users`（UserStore）/ `auth_cfg` / `vlm_cfg`（`VLMConfig | None`，agent/reports 路由据此判断 LLM 是否可用）/ `data_dir` / `thumbs_dir` / `api_host` / `api_port`。
 
 ---
 

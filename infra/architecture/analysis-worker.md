@@ -8,10 +8,14 @@
 
 - 从 SQLite 中原子 claim `pending_vlm` 任务（`UPDATE … WHERE … IN (SELECT … LIMIT 1) … RETURNING`）
 - 启动 `vlm_concurrency` 个并发消费者协程，共享同一个 `Database` 与 `VLMHealthGate`
-- 执行 VLM 结构化描述（`keywords` / `summary` / `description` 三字段），拼成 LIKE-friendly 文本写入 `analysis_results.vlm_desc`
+- 执行 VLM 结构化描述（`keywords` / `summary` / `description` / `category` 四字段），拼成 LIKE-friendly 文本写入 `analysis_results.vlm_desc`
 - 失败按指数退避回 `pending_vlm`（retry_count++ / next_retry_at），超过 `max_retries` 转 `error_final`
 - 跨 worker 共享熔断器：连续失败到阈值切 SLEEPING，靠心跳探活恢复 HEALTHY
 - 镜像 `analysis_results.status` 到 `records.status`，避免 UI 上记录卡在 `pending_vlm` / `processing_vlm`
+
+## **⚠️ 「不含 embedding 生成」已过期：Worker 现已承担文本向量化**
+
+下面这句原文已不成立。Worker 现已生成文本 embedding：`_handle_one` 末尾会 best-effort 调 `_embed_and_save`（[server/worker/loop.py:245-273](../../src/timetrace/server/worker/loop.py)）写入 `analysis_results.text_embedding` / `text_embedding_model` 列，失败不阻塞 `vlm_done`；另有一次性回填 sweep `_backfill_embeddings` 补漏。`EmbeddingClient`（[server/embedding/client.py](../../src/timetrace/server/embedding/client.py)）是真实现非桩。注意：embedding 已生成入库，但向量检索路由尚未接线（`vector_search` 未挂进搜索路由，属未做项）。FTS5 BM25 也已实装（见下文订正）。
 
 > **不含 embedding 生成**：文本语义检索走 VLM 描述 + （未来）FTS5 BM25（见 [相似检索层](../storage/vector-search.md)），视觉相似检索由采集侧的 pHash 给出，Worker 不承担向量化工作。
 
@@ -27,11 +31,11 @@ captured
                                               │
                                        VLM describe
                                               │
-                                          vlm_done
+                                 classify / rules (set_category_final)
                                               │
-                                      classify / rules
+                                          vlm_done   ← 成功终态
                                               │
-                                            done
+                                   best-effort embedding（失败不回滚 vlm_done）
 
 VLM 调用失败：
   ├─ retry_count < max_retries
@@ -65,14 +69,14 @@ RETURNING record_id, retry_count;
 
 - 内层 SELECT 决定候选行，外层 `WHERE … AND status='pending_vlm'` 防住已被别的 worker 抢走的行
 - 整个语句由 `Database._lock`（asyncio.Lock）串行化（aiosqlite 单连接共享，必须顺序提交）
-- **超时回收**：`main.py::_reclaim_loop` 每 60s 把 `processing_*` 状态超过阈值的行回写 `pending_*`，防 Worker 崩溃后任务永久卡死
+- **超时回收**：`server/bootstrap.py::_reclaim_loop` 每 60s 把 `processing_*` 状态超过阈值的行回写 `pending_*`，防 Worker 崩溃后任务永久卡死
 - **优先级**：当前按 `updated_at ASC` 公平消费；如需手动优先级可在 `ORDER BY` 加 `priority DESC`
 
 ---
 
 ## 错误 / 重试策略
 
-实际逻辑见 [src/timetrace/worker/loop.py](../../src/timetrace/worker/loop.py)::`_handle_one` / `_fail`。
+实际逻辑见 [src/timetrace/server/worker/loop.py](../../src/timetrace/server/worker/loop.py)::`_handle_one` / `_fail`。
 
 | 场景 | 状态变迁 | 备注 |
 |------|---------|------|
@@ -86,7 +90,7 @@ RETURNING record_id, retry_count;
 
 ## 当前实现
 
-[src/timetrace/worker/loop.py](../../src/timetrace/worker/loop.py)：
+[src/timetrace/server/worker/loop.py](../../src/timetrace/server/worker/loop.py)：
 
 ```python
 class AnalysisWorker:
@@ -110,34 +114,35 @@ class AnalysisWorker:
             await self._handle_one(task, worker_id)   # describe → save → transition
 ```
 
-`_handle_one` 拉 `get_record_meta`（取 `window_title` + 第一张未删除截图路径）→ `Image.open` → `vlm.describe(img, window_title=...)` → 成功调 `save_description(format_description(payload))` + `transition('vlm_done')`，失败走 `_fail` 进重试 / 终结分支。
+`_handle_one` 拉 `get_record_meta`（取 `window_title` / `app_name` / `url` + 第一张未删除截图路径）→ `Image.open` → `load_overrides`（per-app 用户备注）→ `vlm.describe(img, window_title=..., app_note=find_note(...))` → 成功调 `save_description(format_description(payload))` → `decide_category`（rule 权重 2.0 > vlm 1.5）+ `set_category_final` → `transition('vlm_done')` → best-effort `_embed_and_save`，失败走 `_fail` 进重试 / 终结分支。
 
 ---
 
 ## VLM 客户端
 
-[src/timetrace/vlm/client.py](../../src/timetrace/vlm/client.py) 是一个对 OpenAI Chat Completions 协议的薄包装（`AsyncOpenAI`），可对接任何兼容端点（OpenAI、DashScope qwen 系、SiliconFlow、Ollama、自部署 vLLM…）。
+[src/timetrace/server/vlm/client.py](../../src/timetrace/server/vlm/client.py) 是一个对 OpenAI Chat Completions 协议的薄包装（`AsyncOpenAI`），可对接任何兼容端点（OpenAI、DashScope qwen 系、SiliconFlow、Ollama、自部署 vLLM…）。
 
 ```python
 class VLMClient:
-    async def describe(self, image: Image.Image, window_title: str | None = None) -> dict
-    # 返回校验后的 {"keywords": list[str], "summary": str, "description": str}
+    async def describe(self, image: Image.Image, window_title: str | None = None, app_note: str | None = None) -> dict
+    # 返回校验后的 {"keywords": list[str], "summary": str, "description": str, "category": str}
+    # category 走 enum schema（6 类 flat），缺失 / 越界回退 uncategorized
 
     async def heartbeat(self) -> bool
     # 纯文本 "1+1=?" → 含 "2" 即视为存活
 ```
 
-- `response_format={"type": "json_object"}` 强制 JSON 输出
+- `response_format={"type": "json_schema", ..., "strict": True}` 强制 structured outputs（schema 与 `_validate_describe_payload` 对齐）；早先的 `json_object` 被 LM Studio 拒绝（必须 `json_schema` 或 `text`）故弃用
 - `extra_body={"enable_thinking": False}` 是**按需 opt-in** 的——vanilla `api.openai.com` 拒绝未知 body 字段会 HTTP 400；DashScope qwen / SiliconFlow Qwen3+ 默认 thinking=ON 需要这个开关。由 `TIMETRACE_VLM_DISABLE_THINKING` 控制
 - prompt 里 `summary` / `description` 强制以**名词性短语开头**，禁止"该截图/这张图/画面显示/这是/正在…"等元叙述句式——目的是避免高频元叙述词把 BM25 / LIKE 通道里的真实关键词稀释掉
 
-模型默认 `gpt-4o-mini`，全部三件套（`base_url` / `api_key` / `model` / `disable_thinking`）走 `.env`，见 [.env.example](../../.env.example)。
+模型缺省占位 `gpt-4o-mini`，几项配置（`base_url` / `api_key` / `model` / `disable_thinking`）全部走 `.env`，见 [.env.example](../../.env.example)。生产实际跑 LM Studio 本地 VLM（Qwen3-VL），`gpt-4o-mini` 只是缺省占位。
 
 ---
 
 ## 熔断器（VLMHealthGate）
 
-[src/timetrace/vlm/health.py](../../src/timetrace/vlm/health.py) 跨所有 worker 共享，把瞬时网络抖动、模型限流、临时故障收敛为有限状态机：
+[src/timetrace/server/vlm/health.py](../../src/timetrace/server/vlm/health.py) 跨所有 worker 共享，把瞬时网络抖动、模型限流、临时故障收敛为有限状态机：
 
 ```
 HEALTHY ──── consecutive_failures >= fail_threshold (默认 3) ────► SLEEPING
@@ -156,7 +161,7 @@ HEALTHY ──── consecutive_failures >= fail_threshold (默认 3) ───
 ## 性能约束
 
 - 核心约束：对用户交互无感（优先级低于采集服务）
-- 并发：`vlm_concurrency` 默认 2（[WorkerConfig](../../src/timetrace/config.py)），受 API 限流与单帧 latency 共同制约
+- 并发：`vlm_concurrency` 默认 2（[WorkerConfig](../../src/timetrace/common/config.py)），受 API 限流与单帧 latency 共同制约
 - 单帧 payload 在客户端做了**长边 1280px 上限 + JPEG q=80** 的压缩，控制上传体积与 token 成本
 - 其他 worker 配置（默认值）：`max_retries=5`、`backoff_base_s=60`、`backoff_max_s=600`
 

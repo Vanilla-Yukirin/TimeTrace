@@ -1,7 +1,7 @@
 # 打包与依赖分发
 
 > 本文档说明 TimeTrace 的打包方式、入口点、可选依赖分组、systemd 部署单元与公网拓扑。
-> 面向想读懂当前架构的工程师。部署操作细节见 [deploy/README.md](../../deploy/README.md)。
+> 面向想读懂当前架构的工程师。部署操作细节见 [devlogs/infra/archive-202605161000-deployment-architecture.md](../../devlogs/infra/archive-202605161000-deployment-architecture.md)。
 
 ## 构建后端
 
@@ -91,7 +91,7 @@ uv sync --extra embserver
    │ HTTPS, timetrace.yukirin.me
    ▼
 Cloudflare ── 云 VPS nginx 反代 (deploy/nginx-timetrace.yukirin.me.conf)
-                  │
+                  │ proxy_pass 127.0.0.1:18765 (VPS 侧 frp 隧道入口)
                   ▼
               frp 隧道 ──► 家里小主机 :8765 (timetrace-server)
                                          │ 本地调
@@ -99,7 +99,7 @@ Cloudflare ── 云 VPS nginx 反代 (deploy/nginx-timetrace.yukirin.me.conf)
                                    embserver :8766 (本机回环)
 ```
 
-- MCP（streamable HTTP）的 nginx location 需长连接友好配置（`proxy_http_version 1.1` + `Connection ""` + 关 buffering）
+- MCP（streamable HTTP）的 nginx location 需长连接友好配置（`proxy_http_version 1.1` + 关 buffering + 长 timeout）
 - **Web UI / OpenAPI 鉴权后才开公网**；dev server 按需起 `ssh -L` 隧道访问
 - embserver（8766）仅本机回环，不经 nginx 暴露
 

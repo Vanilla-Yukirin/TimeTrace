@@ -1,201 +1,90 @@
 # TimeTrace 滚动 TODO / Plan
 
-**最后更新：** 2026-05-28（凌晨：公网部署 + 公网暴露止血 + 登录系统设计）
+**最后更新：** 2026-06-03（演示后：清理过期 infra+PLAN；未完成项总表对着真代码重建）
 
-> 滚动文档，不是历史快照。完成的事项移到 devlog archive 归档，这里只留"未完成"和"未决策"。
+> 滚动文档，不是历史快照。完成的事项移到 devlog archive 归档，这里只留**未完成**和**未决策**。
 >
 > 找代码细节去 [`devlogs/README.md`](./README.md) 索引；找架构现状去 [`infra/`](../infra/)；本文档只回答 **"下一步该做什么"**。
 
 ---
 
-## **✅ Day 0 完成清单（一晚跑完，原定 Day 0-4 全压缩进来）**
+## 现状（2026-06-03 演示已完成）
 
-| 项 | 状态 | 关键事实 |
-|---|---|---|
-| `.env` 接 LM Studio @ 127.0.0.1:1234 | ✅ 生产 | `qwen3.6-35b-a3b-uncensored` (50K context, 17.6 GiB VRAM) |
-| LM Studio + Qwen3 reasoning_content 怪癖兜底 | ✅ commit `2bfb144` | content 空时 fallback；json_schema 替换 json_object |
-| VLM 实战质量验证 | ✅ 695 条积压秒清，每条 3-5s | 鸣潮识别哥莱姆 Lv.70；微信识别群名 + 程序讨论 |
-| FTS5 trigram + 多字段搜索 | ✅ commit `851f860` | 哥莱姆/Code.exe/Visual/Weixin 全 BM25 命中 |
-| MCP 4 tools 实装 + 挂 `/mcp` | ✅ commit `0882a4c → e0ca5a4` | streamable-http + FastAPI lifespan + stateless_http |
-| `ask_agent` 端到端 LLM 调用 | ✅ 48s 返回 + 元认知 | 自动指出"80 条样本不足，建议 app_breakdown 全量统计" |
-| Claude Code 接入：`.mcp.json` + skill | ✅ commit `e5a2c44` | 项目级 auto-discover；skill 含决策树 + 反模式 |
+三层重构 P0–P3 已生产验证；本地 LLM 全链路（VLM 分类 + 文本 embedding）、**MCP 6 工具**、登录鉴权系统、Web Agent + AI 看板报告、per-app 覆盖（看板准确性 Phase 0）、公网部署（box + frp + nginx VPS）**均已上线并完成周三演示**。架构现状看 [`infra/readme.md`](../infra/readme.md)。
 
-**累计当晚 commit：** 6 个 feature commit + 全程 270+ 测试绿。代码主体已 demo-ready。
+下面是 **2026-06-03 对照真代码重建的未完成项总表**（替换了已截止的 demo-sprint 计划）。
 
 ---
 
-## **🔐 公网部署引出的紧急轨道（2026-05-28 启动，与 demo prep 并行）**
+## 未完成项（按优先级）
 
-**触发**：5/27 夜 frps + nginx + Let's Encrypt + frpc tunnel 全打通 → `https://timetrace.yukirin.me/v1/records` 等 5 个浏览器/AI 路由（含 `/thumbs/*`）公开裸奔 → 所有 records / VLM 描述 / 缩略图对公网暴露。
+### 🔴 High
 
-**临时止血（已完成）**：注释 home frpc `[[proxies]] timetrace-api` 段并重启 `frpc@xcy.service`。公网回 502。`nginx` / DNS / LE 证书 / frps 全保留。备份在 `~/.config/frp/xcy.toml.bak.20260528-034614`。
+1. **语义/文本向量检索接进搜索路由** —— `db.vector_search`（numpy 余弦，`server/db/sqlite.py`）已实装但**全库零调用方**；`/v1/search/by-image` 与 `/v1/records` 的 RRF 融合仍只跑 pHash + FTS5/LIKE 两路，向量是"沉睡的第三路"。**写侧已通**（worker `_embed_and_save` 写 `text_embedding` BLOB），缺读侧接线。出现频次最高的未做项，最该先接。
 
-**永久方案**：建多用户登录系统（admin/admin → 强制改密 → 单用户）。设计完整定稿在 [`devlogs/infra/archive-202605280400-login-system-design.md`](infra/archive-202605280400-login-system-design.md)。摘要：
+### 🟡 Medium
 
-| 决策 | 选择 |
-|---|---|
-| Session 存储 | HttpOnly Cookie + `auth_sessions` DB 表（可即时 revoke、改密一键踢所有设备） |
-| Bearer 通道 | 保留并扩展（继承 `ServerAuth` + `tokens.json`），admin 在 Web UI 创建/管理 token；给 MCP 客户端 / capture client 用 |
-| 浏览器路由 | `/v1/records` 等接受 **cookie 或 bearer 任一** |
-| `/mcp` | starlette `BearerOnlyMiddleware` 包裹后再 mount（解决 `app.mount` 不传 `Depends`） |
-| `/thumbs` | `StaticFiles.mount` → `FileResponse` 自定义路由 + path-traversal 防护 + auth |
-| 数据分区 | **不做**（单用户，所有数据归 admin） |
-| 浏览器配 VLM key | **不做**（你能 SSH 编 `.env`，避免 secret 加密存储争议） |
-| 本地 dev | `TIMETRACE_INSECURE_COOKIE=1` env var 切 Cookie `Secure` flag |
+2. **`/v1/search/by-image` 的 `_bm25_search` 从 LIKE 切到 FTS5 MATCH** —— `records_fts`(trigram) 表早已建好，但该路由仍走 `vlm_desc` LIKE（`server/api/routes/search.py` docstring 自承待迁），是全仓**唯一未迁的 LIKE 残留**。关键词/records/MCP 路径已用真 FTS5 BM25，只剩这一处。低改动量。
+3. **P4 客户端隐私管线** —— OCR + 区域检测/分类器 + 强模糊重编码（原图绝不落盘）；`PrivacyConfig.mode`(off/text_only/full) 的消费方；写非 `normal` 值的 `privacy_level` 上游生产者。当前隐私层仍是 v1 黑名单，`mode` 字段 + `privacy_level` 列是前向占位、运行时不被消费。
+4. **VLM 熔断器盲点** —— `/v1/search/by-image` 的 semantic 通道直 `await vlm_client.describe()` 仅 `except VLMError`，**不走 `gate.acquire` 短路**，VLM 挂了会反复打端点。`VLMHealthGate.acquire` 已存在（`server/vlm/health.py`）但该路由未用。真实运行时债务。
 
-**实施顺序**（每步可工作不留半成品）：
+### 🟢 Low
 
-| Phase | 内容 | 估时 |
-|---|---|---|
-| 1 | 后端 auth 核心：2 表 migration + bcrypt + login/logout/me/change-pw + cookie session middleware + admin seed | 0.5d |
-| 2 | `/thumbs` 改造 | 0.5d |
-| 3 | `/mcp` middleware | 0.5d |
-| 4 | 业务路由 auth 接入 | 0.5d |
-| 5 | 前端 LoginPage + ChangePasswordPage + AuthContext + RequireAuth + 401 cross-tab | 0.75d |
-| 6 | 前端 Settings：Account + TokenManager + TokenCreatedDialog（含 `.mcp.json` 模板） | 0.5d |
-| 7 | e2e + 恢复 frpc 公网 proxy | 0.75d |
-
-**总：4-5 天**（顺利 4d，含 corner case 反复 5d）。
-
-**和 demo 并行的依据**：周三 demo 走 `ssh -L 8765` 隧道，**不依赖公网**。本轨道不抢 demo 资源，demo 后再合并到 main。
+5. **图像/多模态 embedding 接进 worker 与检索** —— embserver 子包（端口 8766，Qwen3-VL）已独立实装但未接入主 server worker/检索；worker 只有文本 `EmbeddingClient`。产出未喂搜索。
+6. **decision_trace / confidence / category_suggested 运行时持久化** —— 三列 schema 预留，`decide_category` 已算出 trace+confidence 但 worker 丢弃（`server/worker/loop.py`），`set_category_final` 只写 `category_final`。误判可解释性 / 置信度阈值 UI / 金字塔信任门控都依赖它。
+7. **基于反馈的高权重样本回灌分类** —— `SOURCE_WEIGHTS` 留 `user_edit=5.0/user_confirm=3.0` 但 `decide_category` 只消费 rule+vlm 两源，feedback 路由只做 before/after 审计、不影响后续分类（KNN 库已删，原回灌目标作废，需重新定义机制，如喂回 rule 表/per-app override）。
+8. **存储配额生命周期** —— `settings` 配置 `storage.max_image_days/max_image_gb`，超配额软删最旧图（写 `screenshots.deleted_at` 保留元数据+pHash/向量）+ 配额提示。`deleted_at` 列存在但全库无驱逐逻辑。
+9. **双进程模式作为 timetrace-client 默认的收尾（P3b/P4）** —— 三 backend + OutboxBackend→Http 已是 client 默认，但 capture 直写 outbox/blobs 跳过 canonical `screenshots/` 树、上传折进隐私管线等 P4 项未做。单进程仍是稳定默认。
+10. **P5 可选适配器** —— PostgresDatabase(asyncpg/pgvector) + RedisQueue + S3BlobStorage；`Database/Queue/Blob` 别名升级为 `typing.Protocol`。全是注释占位。
+11. **P6 Headless TUI 客户端 + P7 分发自动化** —— ghcr 自动发布 / release CI；目前只有 `deploy.yml` workflow_dispatch。空占位。
+12. **图像缺失类不可恢复错误直转 `error_final`、不消耗 retry 配额** —— `loop.py` 当前 image load 失败统一走 `_fail` 退避重试链，不区分错误类型。
+13. **SQLite schema 迁移正式方案** —— `_migrate()` 仍是手写 idempotent ALTER TABLE，无版本号机制（Alembic / PRAGMA user_version）+ 崩溃恢复长测。
+14. **`capture_mode=fullscreen` 全屏截图模式实装** —— 配置项可读写持久化，但采集循环恒走 `capture_active_window`，fullscreen 分支不存在（行为上是死配置）。
+15. **`app_name` Unknown 残留启发式补救（可选）** —— 416 PID 中 174 仍 Unknown（系统进程权限不允许）。主修已完成（ctypes `QueryFullProcessImageNameW`），可选 GetClassName/window_title 兜底。
+16. **YAML/JSON 规则表文件加载器 + 文件热加载（若仍需要）** —— 规则现已从 settings KV per-app overrides 构造（`build_ruleset` + 每任务 `load_overrides` 热加载）。文件加载方案是否仍需，由用户决定。
 
 ---
 
-## **🔜 周三前还要做（按优先级）**
+## 分层记忆金字塔（设计完成，演示后开始实装）
 
-| # | 任务 | 估时 | 谁来做 |
-|---|---|---|---|
-| 1 | **dress rehearsal** —— 本机起 SSH 隧道 + Claude Code 重启 + `claude mcp list` 确认 + 真问 "我过去一周做了什么" | 15 min | 用户亲手 |
-| 2 | embedding pipeline（用户说自己搞，待用户开 session 跟进） | — | 用户 |
-| 3 | 前端 search UX 微调（placeholder 提醒多字段、错误提示等） | 30 min | 可选 |
-| 4 | LM Studio autostart 配 `~/.config/autostart/lmstudio.desktop`（小主机重启后无需手点） | 5 min | 用户 |
-| 5 | 写 archive 归档今晚 sprint（建议 demo 后写，免得重复改） | 30 min | demo 后 |
+> 四篇设计草案已成稿（2026-06-02）且对现状代码锚定准确，但 DB 无对应表、src 无对应模块，**至今未实装**。评审判决：建，但 **gate 在 Phase 0 数据卫生之后**（已落地）。先发 L2 + day digest，推迟 L4 周/月、deep_scan、双 token-budget SSE。
 
-**Demo 前一晚做的事**：跑一次完整 dress rehearsal + 打两个截图（Search 命中 + Claude Code MCP 工具列表 + ask_agent 答案）当 backup。
+- **金字塔写时层**：`episodes`(L2 会话) / `digests`(L3-L4 日周月上卷) / `signals`(派生行为信号) 三表 + `records.episode_id` 列 + `episodes_fts`；配套 segmenter/builder/rollup/detectors 模块、`_episode_builder_loop`/`_digest_scheduler`、watermark 增量、capped SUM-invariant 测试。落地时时长 clamp 必须引用已实装的 `_clamped_dur_sql()`（>5min 封顶），别照抄裸 `SUM(MAX(0,...))`。
+- **Thin-router 6 工具按成本分层重构**：`query_stats/get_episodes/get_digest/search_episodes/get_raw` + `apply_label`，token-bounded by construction；旧名 `search_activity/get_recent_activity` 降为薄 shim；子 agent map-reduce(deep_scan) + runner turn-budget gate(~40K) + SSE 扩展；MCP 工具从 `TOOL_SCHEMAS` 生成消除三处手写 drift；删 `hours_back_hint` 死参数（`runner.py` 声明从不读）。
+- **给 4 篇架构文档补评审修正**：①时长封顶引用 `_cap_implausible_record_durations` 别只 `MAX(0,...)`；②episode 分类投票 NULL-aware；③冷启回填含 L1 `category_final` 回填；④报告 persona 去臆造化。
+- 设计文档：[PLAN-BETTER-AGENT.md](../infra/PLAN-BETTER-AGENT.md) · [pyramid-schema](../infra/storage/pyramid-schema.md) · [episode-pipeline](../infra/architecture/episode-and-rollup-pipeline.md) · [thin-router](../infra/architecture/thin-router-agent.md)。
 
 ---
 
-## **🎬 Demo 周三 5 分钟跑法（runbook）**
+## 需要用户授权的操作（任何对生产 box DB 的写）
 
-**演示前 30 秒**：
-```powershell
-# 终端 A，长期保持
-ssh -N -L 8765:127.0.0.1:8765 GTi13-Ultra-2v4G
-# 终端 B，看前端
-cd D:\Github\TimeTrace\frontend && npm run dev
-```
+详见 [`infra/PLAN-REPORT-ACCURACY-FIXES.md`](../infra/PLAN-REPORT-ACCURACY-FIXES.md) §3。摘要：
 
-**Demo 流程**：
-
-1. **30s 开场** — 屏幕角落出 timetrace-client 托盘图标，"它一直在低打扰记录"
-2. **1min 前端** — http://127.0.0.1:5173/ Timeline 页滚动今天的活动；Search 页搜 "鸣潮" / "Code.exe" / "微信" 命中（**关键**：这步证明 fallback search 真在工作）
-3. **2min Claude Code MCP** — 打开本仓库的 Claude Code，问：
-   - 问 1（精确）："我过去 10 天在哪些应用上花时间最多" → 自动调 `get_app_breakdown`，秒级回答
-   - 问 2（语义）："我有没有玩过鸣潮里那个叫哥莱姆的区域" → 调 `search_activity`，命中那张 Lv.70 截图描述
-   - 问 3（推理 + 整合）："总结一下我过去一周的活动模式" → 调 `ask_agent`，~30-60s 拿自然语言答案 + 元认知
-4. **1min 架构** — 一图：client 本机采集 → SSH 隧道 → 小主机 server (VLM + DB + MCP) → Claude Code。强调：**模型本地、数据本地、零云调用**
-5. **30s 收束** — github.com/Vanilla-Yukirin/TimeTrace + 本 PLAN.md 里"未做"清单
+- **扩回填其余 ~2800 条旧 NULL `category_final`** —— 当前报告会诚实显示为"尚未分类/待回填"，不影响准确性；要更满的报告可扩到高频应用规则回填。需 dry-run + 备份。
+- **清理旧 20 类两级 taxonomy** —— `DELETE FROM categories`，先核对无记录引用旧 id。优先级低于报告准确性。
+- **禁止 ssh box 改 git/重启，一律走 deploy 工作流**（唯一例外见 CLAUDE.md：LM Studio 模型加载、用户显式授权的运维）。
 
 ---
 
-## **🎯 当前主线：周三 demo sprint（截止 2026-06-03）**
-
-目标 demo 故事（用户原话）：
-
-> 「我可以问我本地的 Claude Code：『你看看我昨天做了什么 / 我昨天写了多久代码 / 我昨天在各个代码仓库里面分别花了多少时间』，它可以自己多次调用 search 接口，也可以直接问 ask_agent 接口（TimeTrace 内置 agent 自己搜整合后返回），都能得到精确结果。」
-
-核心要求：**全流程跑通 + 本地优先（隐私）**。细节优化可放 todo，之后按重要性变可配置项。
-
-### 模型栈（已部署在小主机 / LM Studio GUI + `lms` CLI）
-
-| 角色 | 模型 | 已落地 | 接入方式 |
-|---|---|---|---|
-| **VLM 看截图 + Agent 推理** | `qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive`（35B MoE，激活 3B，**原生多模态**） | ✅ 磁盘 + 实测可看图 | OpenAI `/v1/chat/completions`（image_url 字段） |
-| Text embedding | `text-embedding-nomic-embed-text-v1.5`（84MB） | ✅ 磁盘 | OpenAI `/v1/embeddings` |
-| Image embedding (multimodal) | `text-embedding-qwen.qwen3-vl-embedding-2b` | ✅ 磁盘 | OpenAI `/v1/embeddings`（图文同空间） |
-
-**重要**：Qwen3+ / Gemma3+ 全部**原生多模态**，无单独 VL 变体。同一个模型既看图又当 agent，VRAM 16.34GB / 20GB，留 3.6GB 给 embedding + KV cache 足够。LM Studio TTL 60min，IDLE 时模型常驻 VRAM。
-
-LM Studio CLI 用法摘要见 `~/archives/LM-Studio/archive-202605171929-lms-cli-and-headless.md`（小主机上）。
-
-### Sprint 路线（Day 0 = 今天 2026-05-27）
-
-| Day | 任务 | 验收 |
-|---|---|---|
-| Day 0 (今晚) | 小主机 `.env` 配 LM Studio + worker prompt 改"读 metadata 生 vlm_desc" | 1 条新 record 落地后 `vlm_desc` 非空 |
-| Day 1 | sqlite-vec 集成 + worker 加 text embedding 阶段 + 写库 | 新 record 同时落 `vlm_desc + text_embedding` |
-| Day 2 | worker 加 image embedding 阶段（vl-embedding 跑 thumb） + 搜索升级（FTS5 trigram + vector 混合） | 搜"鸣潮" / "vscode" / 上传一张相似截图 → 都有结果 |
-| Day 3 | MCP `search_activity / get_category_stats` 真实现（替换 stub） | Claude Code 接 MCP server，能 invoke search 拿到 JSON |
-| Day 4 | MCP `ask_agent` 新工具：内部跑 35BA3B agent 自循环 search + 整合 | Claude Code 问"昨天写了多久代码"→ 单次 tool 调用拿到自然语言答案 |
-| Day 5 | Claude Code skill 文档 + 前端搜索 UX + dress rehearsal | 端到端走一遍 demo 故事板 |
-| Day 6 (周三) | **Demo!** | — |
-
-### Demo 故事板（5 分钟）
-
-1. **30s 开场**：屏幕显示托盘 + Timeline 页今日活动条，说"无感记录"
-2. **1min 搜索 demo**：Search 页搜"vscode" / "鸣潮" / 上传一张截图反搜，命中
-3. **2min MCP demo**：切到 Claude Code 终端，问"我今天在 TimeTrace 仓库花了多久"，看它 invoke `ask_agent` → 拿到 "约 2 小时 30 分，主要在 worker/loop.py" 类回答
-4. **1min 架构口述**：client/server 分离 + 本地 LLM + 端到端隐私（不出小主机）
-5. **30s 收束**：项目地址 + 余下 TODO 列表
-
----
-
-## **⚠️ 不在 demo sprint 范围**（不删，定位"暂缓"）
-
-- **OCR 管线**（原 P4 隐私核心）— 干完 sprint 再来
-- **隐私模糊重编码**（PrivacyConfig.mode 接消费方）
-- **Postgres / Redis / S3 适配器**（P5）— 数据量 / 体验都不需要
-- **Headless TUI**（P6）— Linux 采集，nice-to-have
-- **ghcr 自动发布 / release CI**（P7）— demo 不展示
-- **token 轮转 / DEPLOY-CHECKLIST.md 清理 / init --non-interactive UX bug** — sprint 间隙塞
-
----
-
-## 重构总体进度（背景）
-
-| 阶段 | 状态 | 还差什么 |
-|---|---|---|
-| P0–P3 工程 / 重组 / 接口 / HTTP / Auth / 部署 | ✅ production verified | — |
-| P4 隐私管线 | ⚠️ 周边硬化；主体 demo 后做 | OCR + 分类 + 模糊（暂缓） |
-| P5 容器化 + 适配器 | ⚠️ 容器化完成；适配器暂缓 | Postgres/Redis/S3 |
-| **P3.5 (新增) 本地 LLM + Embedding + MCP 全链路** | 🟡 **sprint 进行中** | 见上方 Sprint 路线 |
-| P6 Headless TUI | ❌ 暂缓 | — |
-| P7 分发自动化 | ❌ 暂缓 | — |
-
-完整 phase 描述见 [`infra/archive-202605151200-client-server-split-kickoff.md`](infra/archive-202605151200-client-server-split-kickoff.md)。
-
----
-
-## Pivot 决策（2026-05-27 拍板，要回滚就改这里）
+## Pivot 决策（历史，要回滚就改这里）
 
 | # | 决策 | 理由 |
 |---|---|---|
-| 1 | `vlm_desc` **不依赖 VL chat**，改用 35BA3B 读 `window_title + app_name + process_name + url` 生 | LM Studio 仓库无 VL chat 模型；35BA3B 文本能力强；窗口标题信息密度足够；便宜 10× |
-| 2 | 图像理解走 `qwen3-vl-embedding-2b`（不生文字描述，只生向量） | 适合"以图搜图" / 视觉相似度；不需 chat completion 接口 |
+| 1 | `vlm_desc` 不依赖 VL chat，改用 35BA3B 读 `window_title + app_name + process_name + url` 生 | LM Studio 仓库无 VL chat 模型；35BA3B 文本能力强；窗口标题信息密度足够；便宜 10× |
+| 2 | 图像理解走 `qwen3-vl-embedding-2b`（不生文字，只生向量） | 适合以图搜图 / 视觉相似度；不需 chat completion |
 | 3 | 文本检索叠 `nomic-embed-text-v1.5` + FTS5 trigram | 文本向量做语义召回，FTS5 做关键词精确，混合排序 |
-| 4 | 向量库**先用 numpy 内存索引**，不立刻上 sqlite-vec | 当前 records 量（≤100K）暴力 cosine 够快；sqlite-vec 留作"数据量大了再说"。**有时间就直接上 sqlite-vec** |
-| 5 | MCP 新增 `ask_agent` 工具：内部跑 35BA3B agent 自循环 search | 给 Claude Code 一个"高级"接口；外部 agent 看到单次 tool 调用拿自然语言答案，不必自己 orchestration |
-| 6 | Claude Code 端写 skill 引导何时调 search、何时调 ask_agent | 不写 skill 的话，Claude Code 不知道这俩工具存在 |
-
----
-
-## 长期债务（散落各 devlog 提过的）
-
-- ~~**MCP tools.py** stub~~ — sprint Day 3 收
-- **VLM 熔断器盲点**：search 路径只 except VLMError，没走 gate.acquire，VLM 挂了反复打端点（详见 [devlogs/backend/archive-202604300316-vlm-worker-circuit-breaker.md](backend/archive-202604300316-vlm-worker-circuit-breaker.md)）
-- **app_name Unknown 残留**：实测 416 PID 拿到 242 真名（58%），剩 174 是系统进程权限不允；可选 GetClassName / window_title 启发式
-- **BackendClient TYPE_CHECKING 仍 reach into server**：`InProcessBackend` 在类型注解里 import `server/storage/database.Database` + `server/phash_index/index.PHashIndex`。in-process 适配器本质，不是真问题
-- **CLAUDE.md 测试数同步**：曾标 17，实 23 文件 / 261 用例。每次大改后顺手更新
+| 4 | 向量库先用 numpy 内存索引，不立刻上 sqlite-vec | records 量（≤100K）暴力 cosine 够快；数据量大了再上 sqlite-vec |
+| 5 | MCP 增 `ask_agent`：内部跑 35BA3B agent 自循环 search | 给外部 agent 一个"高级"接口，单次 tool 调用拿自然语言答案 |
+| 6 | 分类删 KNN，改 `decide_category` 规则+VLM 加权投票（6 类单级） | 给小固定分类集 KNN 投票弱、需用户持续打标签不划算；VLM 直接选类 + 规则确定性覆盖更稳 |
 
 ---
 
 ## 文档 / 约定（持续维护）
 
-- **devlog 写完不改**：archive 文件是历史快照；纠正/补充另写新 archive
-- **deprecation 警告格式**：`## **⚠️ 一句话标题**`（H2 + 加粗紧贴 emoji），`grep '^## \*\*⚠️' infra/ devlogs/` 可枚举
-- **PLAN.md (本文档) 是滚动的**：每次会话结束 / 阶段完成时更新
-- **小主机 vs 本机 hostname**：小主机 SSH alias = `GTi13-Ultra-2v4G`，云端 = `2v4G`
-- **小主机 archive 索引**：`~/archives/README.md` + 子目录（`LM-Studio/`, `Linux-Setup/` 等）
+- **devlog 写完不改**：`devlogs/**/*.md` 是历史快照；纠正/补充另写新 archive。`infra/` 是活文档可改。
+- **deprecation 警告格式**：`## **⚠️ 一句话标题**`（H2 + 加粗紧贴 emoji），`grep -rn '^## \*\*⚠️' infra/` 可枚举。
+- **PLAN.md（本文档）是滚动的**：每次会话结束 / 阶段完成时更新。
+- **小主机 SSH alias**：内网 `GTi13-Ultra`(192.168.2.105)；中继 `GTi13-Ultra-2v4G`(121.43.33.13) / `GTi13-Ultra-JPVPS`。
 
 ---
 
@@ -203,8 +92,6 @@ LM Studio CLI 用法摘要见 `~/archives/LM-Studio/archive-202605171929-lms-cli
 
 - [`devlogs/README.md`](./README.md) — 所有 devlog archive 索引
 - [`infra/readme.md`](../infra/readme.md) — 架构 wiki 索引
-- [`infra/archive-202605151200-client-server-split-kickoff.md`](infra/archive-202605151200-client-server-split-kickoff.md) — 重构宪法（P0–P7 路线）
+- [`infra/archive...client-server-split-kickoff.md`](infra/archive-202605151200-client-server-split-kickoff.md) — 重构宪法（P0–P7 路线）
+- [`infra/PLAN-REPORT-ACCURACY-FIXES.md`](../infra/PLAN-REPORT-ACCURACY-FIXES.md) — 看板准确性 + pyramid 排期 + box DB 写授权清单
 - [`CLAUDE.md`](../CLAUDE.md) — 项目协作约定速读
-- [`README.md`](../README.md) — 用户向使用流程
-- `D:\archives\TimeTrace-Deployment\` — 私人部署手册（不进 git）
-- 小主机 `~/archives/LM-Studio/archive-202605171929-lms-cli-and-headless.md` — LM Studio 操作 SOP

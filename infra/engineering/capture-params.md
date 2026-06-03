@@ -14,19 +14,23 @@
 | `idle_threshold_s` | **180–300 秒**（3–5 分钟） | idle 判定 | 无键鼠活动超过此阈值则记录 idle_start 事件，停止补帧 |
 | `capture_mode` | `active_window`（默认） | 截图范围 | `active_window` 截活跃窗口；`fullscreen` 截全屏（更大 I/O） |
 
+## **⚠️ `capture_mode=fullscreen` 尚未实装**
+
+Capture Service 当前恒走 `capture_active_window`（`src/timetrace/client/capture/service.py:236`），从不读取 `capture_mode`。该配置项可读写但行为是死的：设成 `fullscreen` 也只会截活跃窗口。上表保留 `fullscreen` 描述记录设计意图，实际全屏采集待后续实装。
+
 ---
 
 ## 当前默认值
 
-`src/timetrace/config.py`：
+`src/timetrace/common/config.py`：
 
 ```python
 @dataclass
 class CaptureConfig:
-    switch_capture_delay_s: float = 1.5  # 切窗后延迟截图（等待 UI 渲染）
     min_capture_interval_s: float = 2.0
     max_capture_interval_s: float = 30.0
     idle_threshold_s: float = 180.0
+    switch_capture_delay_s: float = 1.5  # 切窗后延迟截图（等待 UI 渲染）
     capture_mode: str = "active_window"
 ```
 

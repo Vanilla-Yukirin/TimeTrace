@@ -53,12 +53,14 @@ def should_capture(ctx: CaptureContext, privacy_cfg: PrivacyConfig) -> bool:
 
 "采集活动元数据但不写截图"这档**已经做了**，靠 `PrivacyConfig.store_images`（[`common/config.py`](../../src/timetrace/common/config.py) 默认 `True`）：
 
-- `store_images=False` → capture 的截图分支直接 `return`（[`client/capture/service.py:227`](../../src/timetrace/client/capture/service.py)），record 照常入库但不写截图 / 缩略图到磁盘
+- `store_images=False` → capture 的截图分支先 `mark_pending` 后 `return`（[`client/capture/service.py:229`](../../src/timetrace/client/capture/service.py)），record 照常入库并标 pending，仅跳过截图 / 缩略图写盘
 - 经 `client.toml` 的 `store_images` 字段配置（[`client/core/config.py`](../../src/timetrace/client/core/config.py)）
 
-## **⚠️ DB 级 `privacy_level` 标记未实装**
+## **⚠️ DB 级 `privacy_level` 标记仅为前向占位**
 
-旧文档描述过用 `screenshots.privacy_level='no_image'` 在 DB 里标记隐私级别。**这个 DB 标记没做**：代码里搜不到 `privacy_level` 列 / 任何写入路径。当前的"不存图"是 capture 侧直接不产生 screenshot 行（见上），而不是写一个带 `no_image` 标记的行。要做分级隐私标记需要给 `screenshots` 加列 + 写入路径。
+分级隐私标记的**存储层已就位、是前向占位**：`screenshots` 表有 `privacy_level TEXT NOT NULL DEFAULT 'normal'` 列（[`server/db/sqlite.py:69`](../../src/timetrace/server/db/sqlite.py)），`insert_screenshot(... privacy_level: str = "normal" ...)` 把它写进 INSERT，wire 协议 `ScreenshotSubmission.privacy_level`（[`common/protocol.py:33`](../../src/timetrace/common/protocol.py)）与 backend 透传（[`client/core/backend.py:144`](../../src/timetrace/client/core/backend.py)）都在。
+
+**缺的是上游生产者**：目前没有任何代码写非 `'normal'` 的值，所以这列实际上恒为默认 `normal`。要让它真正承载分级隐私，需要补 OCR / blur 之类产生非 normal 级别的上游。当前的"不存图"走的是另一条路——capture 侧直接不产生 screenshot 行（见上），而不是写一个带特殊 `privacy_level` 标记的行。
 
 ---
 
@@ -100,12 +102,12 @@ token 的生命周期、cookie 属性、CSRF 防护等细节统一在 [登录鉴
 
 ## 日志：标题截断，非脱敏
 
-structlog 日志（[`server/worker/loop.py`](../../src/timetrace/server/worker/loop.py)）对窗口标题做的是**截断到 80 字符**（`window_title[:80]`），**不是脱敏**——截断后的前 80 字符仍是明文标题，会落到 journal/syslog。
+`[:80]` 的窗口标题截断不发生在 worker 日志里，而在**对外文本格式化**：`format_record_for_llm` 给 LLM 喂的单行摘要（[`server/agent/tools.py:84`](../../src/timetrace/server/agent/tools.py)，`window_title[:80]`）与 MCP 输出格式化（[`server/mcp_layer/server.py:89`](../../src/timetrace/server/mcp_layer/server.py)）。这是**截断到 80 字符、不是脱敏**——前 80 字符仍是明文标题，会随 LLM / MCP 上下文带出。
 
-- capture 的 `privacy_skip` 日志只记 `app_name` + `title_len`（标题长度），**不记标题文本、不记触发的关键词**——这一条是真正的脱敏
-- 但 worker / 其它路径打的诊断日志会带截断后的标题明文
+- worker（[`server/worker/loop.py`](../../src/timetrace/server/worker/loop.py)）的 `vlm_done` 日志**不记标题文本**，只记 `chars=len(text)` 描述长度（loop.py:235-241）；完整标题只传给 VLM / `decide_category`，不落日志
+- capture 的隐私命中是静默裸 `return`、**不打任何日志**（[`client/capture/service.py:127`](../../src/timetrace/client/capture/service.py)）；但同一文件的 `window_switch` 日志会记 `window_title[:60]` 截断标题明文（service.py:143），会落到 journal/syslog
 
-所以"日志不含敏感标题"目前**只在 capture 跳过路径成立**；分析路径的标题是截断不是脱敏。日志文件本身的访问控制（journal 权限、`.env` chmod 600）是这里的实际防线。
+所以"日志不含敏感标题"这个结论需要修正——capture 自己的 window_switch 路径就会记截断标题。日志文件本身的访问控制（journal 权限、`.env` chmod 600）是这里的实际防线。
 
 ---
 

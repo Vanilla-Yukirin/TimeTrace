@@ -28,7 +28,7 @@ TimeTrace 把相似检索拆成两条正交通道：
 
 ## 视觉通道：pHash + 按天分桶的 BK-tree
 
-实现位置：`src/timetrace/phash_index/`
+实现位置：`src/timetrace/server/phash_index/`
 
 ### 指纹
 
@@ -58,19 +58,22 @@ TimeTrace 把相似检索拆成两条正交通道：
 
 ---
 
-## 语义通道：VLM 描述 + LIKE（已实装） / FTS5 BM25（待做）
+## 语义通道：VLM 描述 + FTS5 BM25（已实装）
 
 ### 已实装：VLM 描述写入 `analysis_results.vlm_desc`
 
-VLM 为每帧产出**三字段**结构化描述（[src/timetrace/vlm/client.py](../../src/timetrace/vlm/client.py)）：
+VLM 为每帧产出**四字段**结构化描述（[src/timetrace/server/vlm/client.py](../../src/timetrace/server/vlm/client.py)）：
 
 ```python
 {
     "keywords":    list[str],   # 截图中显著可见的文字、应用、产品、人名（≤8）
     "summary":     str,         # ≤30 字画面要点
     "description": str,         # ≤100 字完整描述
+    "category":    str,         # 6 类 enum（work/study/social/entertainment/system/uncategorized）
 }
 ```
+
+`category` 不进 `format_description` 拼接文本，而是喂给 worker 的 `decide_category` 加权投票（VLM 分类与规则分类一起表决出 `category_final`）。
 
 落库前由 `format_description()` 拼成 LIKE-friendly 多行文本：
 
@@ -83,9 +86,24 @@ VLM 为每帧产出**三字段**结构化描述（[src/timetrace/vlm/client.py](
 
 写作规范在 prompt 中由硬约束保证 summary / description **以名词性短语开头**，禁止"该截图…"、"画面显示…"、"这是…" 等元叙述句式——一旦每条描述都含这些高频词，FTS5 的 IDF 会被稀释、LIKE 通道也会出现假命中。
 
-### 当前查询路径：LIKE
+### 当前查询路径：LIKE（仅 by-image 路由残留）
 
-[src/timetrace/api/routes/search.py](../../src/timetrace/api/routes/search.py) 的 `_bm25_search` 目前走 LIKE 兜底（`vlm_desc LIKE '%token%' ESCAPE '\'`），按 `vlm_desc` 命中数粗排。多字段 / per-column 权重在 LIKE 路径上无法表达，但 `format_description` 拼接形态已经把三段拼成一段、LIKE 天然贯穿。
+[src/timetrace/server/api/routes/search.py](../../src/timetrace/server/api/routes/search.py) 的 `_bm25_search` 目前走 LIKE 兜底（`vlm_desc LIKE '%token%' ESCAPE '\'`），按 `vlm_desc` 命中数粗排。多字段 / per-column 权重在 LIKE 路径上无法表达，但 `format_description` 拼接形态已经把多段拼成一段、LIKE 天然贯穿。
+
+注意：这条 LIKE 兜底**仅存于 `/v1/search/by-image` 的 `_bm25_search`**；关键词 / `/v1/records?q=` / MCP 路径都已切到 FTS5 BM25（`records_fts`，见下）。这是当前全仓唯一还在等待迁移到 MATCH 查询的 LIKE 残留。
+
+## **⚠️ 此节计划已被 records_fts(trigram BM25) 取代**
+
+FTS5 BM25 已经落地，但形态与下方原计划不同，落地实况是：
+
+- 倒排索引建在 **`records_fts`**（建在 records 视角，含 `window_title / app_name / process_name / url / vlm_desc` 5 字段），不是 `frames_fts`（[src/timetrace/server/db/sqlite.py](../../src/timetrace/server/db/sqlite.py) `CREATE VIRTUAL TABLE records_fts`）
+- tokenizer 用 **`trigram`**（CJK-friendly，无需 whitespace 切词），**不是 jieba**；中文检索已工作，只是走 trigram 不是分词
+- 排序用 `bm25(records_fts)`（同一查询层内调 FTS5 辅助函数），见 `query_records` 的 `use_fts` 分支
+- per-column 独立权重未实现
+- 此 FTS5 BM25 仅服务关键词 / `/v1/records?q=` / MCP 路径；`/v1/search/by-image` 的 `_bm25_search` 仍是 LIKE 兜底（见上）
+- 触发条件：关键词 ≥3 字走 FTS5 trigram MATCH，<3 字退回多字段 LIKE（trigram 需 3+ 字才能匹配，`_FTS_MIN_LEN=3`）
+
+下面是原始计划（保留作历史）：
 
 ### 计划：FTS5 BM25
 
@@ -102,9 +120,15 @@ VLM 为每帧产出**三字段**结构化描述（[src/timetrace/vlm/client.py](
 
 ---
 
-## 关键词通道：LIKE over window_title + vlm_desc
+## 关键词通道：FTS5 trigram BM25（≥3 字）/ 多字段 LIKE（<3 字）
 
-纯文本关键词（用户在搜索条输入，或 `/v1/records?q=`）走 LIKE 查询，匹配窗口标题与 VLM 描述，元字符 (`%` / `_`) 在入库前转义。此路径对早期无 VLM 数据的库依然可用，用 `window_title` 就能给出有意义的结果。
+纯文本关键词（用户在搜索条输入，或 `/v1/records?q=`）：≥3 字走 **FTS5 trigram BM25**（`records_fts`，覆盖 `window_title / app_name / process_name / url / vlm_desc` 5 字段、`bm25()` 排序），<3 字退回**多字段 LIKE**（同 5 字段，元字符 `%` / `_` 在入库前转义），让 "VS" / "鸣潮" 这类短词仍能命中（trigram 需 3+ 字）。此路径对早期无 VLM 数据的库依然可用，用 `window_title` 就能给出有意义的结果。
+
+---
+
+## 向量通道：文本 embedding 余弦（已实装，未接搜索路由）
+
+embedding 子系统已落地——本地 embserver（`src/timetrace/embserver/`）+ server 端 client（[src/timetrace/server/embedding/client.py](../../src/timetrace/server/embedding/client.py)），融合层 [src/timetrace/server/retrieval.py](../../src/timetrace/server/retrieval.py) 也已写好把关键词通道（FTS5 BM25 / LIKE）与向量通道（vlm_desc 文本 embedding 的余弦）做 RRF 融合的逻辑。但目前**还没有任何搜索路由接入它**：`/v1/search/by-image` 与 `/v1/records?q=` 都未调用 `retrieval.py`，向量通道尚未进入线上检索链路。
 
 ---
 
@@ -118,7 +142,7 @@ RRF(doc) = Σ_{channel c} 1 / (k + rank_c(doc))   # k = 60
 
 - 只看 rank，不看各通道原始分数，天然解决量纲不一致
 - 不命中某通道的条目视为 rank = ∞（贡献 0），不因此被枪毙
-- 实现在 [search.py](../../src/timetrace/api/routes/search.py) 的 `_rrf_merge()`
+- 实现在 [search.py](../../src/timetrace/server/api/routes/search.py) 的 `_rrf_merge()`
 
 ---
 

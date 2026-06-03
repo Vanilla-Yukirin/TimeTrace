@@ -6,16 +6,16 @@
 
 ## 职责
 
-规则 / 反馈引擎（[src/timetrace/server/rules/engine.py](../../src/timetrace/server/rules/engine.py)）把三类异质信号融合成一个最终类别 + 置信度 + 可解释 trace：
+规则 / 反馈引擎（[src/timetrace/server/rules/engine.py](../../src/timetrace/server/rules/engine.py)）把两类异质信号融合成一个最终类别 + 置信度 + 可解释 trace：
 
 - **规则分类**：应用名 / URL 域名 / 标题关键词 → 类别映射（`RuleSet.match`）
-- **融合**：规则 + VLM 建议 + KNN 投票加权汇总（`decide_category`）
+- **融合**：规则 + VLM 建议两层加权汇总（`decide_category`）
 - **可解释性**：输出 `decision_trace`（JSON）供调参与误判排查
-- **反馈闭环（设计中）**：用户确认 / 修改产生高权重样本，回灌 KNN 投票库
+- **反馈记录**：用户确认 / 修改写 feedback 审计行（`category_before` / `category_after`）
 
-## **⚠️ 引擎已实现但当前无调用方**
+## 引擎已接进 Worker
 
-`decide_category()` / `RuleSet` 等函数与数据结构已完整实现并有单测（[tests/test_rules.py](../../tests/test_rules.py)），**但 src 内没有任何生产代码调用它**——Analysis Worker 在 `vlm_done` 之后并不会自动 classify。也就是说：当前流水线 VLM 只产出**描述文本**（写 `vlm_desc`），不产出类别；`analysis_results.category_final` / `decision_trace` 等列存在于 schema 但运行时不被这条引擎写入。下文描述的是**引擎本身的契约**，把它接进 Worker 是 Phase 2 的工作（见末尾 TODO）。
+`decide_category()` / `RuleSet` 已有生产调用方：Analysis Worker 在 `vlm_done` 之前调用 `decide_category(app, url, title, VlmPrediction(...), RuleSet)` 并把结果 `set_category_final` 写库（[server/worker/loop.py:223](../../src/timetrace/server/worker/loop.py)）。VLM 现在产出 `category`（`payload.get("category")`），不再只产描述文本。规则来自 per-app overrides（settings KV）经 `build_ruleset()` 构造（[server/settings/overrides.py:107](../../src/timetrace/server/settings/overrides.py)）。`decision_trace` 仍生成但运行时不持久化（worker 丢弃 `_trace`，只写 `category_final`）。
 
 ---
 
@@ -26,13 +26,6 @@
 class VlmPrediction:
     category: str
     confidence: float
-
-@dataclass
-class KnnNeighbor:
-    category: str
-    distance: float          # 越小越近
-    source: str              # user_edit / user_confirm / rule / vlm / knn
-    confirm_weight: float = 1.0
 
 @dataclass
 class RuleSet:
@@ -50,7 +43,6 @@ class RuleSet:
 def decide_category(
     app: str, url: str | None, title: str,
     vlm_pred: VlmPrediction | None,
-    knn_neighbors: list[KnnNeighbor],
     rules: RuleSet,
 ) -> tuple[str, float, dict]:   # (final_category, confidence, decision_trace)
 ```
@@ -63,11 +55,10 @@ def decide_category(
 | `user_confirm` | 3.0 |
 | `rule` | 2.0 |
 | `vlm` | 1.5（× 模型置信度） |
-| `knn` | 1.0 |
 
 权重写死在 `engine.py::SOURCE_WEIGHTS`，调参集中改一处。
 
-### 三层投票
+### 两层投票
 
 ```python
 votes = {}
@@ -80,16 +71,10 @@ if rule_cat:
 # 2. VLM 建议（票重 = 置信度 × W["vlm"]）
 if vlm_pred:
     _add_vote(votes, vlm_pred.category, vlm_pred.confidence * W["vlm"])
-
-# 3. KNN 邻居（票重 = 距离衰减 × 来源权重 × confirm_weight）
-for nb in knn_neighbors:
-    w = exp(-alpha * nb.distance) * W[nb.source] * nb.confirm_weight
-    _add_vote(votes, nb.category, w)
 ```
 
-- 距离衰减：`_decay(distance, alpha=1.0) = exp(-alpha * distance)`
-- 三层互不互斥，同一类别从多个信号累加票数
-- **空票兜底**：三个信号都没产出时返回 `("uncategorized", 0.0, {"signals": {}})`
+- 两层互不互斥，同一类别从多个信号累加票数
+- **空票兜底**：两个信号都没产出时返回 `("uncategorized", 0.0, {"signals": {}})`
 
 ### 最终置信度
 
@@ -101,44 +86,26 @@ confidence = top1_score / (top1_score + top2_score)
 
 ---
 
-## KNN 邻居从哪来（knn_neighbors 来源）
-
-`decide_category` 把 `knn_neighbors: list[KnnNeighbor]` 当**入参**，引擎自己不查库——构造这批邻居是调用方的责任。两条候选数据通路（接线时二选一或融合，**目前都还没接**）：
-
-- **文本向量近邻**：`analysis_results.text_embedding`（Worker 已落地的 768d float32 BLOB）+ `db.vector_search`（numpy 余弦全表扫，已实装但 search 路由暂未调用）→ 取 top-k，每个邻居的已知类别作为 `KnnNeighbor.category`，余弦距离作为 `distance`
-- **视觉近邻**：pHash BK-tree（采集侧）给出汉明距离近邻
-
-邻居的 `source` 字段决定其票重（用户确认过的邻居比纯 knn 邻居权重高），`confirm_weight` 用于进一步抬高被人工背书的样本——这正是反馈闭环的入口。
-
----
-
 ## decision_trace 格式
 
 `decide_category` 返回的第三个元素，生成但**当前不持久化**（schema 有 `analysis_results.decision_trace TEXT` 列预留，接线后写入）：
 
 ```json
 {
-  "final_category": "学习/自习",
+  "final_category": "study",
   "confidence": 0.82,
   "candidates": [
-    {"cat": "学习/自习", "score": 3.71},
-    {"cat": "娱乐/游戏", "score": 1.25}
+    {"cat": "study", "score": 3.71},
+    {"cat": "entertainment", "score": 1.25}
   ],
   "signals": {
     "rule": {"hit": false, "cat": null},
-    "vlm":  {"cat": "娱乐/游戏", "conf": 0.55},
-    "knn":  {
-      "k": 7,
-      "top_votes": [
-        {"cat": "学习/自习", "w": 3.1},
-        {"cat": "娱乐/游戏", "w": 1.2}
-      ]
-    }
+    "vlm":  {"cat": "entertainment", "conf": 0.55}
   }
 }
 ```
 
-`candidates` 取得分 top5，`signals.knn.top_votes` 取衰减后 top3，便于误判时一眼看出是哪个信号主导了决策。
+`candidates` 取得分 top5，便于误判时一眼看出是哪个信号主导了决策。
 
 ---
 
@@ -153,24 +120,26 @@ if rule.get("title_kw") and rule["title_kw"].lower() in title.lower(): return ru
 ```
 
 - `app` / `title_kw` 大小写不敏感子串匹配；`domain` 子串匹配 URL
-- 规则表期望形如（YAML 仅示意，**当前没有加载器**，`RuleSet()` 默认空表）：
+- 规则表期望形如（YAML 仅示意当前内存形态，**没有 YAML 文件加载器**——见下方"规则来源"）：
 
 ```yaml
 rules:
   - app: "Code"
-    category: "工作/编程"
+    category: "work"
   - app: "Chrome"
     domain: "github.com"
-    category: "工作/编程"
+    category: "work"
   - title_kw: "哔哩哔哩"
-    category: "娱乐/视频"
+    category: "entertainment"
 ```
 
-> 规则表加载 / 配置文件 / 热加载尚未实现——`RuleSet` 是被构造好后作为入参传进 `decide_category` 的，目前生产路径不构造它。
+规则来源：生产路径的 `RuleSet` 来自 settings KV 的 per-app overrides（[server/settings/overrides.py](../../src/timetrace/server/settings/overrides.py)），`build_ruleset()` 把 overrides map 适配成 `RuleSet`，worker 每任务 `load_overrides` 热加载（无需重启）。独立 YAML / JSON 配置文件加载器仍未实现。
 
 ---
 
-## 反馈闭环（设计，Phase 2）
+## **⚠️ 本节已过期：KNN 回灌目标已作废**
+
+KNN 库已不存在，下方"回灌 KNN 投票"这个设计目标本身已作废。现状：`feedback` 路由（[server/api/routes/feedback.py:21](../../src/timetrace/server/api/routes/feedback.py)）只做 **audit-trail**——把 `category_before` / `category_after` 写进 feedback 审计行，不回灌任何投票库。`SOURCE_WEIGHTS` 里 `user_edit` / `user_confirm` 权重保留在表中，但当前没有任何调用方往 `decide_category` 传它们（生产路径只用 rule + vlm 两源）。下方原设计保留作历史参考。
 
 ```
 用户在 UI 修改类别
@@ -187,15 +156,15 @@ feedback 记录 (record_id, old_cat, new_cat, source=user_edit, ts)
 
 ---
 
-## 接线 TODO（Phase 2）
+## 接线状态
 
-| 待办 | 说明 |
+| 项 | 状态 |
 |------|------|
-| Worker 调 `decide_category` | `vlm_done` 后构造 `VlmPrediction` + KNN 邻居 + `RuleSet`，写 `category_final` / `category_suggested` / `decision_trace`（schema 无 `category_source` 列，来源记在 trace 内） |
-| VLM 类别预测 | 当前 VLM 只产描述文本；需让模型额外产出 `category` + `confidence` 才能填 `VlmPrediction` |
-| KNN 邻居查询 | 接 `db.vector_search`（文本向量）/ pHash BK-tree（视觉），构造 `list[KnnNeighbor]` |
-| 规则表加载器 | YAML / JSON 配置 + 热加载，填充 `RuleSet.rules` |
-| 反馈回灌 | feedback 路由 → 更新样本 + 作为高权重邻居参与后续投票 |
+| Worker 调 `decide_category` | ✅ 已实装：`vlm_done` 前构造 `VlmPrediction` + `RuleSet` 调 `decide_category`，写 `category_final`（[server/worker/loop.py:223](../../src/timetrace/server/worker/loop.py)）。`decision_trace` 生成但运行时丢弃（不持久化），schema 也无 `category_source` 列 |
+| VLM 类别预测 | ✅ 已实装：VLM 输出含 `category` enum（`payload.get("category")`），填进 `VlmPrediction`（[server/worker/loop.py:227](../../src/timetrace/server/worker/loop.py)） |
+| 规则表构造 + 热加载 | ✅ 已实装：以 settings KV 的 per-app overrides 形态落地（非 YAML），`build_ruleset()` 构造 `RuleSet`，worker 每任务 `load_overrides` 热加载（[server/settings/overrides.py:107](../../src/timetrace/server/settings/overrides.py)） |
+| 独立 YAML / JSON 规则文件加载器 | 未实现（当前规则只来自 settings KV overrides） |
+| 反馈回灌投票 | 已作废：KNN 库已删除，feedback 仅做审计记录，不回灌任何投票 |
 
 ---
 
