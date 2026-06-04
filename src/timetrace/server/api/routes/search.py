@@ -32,6 +32,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from PIL import Image
 
 from timetrace.common.phash_hash import compute_phash
+from timetrace.server.embedding.client import EmbeddingError
+from timetrace.server.retrieval import reciprocal_rank_fusion
 from timetrace.server.vlm.client import VLMError, format_description
 
 logger = structlog.get_logger(__name__)
@@ -365,5 +367,152 @@ async def search_by_image(
         "items": items,
         "total": len(items),
         "visual_channel": visual_status,
+        "semantic_channel": semantic_status,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Text search: keyword (FTS5 BM25) + semantic (text-embedding cosine) via RRF   #
+# --------------------------------------------------------------------------- #
+
+
+async def _fetch_records_by_ids(db: Any, ids: list[str]) -> dict[str, dict]:
+    """Batch-fetch record rows (vlm_desc / category / first thumb) keyed by id.
+
+    One query, IN-bounded by the caller's fused-candidate cap. Column shape
+    mirrors what /v1/records returns so the frontend renders text-search hits
+    with the same card component.
+    """
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    sql = f"""
+        SELECT r.id AS record_id, r.ts_start, r.ts_end, r.app_name,
+               r.window_title, r.url, a.vlm_desc, a.category_final, s.thumb_path
+        FROM records r
+        LEFT JOIN analysis_results a ON a.record_id = r.id
+        LEFT JOIN (
+            SELECT record_id, MIN(thumb_path) AS thumb_path
+            FROM screenshots WHERE deleted_at IS NULL GROUP BY record_id
+        ) s ON s.record_id = r.id
+        WHERE r.id IN ({placeholders})
+    """
+    async with db.lock:
+        async with db.conn.execute(sql, ids) as cur:
+            rows = await cur.fetchall()
+    return {row["record_id"]: dict(row) for row in rows}
+
+
+@router.get("/search/text")
+async def search_text(
+    request: Request,
+    q: str,
+    start: int | None = None,
+    end: int | None = None,
+    apps: str | None = None,
+    categories: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """Pure-text search fusing a keyword and a semantic channel via RRF.
+
+    - **keyword**: FTS5 trigram + BM25 over the 5 indexed fields (≥3 chars) /
+      multi-field LIKE (<3 chars) — literal substring matching, reusing
+      ``query_records``' own keyword split + ranking.
+    - **semantic**: embed ``q`` with the text-embedding model and rank records
+      by cosine over their stored ``text_embedding`` — surfaces records whose
+      *meaning* is close even when the exact words differ.
+    - fused with Reciprocal Rank Fusion (k=60).
+
+    Degrades to keyword-only when no embedding endpoint is configured
+    (``semantic_channel="unavailable"``) — search still works, just literal.
+    The image-free counterpart to ``/search/by-image``.
+    """
+    db = request.app.state.db
+    q = (q or "").strip()
+    if not q:
+        raise HTTPException(400, "q must not be empty")
+    limit = max(1, min(limit, 200))
+    start_ms = start if start is not None else 0
+    end_ms = end if end is not None else 9_999_999_999_999
+    apps_set = set(_parse_csv(apps) or [])
+    cats_set = set(_parse_csv(categories) or [])
+    fetch = limit * 4  # over-fetch each channel before fusion + post-filter
+
+    # ---- keyword channel (reuse query_records' FTS5/LIKE split + BM25 rank) ----
+    kw_rows = await db.query_records(start_ms, end_ms, limit=fetch, keyword=q, order="desc")
+    keyword_ids = [r["id"] for r in kw_rows]
+
+    # ---- semantic channel (embed query → cosine over text_embedding) ----
+    semantic_ids: list[str] = []
+    semantic_status = "unavailable"
+    embedder = getattr(request.app.state, "embedding_client", None)
+    if embedder is not None:
+        try:
+            qvec = await embedder.embed(q)
+            hits = await db.vector_search(qvec, fetch, start_ms=start_ms, end_ms=end_ms)
+            semantic_ids = [rid for rid, _ in hits]
+            semantic_status = "ok"
+        except EmbeddingError as exc:
+            logger.info("search_text.embed_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("search_text.embed_unexpected", error=str(exc))
+
+    # ---- RRF fuse the two id-rankings ----
+    fused = reciprocal_rank_fusion([keyword_ids, semantic_ids])[:_MAX_FUSED]
+    if not fused:
+        return {
+            "items": [],
+            "total": 0,
+            "keyword_channel": "ok",
+            "semantic_channel": semantic_status,
+        }
+
+    kw_rank = {rid: i + 1 for i, rid in enumerate(keyword_ids)}
+    sem_rank = {rid: i + 1 for i, rid in enumerate(semantic_ids)}
+    meta = await _fetch_records_by_ids(db, [rid for rid, _ in fused])
+
+    # ---- enrich + post-filter, preserving fused order ----
+    items: list[dict] = []
+    for rid, score in fused:
+        row = meta.get(rid)
+        if row is None:
+            continue
+        if apps_set and row["app_name"] not in apps_set:
+            continue
+        if cats_set and row.get("category_final") not in cats_set:
+            continue
+        items.append(
+            {
+                "record_id": rid,
+                "ts_start": row["ts_start"],
+                "ts_end": row.get("ts_end"),
+                "app_name": row["app_name"],
+                "window_title": row["window_title"],
+                "url": row.get("url"),
+                "thumb_path": _strip_thumb(row.get("thumb_path")),
+                "vlm_desc": row.get("vlm_desc"),
+                "category_final": row.get("category_final"),
+                "match": {
+                    "rrf_score": score,
+                    "keyword_rank": kw_rank.get(rid),
+                    "semantic_rank": sem_rank.get(rid),
+                },
+            }
+        )
+        if len(items) >= limit:
+            break
+
+    logger.info(
+        "search.text",
+        q_len=len(q),
+        keyword_hits=len(keyword_ids),
+        semantic=semantic_status,
+        semantic_hits=len(semantic_ids),
+        returned=len(items),
+    )
+    return {
+        "items": items,
+        "total": len(items),
+        "keyword_channel": "ok",
         "semantic_channel": semantic_status,
     }
