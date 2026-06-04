@@ -810,6 +810,75 @@ class SqliteDatabase:
                 rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def query_audit_records(
+        self,
+        start_ms: int = 0,
+        end_ms: int = 9_999_999_999_999,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> list[dict]:
+        """Audit-log feed: newest-first records joined with their analysis row.
+
+        Distinct from :meth:`query_records` (timeline view) on purpose:
+        - DESC by ``(ts_start, id)`` so the newest capture is first and ties are
+          stable (``query_records``' ASC cursor ``r.ts_start > (...)`` is tie-
+          unsafe and wrong-direction for an audit feed).
+        - Selects the analysis state-machine columns (``a.status``, retries,
+          error, vlm_latency, locked_at) plus a screenshot-lag/count subquery so
+          the route can derive per-record status + latencies. ``r.status`` is
+          NOT the source of truth for pipeline state (``claim_next_task`` does
+          not mirror ``processing_vlm`` onto ``records``); ``a.status`` is — so
+          both are returned, aliased apart.
+
+        ``cursor`` is the compound keyset ``"{ts_start}_{id}"`` of the last row
+        of the previous page (ts_start is an int, id a hyphenated uuid → the
+        first ``_`` splits them unambiguously).
+        """
+        conditions = ["r.ts_start BETWEEN ? AND ?"]
+        params: list[Any] = [start_ms, end_ms]
+
+        if cursor:
+            cur_ts_raw, _, cur_id = cursor.partition("_")
+            try:
+                cur_ts = int(cur_ts_raw)
+            except ValueError:
+                cur_ts = None
+            if cur_ts is not None and cur_id:
+                # Strict "older than the cursor row" in DESC order.
+                conditions.append("(r.ts_start < ? OR (r.ts_start = ? AND r.id < ?))")
+                params.extend([cur_ts, cur_ts, cur_id])
+
+        where = " AND ".join(conditions)
+        sql = f"""
+            SELECT
+                r.id, r.client_record_id, r.event_type, r.capture_reason,
+                r.app_name, r.process_name, r.window_title, r.url,
+                r.ts_start, r.ts_end, r.created_at, r.updated_at,
+                r.status                AS record_status,
+                a.status                AS analysis_status,
+                a.category_final, a.category_suggested, a.confidence,
+                a.retry_count, a.next_retry_at, a.error_code, a.error_msg,
+                a.vlm_latency_ms, a.vlm_model, a.locked_at,
+                a.updated_at            AS analysis_updated_at,
+                (a.vlm_desc IS NOT NULL) AS has_desc,
+                length(a.vlm_desc)       AS desc_chars,
+                (SELECT MIN(created_at) FROM screenshots
+                   WHERE record_id = r.id AND deleted_at IS NULL) AS first_shot_at,
+                (SELECT COUNT(*) FROM screenshots
+                   WHERE record_id = r.id AND deleted_at IS NULL) AS screenshot_count
+            FROM records r
+            LEFT JOIN analysis_results a ON a.record_id = r.id
+            WHERE {where}
+            ORDER BY r.ts_start DESC, r.id DESC
+            LIMIT ?
+        """
+        params.append(limit)
+
+        async with self._lock:
+            async with self.conn.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     async def list_apps(self) -> list[dict]:
         """Return distinct app names with record counts, most-used first."""
         async with self._lock:

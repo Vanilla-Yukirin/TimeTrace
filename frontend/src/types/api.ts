@@ -155,6 +155,60 @@ export interface TokenCreated {
   created_at: number | null
 }
 
+/** One row of the audit-log feed (GET /v1/audit/records). Status + latencies +
+ *  flags are DERIVED server-side. A null latency/flag means "unknown / not
+ *  applicable" — several fields stay null until Phase B wires per-stage
+ *  timestamps in the worker (queue_wait_ms, vlm_duration_ms, total_latency_ms,
+ *  confidence, classification_met). */
+export interface AuditRow {
+  id: string
+  client_record_id: string | null
+  single_process: boolean
+  event_type: string
+  capture_reason: string | null
+  app_name: string
+  process_name: string
+  window_title: string
+  url: string | null
+  // times (epoch ms)
+  ts_start: number          // activity / business time (client clock)
+  ts_end: number | null
+  created_at: number        // received / ingest time (server clock)
+  // derived latencies (ms; null = unknown / N/A)
+  ingest_delay_ms: number | null
+  screenshot_lag_ms: number | null
+  activity_duration_ms: number | null
+  queue_wait_ms: number | null
+  vlm_duration_ms: number | null
+  total_latency_ms: number | null
+  // pipeline state
+  status: string            // derived chip: captured|queued|retry_waiting|processing|done|skipped_no_image|labeled|failed
+  record_status: string
+  analysis_status: string | null
+  retry_count: number
+  next_retry_at: number | null
+  error_code: string | null
+  error_msg: string | null
+  // classification
+  category_final: string | null
+  category_suggested: string | null
+  confidence: number | null
+  desc_chars: number | null
+  vlm_model: string | null
+  screenshot_count: number
+  // flags
+  needs_vlm: boolean
+  needs_classification: boolean
+  classification_met: boolean | null
+  completed: boolean
+}
+
+export interface AuditResponse {
+  items: AuditRow[]
+  next_cursor: string | null
+  server_now: number
+}
+
 /** One per-app override: a pinned category (null = don't force one) and/or a
  *  free-text note injected into the AI's prompts as background for that app. */
 export interface AppOverride {

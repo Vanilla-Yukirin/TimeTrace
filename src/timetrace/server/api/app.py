@@ -19,8 +19,8 @@ from timetrace.server.api.deps import (
 from timetrace.server.api.mcp_auth import BearerOnlyMiddleware
 from timetrace.server.api.routes import admin as admin_routes
 from timetrace.server.api.routes import agent as agent_routes
-from timetrace.server.api.routes import auth as auth_routes
 from timetrace.server.api.routes import (
+    audit,
     blob,
     feedback,
     ingest,
@@ -31,6 +31,7 @@ from timetrace.server.api.routes import (
     skill,
     thumbs,
 )
+from timetrace.server.api.routes import auth as auth_routes
 from timetrace.server.auth import make_bearer_dependency
 from timetrace.server.mcp_layer.server import build_mcp_server
 
@@ -120,6 +121,7 @@ def create_app(
     # ``auth=None → ingest open`` pattern below.
     business_deps = [Depends(require_principal)] if users is not None else []
     app.include_router(records.router, prefix="/v1", dependencies=business_deps)
+    app.include_router(audit.router, prefix="/v1", dependencies=business_deps)
     app.include_router(search.router, prefix="/v1", dependencies=business_deps)
     app.include_router(feedback.router, prefix="/v1", dependencies=business_deps)
     app.include_router(agent_routes.router, prefix="/v1", dependencies=business_deps)

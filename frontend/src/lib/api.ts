@@ -1,6 +1,7 @@
 import type {
   ApiRecordDetail,
   AppOverrides,
+  AuditResponse,
   AuthMe,
   CategoriesResponse,
   ChangePasswordRequest,
@@ -103,6 +104,13 @@ export const api = {
 
   getRecord: (id: string) =>
     apiFetch<ApiRecordDetail>(`/v1/records/${encodeURIComponent(id)}`),
+
+  // Audit-log feed: newest-first records + pipeline status/latencies/flags.
+  getAuditRecords: (params: { limit?: number; cursor?: string }) => {
+    const p = new URLSearchParams({ limit: String(params.limit ?? 50) })
+    if (params.cursor) p.set('cursor', params.cursor)
+    return apiFetch<AuditResponse>(`/v1/audit/records?${p}`)
+  },
 
   getCategories: () =>
     apiFetch<CategoriesResponse>('/v1/categories'),
