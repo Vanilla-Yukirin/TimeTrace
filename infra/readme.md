@@ -66,9 +66,9 @@
 | 文件 | 内容 |
 |------|------|
 | [PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) | **总纲（先读）**：分层记忆金字塔 + 薄路由器 agent —— 问题陈述与 token 数学、prior-art 对比、金字塔/agent 设计、子 agent fallback、分阶段路线、评估、风险 |
-| [storage/pyramid-schema.md](storage/pyramid-schema.md) | 支撑 spec：L2 `episodes` / L3-L4 `digests` / `signals` 三表 DDL sketch、`episode_id` 迁移、幂等键与 watermark、回填、删除传播 |
-| [architecture/episode-and-rollup-pipeline.md](architecture/episode-and-rollup-pipeline.md) | 支撑 spec：写时 builder（分段 / rollup / 信号检测）如何挂 worker 状态机与 `bootstrap.serve()` 调度器、降级契约、并发预算 |
-| [architecture/thin-router-agent.md](architecture/thin-router-agent.md) | 支撑 spec：agent 从 raw-reader 重塑为 route→retrieve→light-reason 路由器、6 个分层工具、子 agent map-reduce、MCP 折叠注册消除 drift、前端协同清单 |
+| [storage/pyramid-schema.md](storage/pyramid-schema.md) | 支撑 spec：统一 `summaries` 时间窗级联表（grain 5min/1h/6h/day/week）+ `signals` DDL sketch、压缩率/下钻提示/脱敏字段、幂等键与 watermark、回填、删除传播 |
+| [architecture/episode-and-rollup-pipeline.md](architecture/episode-and-rollup-pipeline.md) | 支撑 spec：写时级联 builder（tumbling 时间窗 rollup / 信号检测）如何挂 worker 状态机与 `bootstrap.serve()` 调度器、降级契约、并发预算 |
+| [architecture/thin-router-agent.md](architecture/thin-router-agent.md) | 支撑 spec：agent 重塑为 route→retrieve→light-reason 路由器、分层工具、自描述结果信封、MCP 多入口引导、子 agent map-reduce、前端协同清单 |
 
 ### 📋 已落地的计划 / 设计（done-doc）
 
