@@ -213,3 +213,7 @@ __marimo__/
 
 # Frontend build output
 frontend-dist/
+
+# Claude Code runtime artifacts (the skills/ + settings are intentionally
+# tracked; only the harness-managed scheduled-task lock is transient).
+.claude/scheduled_tasks.lock
