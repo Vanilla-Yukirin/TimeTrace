@@ -164,6 +164,14 @@ async def get_app_breakdown(db: Database, hours_back: int = 24, top_n: int = 20)
             # Per-record duration is clamped: negative spans floor to 0 and
             # implausible (>5min, sleep/lid-close) spans contribute 0 — see
             # _clamped_dur_sql. Otherwise a single 9h sleep gap dwarfs the day.
+            # Per-record duration is clamped: negative spans floor to 0 and
+            # implausible (>5min, sleep/lid-close) spans contribute 0 — see
+            # _clamped_dur_sql. Otherwise a single 9h sleep gap dwarfs the day.
+            # NOTE: inclusive BETWEEN (end == now) is intentional here; the
+            # summary cascade uses half-open [start,end) for window TILING, but
+            # these hours_back windows end at `now` so the only difference is a
+            # frame captured in the exact query millisecond — which the cascade
+            # still counts in its open current window, so totals agree.
             f"""SELECT app_name,
                       COUNT(*) AS records,
                       SUM({_clamped_dur_sql()}) AS total_ms

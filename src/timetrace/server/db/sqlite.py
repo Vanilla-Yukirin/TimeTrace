@@ -208,6 +208,53 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_username ON auth_sessions(username);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires  ON auth_sessions(expires_at);
+
+-- Memory pyramid: time-window summary cascade (5min → 1h → 6h → day → week).
+-- One self-similar table; `grain` distinguishes the level. Each non-empty
+-- window is one row; higher grains are summary-of-summaries of the grain below.
+-- See infra/storage/pyramid-schema.md + infra/architecture/episode-and-rollup-
+-- pipeline.md. `metrics_json` is pure-SQL (no LLM). description/evaluation/
+-- body_json/embedding are filled by the narrative stage; compression_ratio +
+-- drill_down_hint are the precomputed "information scent" guiding drill-down;
+-- source_hash + source_version drive re-emission (later slices). Window bounds
+-- are derivable from records.ts_start, so NO foreign key on records is needed.
+CREATE TABLE IF NOT EXISTS summaries (
+    id                      TEXT PRIMARY KEY,
+    grain                   TEXT NOT NULL,      -- '5min'|'1h'|'6h'|'day'|'week'
+    scope_key               TEXT NOT NULL,      -- deterministic window key (idempotency)
+    window_start            INTEGER NOT NULL,   -- epoch-ms, business clock (ts_start grid)
+    window_end              INTEGER NOT NULL,
+    day_local               TEXT NOT NULL,      -- 'YYYY-MM-DD' under the 4AM cut
+    description             TEXT,               -- LLM narrative (narrative stage)
+    evaluation              TEXT,               -- LLM appraisal (narrative stage)
+    body_json               TEXT,               -- structured lists (raw_table/key_events/cues/...)
+    metrics_json            TEXT,               -- pure-SQL aggregates, ms (summary/metrics.py)
+    record_count            INTEGER NOT NULL DEFAULT 0,
+    src_tokens              INTEGER,            -- information scent (narrative stage)
+    out_tokens              INTEGER,
+    compression_ratio       REAL,
+    drill_down_hint         TEXT,
+    redacted                INTEGER NOT NULL DEFAULT 0,  -- 1 once narrative is desensitized
+    summary_embedding       BLOB,
+    summary_embedding_model TEXT,
+    status                  TEXT NOT NULL DEFAULT 'pending_summary',  -- queue state
+    locked_at               INTEGER,            -- claim lease (narrative queue)
+    source_version          INTEGER NOT NULL DEFAULT 0,  -- explicit invalidation counter
+    source_hash             TEXT,               -- input fingerprint for re-emission
+    computed_through_ts     INTEGER,            -- watermark (partial-coverage builds)
+    created_at              INTEGER NOT NULL,
+    updated_at              INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_summaries_grain_scope ON summaries(grain, scope_key);
+CREATE INDEX IF NOT EXISTS idx_summaries_grain_ts ON summaries(grain, window_start);
+CREATE INDEX IF NOT EXISTS idx_summaries_day ON summaries(day_local, grain);
+CREATE INDEX IF NOT EXISTS idx_summaries_status ON summaries(status) WHERE status LIKE 'pending_%';
+
+-- Keyword search over summary narratives (mirrors records_fts shape). Populated
+-- by the narrative stage; empty until then.
+CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
+    summary_id UNINDEXED, grain UNINDEXED, description, evaluation, tokenize='trigram'
+);
 """
 
 # Minimum keyword length where trigram FTS5 can match. Below this, we fall back
@@ -297,6 +344,7 @@ class SqliteDatabase:
                 logger.info("database.cap_implausible_record_durations", count=capped)
             # _seed_categories' commit also flushes the heal UPDATE above.
             await self._seed_categories()
+            await self._seed_schema_version()
             logger.info("database.init", path=str(self._cfg.db_path))
 
     async def _migrate(self) -> None:
@@ -1442,6 +1490,117 @@ class SqliteDatabase:
                 await self.conn.commit()
                 logger.info("database.reclaim_stale_tasks", count=count)
         return count
+
+    # ------------------------------------------------------------------ #
+    # Memory pyramid: summary cascade (5min → 1h → 6h → day → week)        #
+    # ------------------------------------------------------------------ #
+
+    async def _seed_schema_version(self) -> None:
+        """Stamp the schema version — a marker, NOT a migration framework.
+
+        Future ALTERs can gate on this integer instead of re-introspecting
+        ``PRAGMA table_info`` every boot. ``INSERT OR IGNORE`` so an existing
+        stamp wins; we never downgrade or rewrite past migrations onto it.
+        Caller holds ``self._lock``.
+        """
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value_json, updated_at) "
+            "VALUES ('schema_version', '1', ?)",
+            (_now_ms(),),
+        )
+        await self.conn.commit()
+
+    async def upsert_summary(
+        self,
+        *,
+        grain: str,
+        scope_key: str,
+        window_start: int,
+        window_end: int,
+        day_local: str,
+        metrics_json: str,
+        record_count: int = 0,
+        status: str = "pending_summary",
+    ) -> str:
+        """Insert/replace a cascade row keyed by ``(grain, scope_key)``.
+
+        Idempotent: re-running the rollup over the same window overwrites the
+        same row (the UNIQUE index makes ``window ⇒ key`` collapse on conflict),
+        so schedule overlap / crash replay never double-counts. ``id`` and
+        ``created_at`` survive updates; ``updated_at`` is bookkeeping only.
+
+        Only the metric/identity columns are written here — the narrative
+        columns (description / evaluation / body_json / *_tokens /
+        compression_ratio / drill_down_hint / summary_embedding) are owned by
+        the LLM narrative stage and left untouched on a metrics rebuild.
+        Returns the row id (new on insert, existing on update).
+        """
+        now = _now_ms()
+        new_id = _new_id()
+        async with self._lock:
+            async with self.conn.execute(
+                """INSERT INTO summaries
+                       (id, grain, scope_key, window_start, window_end, day_local,
+                        metrics_json, record_count, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(grain, scope_key) DO UPDATE SET
+                       window_start = excluded.window_start,
+                       window_end   = excluded.window_end,
+                       day_local    = excluded.day_local,
+                       metrics_json = excluded.metrics_json,
+                       record_count = excluded.record_count,
+                       -- Phase 1: status is always 'pending_summary' so this is a
+                       -- no-op. Phase 2 (narrative consumer): gate this reset on a
+                       -- source_hash change, else a pure metrics rebuild would
+                       -- re-queue an already-narrativized row and lose progress.
+                       status       = excluded.status,
+                       updated_at   = excluded.updated_at
+                   RETURNING id""",
+                (
+                    new_id,
+                    grain,
+                    scope_key,
+                    window_start,
+                    window_end,
+                    day_local,
+                    metrics_json,
+                    record_count,
+                    status,
+                    now,
+                    now,
+                ),
+            ) as cur:
+                row = await cur.fetchone()
+            await self.conn.commit()
+        return row["id"] if row else new_id
+
+    async def get_summary(self, grain: str, scope_key: str) -> dict | None:
+        """Fetch a single cascade row, or None."""
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT * FROM summaries WHERE grain = ? AND scope_key = ?",
+                (grain, scope_key),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_summaries_in_range(
+        self, grain: str, start_ms: int, end_ms: int
+    ) -> list[dict]:
+        """Cascade rows of ``grain`` whose ``window_start`` ∈ ``[start_ms, end_ms)``.
+
+        Half-open + ordered by ``window_start`` so the rollup builder can group a
+        grain's children into their parent windows deterministically.
+        """
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT * FROM summaries "
+                "WHERE grain = ? AND window_start >= ? AND window_start < ? "
+                "ORDER BY window_start",
+                (grain, start_ms, end_ms),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     async def get_category_final(self, record_id: str) -> str | None:
         """Return analysis_results.category_final for a record, or None."""

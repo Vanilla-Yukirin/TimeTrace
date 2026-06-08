@@ -105,6 +105,30 @@ class CaptureConfig:
 
 
 @dataclass
+class RollupConfig:
+    """Tunables for the memory-pyramid time-window summary cascade.
+
+    The cascade rolls L1 frames up through fixed time windows
+    (``5min → 1h → 6h → day → week``); see
+    [infra/storage/pyramid-schema.md] and [infra/architecture/
+    episode-and-rollup-pipeline.md]. Only ``cut_hour`` and the grain ladder
+    are needed for the deterministic *metrics* cascade; narrative / scheduler
+    knobs land alongside the LLM stage.
+
+    ``cut_hour`` is the 4AM-style logical-day boundary (local time): a window's
+    ``day_local`` / ``6h`` / ``day`` / ``week`` alignment anchors here so a
+    late-night session stays on the right day. Kept an integer hour so the
+    ``5min`` / ``1h`` clock grids stay aligned to it.
+    """
+
+    cut_hour: int = 4
+    # Fine → coarse. Mirrors GRAINS in server/summary/windows.py; the builder
+    # walks this order bottom-up (each grain is summary-of-summaries of the
+    # one below). Kept here so deployments could trim the ladder via config.
+    grains: tuple[str, ...] = ("5min", "1h", "6h", "day", "week")
+
+
+@dataclass
 class StorageConfig:
     """Paths for SQLite database and image files."""
 
@@ -215,6 +239,7 @@ class AppConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     worker: WorkerConfig = field(default_factory=WorkerConfig)
+    rollup: RollupConfig = field(default_factory=RollupConfig)
     vlm: VLMConfig | None = field(default_factory=VLMConfig.from_env)
     embedding: EmbeddingConfig | None = field(default_factory=EmbeddingConfig.from_env)
     auth: AuthConfig = field(default_factory=AuthConfig.from_env)
