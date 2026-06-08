@@ -40,6 +40,7 @@ function AuditRowImpl({ row }: { row: AuditRowT }) {
   // Lazily fetch full detail (screenshots + full vlm_desc) only when opened —
   // collapsed rows never load images. Reuses the shared record cache.
   const detail = useRecord(expanded ? row.id : null)
+  const suggestion = suggestionLabel(row)
 
   return (
     <div
@@ -106,7 +107,9 @@ function AuditRowImpl({ row }: { row: AuditRowT }) {
 
         <span style={{ minWidth: 0 }}>
           {row.category_final ? (
-            <CategoryBadge category={row.category_final} confidence={row.confidence} />
+            // confidence intentionally hidden: it's a rule-vs-VLM vote margin,
+            // not a model probability (the trace in detail carries the breakdown).
+            <CategoryBadge category={row.category_final} confidence={null} />
           ) : (
             <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>未分类</span>
           )}
@@ -164,9 +167,10 @@ function AuditRowImpl({ row }: { row: AuditRowT }) {
             />
             <KV label="截图滞后" value={fmtMs(row.screenshot_lag_ms)} />
             <KV label="活动时长" value={fmtMs(row.activity_duration_ms)} />
-            <KV label="队列等待" value={fmtMs(row.queue_wait_ms)} hint="待接线" />
-            <KV label="VLM 耗时" value={fmtMs(row.vlm_duration_ms)} hint="待接线" />
-            <KV label="总延迟" value={fmtMs(row.total_latency_ms)} hint="待接线" />
+            <KV label="队列等待" value={fmtMs(row.queue_wait_ms)} />
+            <KV label="VLM 耗时" value={fmtMs(row.vlm_duration_ms)} />
+            <KV label="总延迟" value={fmtMs(row.total_latency_ms)} hint="收到→分析完" />
+            <KV label="端到端" value={fmtMs(row.end_to_end_ms)} hint="含上传·跨时钟" />
           </Section>
 
           <Section title="管线状态">
@@ -176,11 +180,6 @@ function AuditRowImpl({ row }: { row: AuditRowT }) {
             <KV label="需要 VLM" value={yesNo(row.needs_vlm)} />
             <KV label="需要分类" value={yesNo(row.needs_classification)} />
             <KV label="已完成" value={yesNo(row.completed)} />
-            <KV
-              label="分类达标"
-              value={row.classification_met == null ? '—' : yesNo(row.classification_met)}
-              hint={row.classification_met == null ? '待接线' : undefined}
-            />
             {row.retry_count > 0 && <KV label="重试次数" value={String(row.retry_count)} />}
             {row.next_retry_at != null && (
               <KV label="下次重试" value={fullTime(row.next_retry_at)} mono />
@@ -190,16 +189,8 @@ function AuditRowImpl({ row }: { row: AuditRowT }) {
 
           <Section title="分类 / 内容">
             <KV label="最终分类" value={row.category_final ?? '—'} />
-            <KV
-              label="VLM 建议"
-              value={row.category_suggested ?? '—'}
-              hint={row.category_suggested == null ? '待接线' : undefined}
-            />
-            <KV
-              label="置信度"
-              value={row.confidence == null ? '—' : `${Math.round(row.confidence * 100)}%`}
-              hint={row.confidence == null ? '待接线' : undefined}
-            />
+            <KV label="VLM 建议" value={suggestion.text} muted={suggestion.muted} />
+            <TraceKV trace={row.decision_trace} />
             <KV label="描述字数" value={row.desc_chars == null ? '—' : String(row.desc_chars)} />
             <KV label="VLM 模型" value={row.vlm_model ?? '—'} mono />
             <KV label="截图数" value={String(row.screenshot_count)} />
@@ -220,6 +211,61 @@ function AuditRowImpl({ row }: { row: AuditRowT }) {
 
 function yesNo(b: boolean): string {
   return b ? '是' : '否'
+}
+
+/** Label for the "VLM 建议" row: VLM's raw pick → final. Only attribute the
+ *  change to a rule when the decision_trace actually shows a rule hit matching
+ *  the final — a user/agent feedback edit changes category_final WITHOUT a rule
+ *  (and leaves the trace untouched), so fall back to neutral "改为" rather than
+ *  wrongly blaming a rule. */
+function suggestionLabel(row: AuditRowT): { text: string; muted: boolean } {
+  const sug = row.category_suggested
+  if (sug == null) return { text: '—', muted: true }
+  if (sug === row.category_final) return { text: sug, muted: false }
+  let byRule = false
+  if (row.decision_trace) {
+    try {
+      const t = JSON.parse(row.decision_trace) as TraceData
+      byRule = Boolean(t.signals?.rule?.hit) && t.signals?.rule?.cat === row.category_final
+    } catch {
+      // malformed trace → neutral wording
+    }
+  }
+  const verb = byRule ? '规则改成' : '改为'
+  return { text: `${sug} → ${verb} ${row.category_final}`, muted: false }
+}
+
+interface TraceData {
+  candidates?: { cat: string; score: number }[]
+  signals?: {
+    rule?: { hit?: boolean; cat?: string | null }
+    vlm?: { cat?: string; conf?: number } | null
+  }
+}
+
+/** Render the decide_category vote breakdown (decision_trace JSON) as one row:
+ *  which source voted what + the candidate scores. Falls back gracefully. */
+function TraceKV({ trace }: { trace: string | null }) {
+  if (!trace) return <KV label="投票明细" value="—" muted />
+  let parsed: TraceData
+  try {
+    parsed = JSON.parse(trace) as TraceData
+  } catch {
+    return <KV label="投票明细" value={trace} mono />
+  }
+  const sig = parsed.signals ?? {}
+  const ruleTxt = sig.rule?.hit ? `规则命中→${sig.rule.cat}` : '规则未命中'
+  const vlmTxt = sig.vlm?.cat ? `VLM→${sig.vlm.cat}` : 'VLM 无'
+  const cands = (parsed.candidates ?? []).map((c) => `${c.cat} ${c.score}`).join(' · ')
+  return (
+    <div style={{ display: 'flex', gap: 8, fontSize: 12, lineHeight: 1.5 }}>
+      <span style={{ color: 'var(--text-muted)', flexShrink: 0, minWidth: 76 }}>投票明细</span>
+      <span style={{ flex: 1, minWidth: 0, color: 'var(--text-secondary)', wordBreak: 'break-word' }}>
+        {ruleTxt} · {vlmTxt}
+        {cands && <span style={{ color: 'var(--text-muted)' }}>（候选 {cands}）</span>}
+      </span>
+    </div>
+  )
 }
 
 function FlagChips({ row }: { row: AuditRowT }) {

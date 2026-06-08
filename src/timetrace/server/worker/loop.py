@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -202,6 +203,7 @@ class AnalysisWorker:
         overrides = await load_overrides(self._db)
         app_name = meta.get("app_name") or ""
 
+        vlm_t0 = time.monotonic()
         try:
             payload = await self._vlm.describe(
                 image,
@@ -212,24 +214,40 @@ class AnalysisWorker:
             await self._gate.report_failure()
             await self._fail(record_id, retry_count, str(exc))
             return
+        # monotonic clock for the duration (immune to wall-clock adjustments);
+        # the queued_at/done_at *timestamps* stay on _now_ms() wall time.
+        vlm_latency_ms = int((time.monotonic() - vlm_t0) * 1000)
 
         await self._gate.report_success()
         text = format_description(payload)
-        await self._db.save_description(record_id, text)
+        await self._db.save_description(
+            record_id,
+            text,
+            vlm_model=getattr(self._vlm, "model", None),
+            vlm_latency_ms=vlm_latency_ms,
+        )
 
         # Classification: a user rule (if any) deterministically outvotes the
         # VLM's pick (rule weight 2.0 > vlm 1.5); with no matching rule the VLM's
         # chosen category wins. Rules come from the per-app overrides setting.
-        final_cat, _conf, _trace = decide_category(
+        # Persist the VLM's raw pick (category_suggested) + the vote breakdown
+        # (decision_trace) so the audit feed can show "VLM said X → rule → Y"
+        # and the pyramid rollup can reuse them.
+        suggested = payload.get("category") or "uncategorized"
+        final_cat, confidence, trace = decide_category(
             app=app_name,
             url=meta.get("url"),
             title=meta.get("window_title") or "",
-            vlm_pred=VlmPrediction(
-                category=payload.get("category") or "uncategorized", confidence=1.0
-            ),
+            vlm_pred=VlmPrediction(category=suggested, confidence=1.0),
             rules=build_ruleset(overrides),
         )
-        await self._db.set_category_final(record_id, final_cat)
+        await self._db.set_category_final(
+            record_id,
+            final_cat,
+            category_suggested=suggested,
+            confidence=confidence,
+            decision_trace=json.dumps(trace, ensure_ascii=False),
+        )
 
         await self._db.transition(record_id, "vlm_done")
         logger.info(

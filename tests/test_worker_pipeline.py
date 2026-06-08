@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ class _StubVLM:
         self.payload = payload
         self.error = error
         self.calls = 0
+        self.model = "stub-vlm"  # worker reads self._vlm.model for the vlm_model column
 
     async def describe(
         self,
@@ -105,7 +107,10 @@ async def test_worker_writes_description_on_success(db, tmp_path):
     await worker._handle_one(task, worker_id=0)
 
     async with db.conn.execute(
-        "SELECT vlm_desc, status, category_final FROM analysis_results WHERE record_id=?", (rid,)
+        "SELECT vlm_desc, status, category_final, vlm_model, vlm_latency_ms, "
+        "category_suggested, confidence, decision_trace, queued_at, done_at "
+        "FROM analysis_results WHERE record_id=?",
+        (rid,),
     ) as cur:
         row = await cur.fetchone()
     assert row["status"] == "vlm_done"
@@ -115,6 +120,14 @@ async def test_worker_writes_description_on_success(db, tmp_path):
     assert "关键词：k" in row["vlm_desc"]
     # The VLM's chosen category is persisted as category_final (no rule → VLM wins).
     assert row["category_final"] == "work"
+    # Phase B: stage timestamps + classification provenance now persisted.
+    assert row["vlm_model"] == "stub-vlm"
+    assert row["vlm_latency_ms"] is not None and row["vlm_latency_ms"] >= 0
+    assert row["category_suggested"] == "work"  # VLM's raw pick (before any rule)
+    assert row["confidence"] is not None
+    assert json.loads(row["decision_trace"])["final_category"] == "work"
+    assert row["queued_at"] is not None  # set by _seed_pending → mark_pending
+    assert row["done_at"] is not None  # set by transition → vlm_done
 
 
 # --------------------------------------------------------------------------- #

@@ -99,7 +99,14 @@ CREATE TABLE IF NOT EXISTS analysis_results (
     -- vlm_done rows. Dimensionality set by EmbeddingConfig.dim (768 for
     -- nomic-embed-v1.5); search-side numpy decode assumes float32.
     text_embedding      BLOB,
-    text_embedding_model TEXT
+    text_embedding_model TEXT,
+    -- Pipeline stage timestamps (epoch ms, nullable). queued_at = when (re)
+    -- enqueued to pending_vlm; done_at = when transitioned to vlm_done. NULL on
+    -- rows created before this migration (the moments are gone, no backfill) →
+    -- the audit feed shows "—". Drive queue-wait / total-latency; reused by the
+    -- memory-pyramid rollup later.
+    queued_at           INTEGER,
+    done_at             INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_analysis_status ON analysis_results(status);
@@ -332,6 +339,17 @@ class SqliteDatabase:
                 "database.migrate",
                 added_column="analysis_results.text_embedding_model",
             )
+        # Pipeline stage timestamps — added for the audit feed (queue-wait /
+        # total-latency) + reused by the memory-pyramid rollup. Existing rows
+        # stay NULL (the moments already passed); only new records get values.
+        if "queued_at" not in ar_cols:
+            await self._conn.execute("ALTER TABLE analysis_results ADD COLUMN queued_at INTEGER")
+            await self._conn.commit()
+            logger.info("database.migrate", added_column="analysis_results.queued_at")
+        if "done_at" not in ar_cols:
+            await self._conn.execute("ALTER TABLE analysis_results ADD COLUMN done_at INTEGER")
+            await self._conn.commit()
+            logger.info("database.migrate", added_column="analysis_results.done_at")
 
         # Backfill the (record_id, hash_sha256) UNIQUE for DBs created before
         # the dedup work in P3a-cleanup. Idempotent; the index uses IF NOT EXISTS.
@@ -630,8 +648,9 @@ class SqliteDatabase:
         async with self._lock:
             await self.conn.execute(
                 """INSERT OR IGNORE INTO analysis_results
-                   (record_id, status, updated_at) VALUES (?, 'pending_vlm', ?)""",
-                (record_id, now),
+                   (record_id, status, updated_at, queued_at)
+                   VALUES (?, 'pending_vlm', ?, ?)""",
+                (record_id, now, now),
             )
             await self.conn.execute(
                 "UPDATE records SET status='pending_vlm', updated_at=?"
@@ -663,9 +682,9 @@ class SqliteDatabase:
             async with self.conn.execute(
                 """UPDATE analysis_results
                    SET status='pending_vlm', locked_at=NULL, next_retry_at=NULL,
-                       updated_at=?
+                       queued_at=?, updated_at=?
                    WHERE record_id=? AND status='vlm_done' AND vlm_desc IS NULL""",
-                (now, record_id),
+                (now, now, record_id),
             ) as cur:
                 changed = cur.rowcount > 0
             if changed:
@@ -859,6 +878,7 @@ class SqliteDatabase:
                 a.category_final, a.category_suggested, a.confidence,
                 a.retry_count, a.next_retry_at, a.error_code, a.error_msg,
                 a.vlm_latency_ms, a.vlm_model, a.locked_at,
+                a.queued_at, a.done_at, a.decision_trace,
                 a.updated_at            AS analysis_updated_at,
                 (a.vlm_desc IS NOT NULL) AS has_desc,
                 length(a.vlm_desc)       AS desc_chars,
@@ -1079,9 +1099,10 @@ class SqliteDatabase:
                        retry_count=?,
                        next_retry_at=?,
                        locked_at=NULL,
+                       queued_at=?,
                        updated_at=?
                    WHERE record_id=?""",
-                (error_msg, retry_count, next_retry_at, now, record_id),
+                (error_msg, retry_count, next_retry_at, now, now, record_id),
             )
             await self.conn.execute(
                 "UPDATE records SET status='pending_vlm', updated_at=? WHERE id=?",
@@ -1089,12 +1110,21 @@ class SqliteDatabase:
             )
             await self.conn.commit()
 
-    async def save_description(self, record_id: str, desc: str) -> None:
+    async def save_description(
+        self,
+        record_id: str,
+        desc: str,
+        *,
+        vlm_model: str | None = None,
+        vlm_latency_ms: int | None = None,
+    ) -> None:
         now = _now_ms()
         async with self._lock:
             async with self.conn.execute(
-                "UPDATE analysis_results SET vlm_desc=?, updated_at=? WHERE record_id=?",
-                (desc, now, record_id),
+                "UPDATE analysis_results "
+                "SET vlm_desc=?, vlm_model=?, vlm_latency_ms=?, updated_at=? "
+                "WHERE record_id=?",
+                (desc, vlm_model, vlm_latency_ms, now, record_id),
             ) as cur:
                 rows_updated = cur.rowcount
             # Sync vlm_desc into FTS index so subsequent searches can hit it.
@@ -1206,10 +1236,20 @@ class SqliteDatabase:
     async def transition(self, record_id: str, new_status: str) -> None:
         now = _now_ms()
         async with self._lock:
-            await self.conn.execute(
-                "UPDATE analysis_results SET status=?, updated_at=? WHERE record_id=?",
-                (new_status, now, record_id),
-            )
+            if new_status == "vlm_done":
+                # Stamp completion time on the terminal-success state (real
+                # describe OR no-image skip). A re-enqueue→vlm_done overwrites it
+                # with the latest completion — what total-latency wants.
+                await self.conn.execute(
+                    "UPDATE analysis_results SET status=?, updated_at=?, done_at=? "
+                    "WHERE record_id=?",
+                    (new_status, now, now, record_id),
+                )
+            else:
+                await self.conn.execute(
+                    "UPDATE analysis_results SET status=?, updated_at=? WHERE record_id=?",
+                    (new_status, now, record_id),
+                )
             await self.conn.execute(
                 "UPDATE records SET status=?, updated_at=? WHERE id=?",
                 (new_status, now, record_id),
@@ -1387,10 +1427,14 @@ class SqliteDatabase:
             count = 0
             for row in rows:
                 pending_status = _processing_to_pending(row["status"])
+                # Refresh queued_at so queue_wait_ms measures the post-reclaim
+                # wait, not the crash window — matches the other re-enqueue paths
+                # (mark_error_retryable / requeue_skipped_for_vlm) and the
+                # "(re)enqueued to pending_vlm" contract on the column.
                 await self.conn.execute(
                     "UPDATE analysis_results"
-                    " SET status=?, locked_at=NULL, updated_at=? WHERE record_id=?",
-                    (pending_status, now, row["record_id"]),
+                    " SET status=?, locked_at=NULL, queued_at=?, updated_at=? WHERE record_id=?",
+                    (pending_status, now, now, row["record_id"]),
                 )
                 count += 1
 
@@ -1409,7 +1453,15 @@ class SqliteDatabase:
                 row = await cur.fetchone()
         return row["category_final"] if row else None
 
-    async def set_category_final(self, record_id: str, category: str) -> None:
+    async def set_category_final(
+        self,
+        record_id: str,
+        category: str,
+        *,
+        category_suggested: str | None = None,
+        confidence: float | None = None,
+        decision_trace: str | None = None,
+    ) -> None:
         """Authoritatively set ``category_final``, creating the analysis row if
         the worker hasn't processed this record yet.
 
@@ -1417,16 +1469,29 @@ class SqliteDatabase:
         that has no VLM analysis row. We seed the row as ``vlm_done`` on first
         touch so the worker queue (which claims ``pending_vlm``) won't re-process
         and clobber the manual label; rows that already exist keep their status.
+
+        The worker passes ``category_suggested`` (the VLM's raw pick before any
+        rule override), ``confidence`` and ``decision_trace`` (the vote breakdown
+        from ``decide_category``). Manual labels pass none of these → the
+        ``COALESCE`` keeps any existing VLM trace instead of nulling it, so a
+        user relabel still shows "VLM said X, you set Y".
         """
         now = _now_ms()
         async with self._lock:
             await self.conn.execute(
-                """INSERT INTO analysis_results (record_id, category_final, status, updated_at)
-                   VALUES (?, ?, 'vlm_done', ?)
+                """INSERT INTO analysis_results
+                       (record_id, category_final, category_suggested, confidence,
+                        decision_trace, status, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'vlm_done', ?)
                    ON CONFLICT(record_id) DO UPDATE SET
                        category_final = excluded.category_final,
+                       category_suggested =
+                           COALESCE(excluded.category_suggested, category_suggested),
+                       confidence = COALESCE(excluded.confidence, confidence),
+                       decision_trace =
+                           COALESCE(excluded.decision_trace, decision_trace),
                        updated_at = excluded.updated_at""",
-                (record_id, category, now),
+                (record_id, category, category_suggested, confidence, decision_trace, now),
             )
             await self.conn.commit()
 

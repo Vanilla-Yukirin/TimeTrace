@@ -156,10 +156,11 @@ export interface TokenCreated {
 }
 
 /** One row of the audit-log feed (GET /v1/audit/records). Status + latencies +
- *  flags are DERIVED server-side. A null latency/flag means "unknown / not
- *  applicable" — several fields stay null until Phase B wires per-stage
- *  timestamps in the worker (queue_wait_ms, vlm_duration_ms, total_latency_ms,
- *  confidence, classification_met). */
+ *  flags are DERIVED server-side. New records carry real per-stage latencies
+ *  (queue_wait/vlm_duration/total_latency/end_to_end) + classification
+ *  provenance (category_suggested/confidence/decision_trace); a null latency
+ *  means the record predates the stage-timestamp migration (no backfill
+ *  possible) → the UI renders "—". */
 export interface AuditRow {
   id: string
   client_record_id: string | null
@@ -181,6 +182,7 @@ export interface AuditRow {
   queue_wait_ms: number | null
   vlm_duration_ms: number | null
   total_latency_ms: number | null
+  end_to_end_ms: number | null
   // pipeline state
   status: string            // derived chip: captured|queued|retry_waiting|processing|done|skipped_no_image|labeled|failed
   record_status: string
@@ -193,13 +195,13 @@ export interface AuditRow {
   category_final: string | null
   category_suggested: string | null
   confidence: number | null
+  decision_trace: string | null
   desc_chars: number | null
   vlm_model: string | null
   screenshot_count: number
   // flags
   needs_vlm: boolean
   needs_classification: boolean
-  classification_met: boolean | null
   completed: boolean
 }
 

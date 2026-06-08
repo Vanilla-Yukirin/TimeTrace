@@ -8,6 +8,7 @@ status / latency / flag fields. No worker, no network — just the DB + route.
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -173,11 +174,11 @@ async def test_audit_status_taxonomy(db):
     assert rows[r_label]["status"] == "labeled"
     assert rows[r_label]["category_final"] == "study"
 
-    # Phase-A invariants: not-yet-wired fields are explicitly null everywhere.
-    for row in rows.values():
-        assert row["classification_met"] is None
-        assert row["queue_wait_ms"] is None
-        assert row["total_latency_ms"] is None
+    # Phase-B contract: the meaningless 达标 flag is dropped; new fields present.
+    sample = rows[r_done]
+    assert "classification_met" not in sample
+    assert "decision_trace" in sample
+    assert "end_to_end_ms" in sample
 
 
 async def test_audit_single_vs_dual_process(db):
@@ -229,3 +230,61 @@ async def test_audit_keyset_pagination(db):
 
     assert seen == newest_first  # full coverage, DESC, no overlap/dupes
     assert cursor is None  # terminal page had < limit rows → no next cursor
+
+
+async def test_audit_phase_b_fields(db):
+    """A record driven through the new write paths surfaces real latencies +
+    classification provenance in the audit feed."""
+    rid = await db.insert_record(_ctx(title="full"), reason="heartbeat")
+    await db.insert_screenshot(
+        record_id=rid,
+        path="screenshots/z.png",
+        thumb_path=None,
+        width=1,
+        height=1,
+        hash_sha256="hz",
+    )
+    await db.mark_pending(rid)  # queued_at
+    claimed = await db.claim_next_task("pending_vlm")  # locked_at
+    assert claimed is not None and claimed["record_id"] == rid
+    trace = {
+        "final_category": "work",
+        "confidence": 0.571,
+        "candidates": [{"cat": "work", "score": 2.0}, {"cat": "social", "score": 1.5}],
+        "signals": {"rule": {"hit": True, "cat": "work"}, "vlm": {"cat": "social", "conf": 1.0}},
+    }
+    await db.save_description(rid, "a desc", vlm_model="m-1", vlm_latency_ms=1234)
+    await db.set_category_final(
+        rid, "work", category_suggested="social", confidence=0.571, decision_trace=json.dumps(trace)
+    )
+    await db.transition(rid, "vlm_done")  # done_at
+
+    app = create_app(db)
+    with TestClient(app) as client:
+        row = _by_id(_audit(client)["items"])[rid]
+
+    assert row["vlm_duration_ms"] == 1234
+    assert row["vlm_model"] == "m-1"
+    assert row["queue_wait_ms"] is not None and row["queue_wait_ms"] >= 0
+    assert row["total_latency_ms"] is not None  # done_at − created_at
+    assert row["end_to_end_ms"] is not None  # done_at − ts_start
+    assert row["category_suggested"] == "social"
+    assert row["category_final"] == "work"
+    assert row["confidence"] == 0.571
+    assert row["decision_trace"] is not None
+    assert json.loads(row["decision_trace"])["signals"]["rule"]["cat"] == "work"
+    assert "classification_met" not in row  # the meaningless 达标 flag is gone
+
+
+async def test_audit_old_record_has_null_latencies(db):
+    """A record that never hit the new write paths shows null latencies/trace
+    (no backfill — honest '—' in the UI), and the keys still exist."""
+    rid = await db.insert_record(_ctx(title="old"), reason="heartbeat")
+    app = create_app(db)
+    with TestClient(app) as client:
+        row = _by_id(_audit(client)["items"])[rid]
+    assert row["queue_wait_ms"] is None
+    assert row["vlm_duration_ms"] is None
+    assert row["total_latency_ms"] is None
+    assert row["end_to_end_ms"] is None
+    assert row["decision_trace"] is None

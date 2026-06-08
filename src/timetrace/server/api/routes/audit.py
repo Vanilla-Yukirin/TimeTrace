@@ -76,6 +76,12 @@ def _shape_row(row: dict, now: int) -> dict:
     ts_end = row["ts_end"]
     created_at = row["created_at"]
     first_shot_at = row["first_shot_at"]
+    queued_at = row["queued_at"]
+    done_at = row["done_at"]
+    locked_at = row["locked_at"]
+    queue_wait_ms = (
+        locked_at - queued_at if locked_at is not None and queued_at is not None else None
+    )
 
     # In single-process mode capture and ingest are the same instant
     # (insert_record sets ts_start == created_at), and client_record_id is NULL.
@@ -130,9 +136,13 @@ def _shape_row(row: dict, now: int) -> dict:
         "ingest_delay_ms": None if single_process else created_at - ts_start,
         "screenshot_lag_ms": (first_shot_at - created_at) if first_shot_at is not None else None,
         "activity_duration_ms": (ts_end - ts_start) if ts_end is not None else None,
-        "queue_wait_ms": None,  # Phase B (no queued_at stamp yet)
-        "vlm_duration_ms": row["vlm_latency_ms"],  # column exists; NULL until worker writes it
-        "total_latency_ms": None,  # Phase B (no done_at; updated_at is polluted)
+        "queue_wait_ms": queue_wait_ms,  # locked_at − queued_at (claim − enqueue)
+        "vlm_duration_ms": row["vlm_latency_ms"],  # describe() wall time
+        # done_at − created_at: server-side ingest→analysis time (single clock).
+        "total_latency_ms": (done_at - created_at) if done_at is not None else None,
+        # done_at − ts_start: end-to-end incl. upload; cross client/server clock
+        # so it can skew slightly — detail-panel only, labeled there.
+        "end_to_end_ms": (done_at - ts_start) if done_at is not None else None,
         # pipeline state
         "status": status,
         "record_status": row["record_status"],
@@ -144,14 +154,17 @@ def _shape_row(row: dict, now: int) -> dict:
         # classification
         "category_final": category_final,
         "category_suggested": row["category_suggested"],
-        "confidence": row["confidence"],  # NULL until Phase B wires it
+        # confidence is a rule-vs-VLM vote-margin (1.0 = agreement/single source,
+        # ~0.57 = a rule overrode a disagreeing VLM), NOT a model probability —
+        # kept as data (the trace carries the full breakdown), not shown as 达标.
+        "confidence": row["confidence"],
+        "decision_trace": row["decision_trace"],  # JSON str: candidates + signals
         "desc_chars": row["desc_chars"],
         "vlm_model": vlm_model,
         "screenshot_count": row["screenshot_count"] or 0,
         # flags
         "needs_vlm": needs_vlm,
         "needs_classification": needs_classification,
-        "classification_met": None,  # Phase B (needs confidence persisted)
         "completed": completed,
     }
 
