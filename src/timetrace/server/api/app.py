@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from timetrace.common.config import AuthConfig, StorageConfig, VLMConfig
     from timetrace.server.auth import ServerAuth
     from timetrace.server.db import Database
+    from timetrace.server.embedding.client import EmbeddingClient
     from timetrace.server.phash_index.index import PHashIndex
     from timetrace.server.storage.blob import BlobStorage
     from timetrace.server.users import UserStore
@@ -57,6 +58,7 @@ def create_app(
     vlm_cfg: VLMConfig | None = None,
     users: UserStore | None = None,
     auth_cfg: AuthConfig | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> FastAPI:
     # Build MCP first so we can wire its session manager into FastAPI lifespan.
     # FastMCP's streamable_http_app() needs the session manager's anyio task
@@ -91,6 +93,7 @@ def create_app(
     app.state.users = users
     app.state.auth_cfg = auth_cfg
     app.state.vlm_cfg = vlm_cfg
+    app.state.embedding_client = embedding_client
     if storage_cfg is not None:
         app.state.data_dir = str(storage_cfg.data_dir)
         # Materialise the dir up front (first-run has no screenshots yet);

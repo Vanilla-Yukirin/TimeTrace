@@ -137,6 +137,7 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
         vlm_cfg=config.vlm,
         users=users,
         auth_cfg=config.auth,
+        embedding_client=embedding_client,
     )
     app.state.api_host = config.api_host
     app.state.api_port = config.api_port
