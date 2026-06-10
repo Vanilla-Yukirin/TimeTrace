@@ -250,3 +250,34 @@ async def test_rebuild_reflects_relabel(db):
     await builder.build_day(_ms(2099, 6, 9, 9, 0))
     after = json.loads((await db.get_summary("day", "2099-06-09"))["metrics_json"])
     assert after["cat_ms"] == {"study": 120_000}
+
+
+async def test_build_recent_skips_the_open_window(db):
+    """build_recent builds up to the last CLOSED 5min boundary; the still-open
+    window (the one containing `now`) is excluded — it'd just be redone next tick."""
+    now = _ms(2099, 6, 9, 9, 2, 30)  # inside the open window [09:00, 09:05)
+    await _add(db, _ms(2099, 6, 9, 8, 58), 60_000, "Code", "work")  # closed [08:55,09:00)
+    await _add(db, _ms(2099, 6, 9, 9, 1), 60_000, "Chrome", "entertainment")  # OPEN window
+    builder = MetricsCascadeBuilder(db, RollupConfig())  # 36h lookback covers 08:58
+    await builder.build_recent(now)
+    assert await db.get_summary("5min", "2099-06-09T08:55") is not None
+    assert await db.get_summary("5min", "2099-06-09T09:00") is None  # open → not built
+
+
+async def test_backfill_builds_each_day_in_range(db):
+    for day in (7, 8, 9):
+        await _add(db, _ms(2099, 6, day, 10, 0), 60_000, "Code", "work")
+    builder = MetricsCascadeBuilder(db, RollupConfig())
+    start = window_bounds(_ms(2099, 6, 7, 10, 0), "day", CUT)[0]
+    end = window_bounds(_ms(2099, 6, 9, 10, 0), "day", CUT)[1]
+    n = await builder.backfill(start, end)
+    assert n == 3
+    for d in ("2099-06-07", "2099-06-08", "2099-06-09"):
+        assert await db.get_summary("day", d) is not None
+
+
+async def test_rollup_config_gate_defaults_off(monkeypatch):
+    monkeypatch.delenv("TIMETRACE_ROLLUP_ENABLED", raising=False)
+    assert RollupConfig.from_env().enabled is False
+    monkeypatch.setenv("TIMETRACE_ROLLUP_ENABLED", "1")
+    assert RollupConfig.from_env().enabled is True

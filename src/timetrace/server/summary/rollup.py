@@ -21,6 +21,7 @@ usable by pure-SQL stats.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,7 @@ from timetrace.server.summary.windows import (
     CHILD_OF,
     GRAINS,
     day_local,
+    iter_window_starts,
     scope_key,
     window_bounds,
 )
@@ -79,6 +81,43 @@ class MetricsCascadeBuilder:
         """Build the whole cascade for the logical day containing ``ts_in_day_ms``."""
         day_start, day_end = window_bounds(ts_in_day_ms, "day", self._cfg.cut_hour)
         return await self.build_range(day_start, day_end)
+
+    async def build_recent(self, now_ms: int) -> dict[str, int]:
+        """Rebuild the cascade over the recent lookback window, up to the last
+        CLOSED 5min boundary (the still-open current window is skipped — it would
+        just be rebuilt next tick). Driven by ``_rollup_loop``.
+
+        Idempotent + the all-children merge means each tick safely refines
+        windows as late frames get described/classified, so this is the live
+        "keep recent metrics fresh" path. Historical days are NOT touched here —
+        that's :meth:`backfill` (deliberate, gated on the classification backfill
+        being done).
+        """
+        last_closed = window_bounds(now_ms, "5min", self._cfg.cut_hour)[0]
+        start = last_closed - self._cfg.loop_lookback_h * 3600 * 1000
+        if last_closed <= start:
+            return {}
+        return await self.build_range(start, last_closed)
+
+    async def backfill(
+        self, start_ms: int, end_ms: int, *, per_day_pause_s: float = 0.0
+    ) -> int:
+        """Build the cascade for historical logical days in ``[start_ms, end_ms)``,
+        NEWEST day first, optionally pausing between days to spare the box.
+
+        Explicit + on-demand: nothing auto-calls this. Run it only after the
+        historical classification backfill has finished — this slice has no
+        source_hash re-emission, so a day built while its records are still being
+        (re)classified would freeze inflated ``_unclassified`` time. Returns the
+        number of logical days processed.
+        """
+        day_starts = iter_window_starts(start_ms, end_ms, "day", self._cfg.cut_hour)
+        for i, day_start in enumerate(reversed(day_starts)):
+            await self.build_day(day_start)
+            logger.info("rollup.backfill_day", day_local=day_local(day_start, self._cfg.cut_hour))
+            if per_day_pause_s and i < len(day_starts) - 1:
+                await asyncio.sleep(per_day_pause_s)
+        return len(day_starts)
 
     async def _build_leaf(self, start_ms: int, end_ms: int) -> int:
         cut = self._cfg.cut_hour

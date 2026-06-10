@@ -127,6 +127,21 @@ class RollupConfig:
     # one below). Kept here so deployments could trim the ladder via config.
     grains: tuple[str, ...] = ("5min", "1h", "6h", "day", "week")
 
+    # The background `_rollup_loop` is DISABLED by default. Turning it on starts
+    # WRITING cascade rows from live data. Keep it OFF until the historical
+    # classification backfill has finished — otherwise a half-classified day gets
+    # frozen into metrics with inflated `_unclassified` time, and this slice has
+    # no source_hash re-emission to auto-correct it. Flip with
+    # TIMETRACE_ROLLUP_ENABLED=1 once the data is clean.
+    enabled: bool = False
+    loop_initial_delay_s: int = 45  # let capture/worker settle before first build
+    loop_interval_s: int = 300  # rebuild the recent window every 5 min
+    loop_lookback_h: int = 36  # how far back each tick rebuilds (covers today + cut spill)
+
+    @classmethod
+    def from_env(cls) -> RollupConfig:
+        return cls(enabled=_env_truthy(os.getenv("TIMETRACE_ROLLUP_ENABLED")))
+
 
 @dataclass
 class StorageConfig:
@@ -239,7 +254,7 @@ class AppConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     worker: WorkerConfig = field(default_factory=WorkerConfig)
-    rollup: RollupConfig = field(default_factory=RollupConfig)
+    rollup: RollupConfig = field(default_factory=RollupConfig.from_env)
     vlm: VLMConfig | None = field(default_factory=VLMConfig.from_env)
     embedding: EmbeddingConfig | None = field(default_factory=EmbeddingConfig.from_env)
     auth: AuthConfig = field(default_factory=AuthConfig.from_env)

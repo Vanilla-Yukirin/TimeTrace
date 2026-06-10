@@ -19,6 +19,7 @@ same 60 lines in two places. They drifted in the three days between landing.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import Any
@@ -184,7 +185,8 @@ async def serve(
         logger.info("server.stop_requested")
         server.should_exit = True
         for task in asyncio.all_tasks():
-            if task.get_name() in {"worker", "reclaim", "report_scheduler"} | extra_task_names:
+            cancel_names = {"worker", "reclaim", "report_scheduler", "rollup"} | extra_task_names
+            if task.get_name() in cancel_names:
                 task.cancel()
 
     async def _reclaim_loop() -> None:
@@ -218,6 +220,31 @@ async def serve(
                     logger.warning("report.scheduler_generate_failed", scope=sc, exc_info=True)
             await asyncio.sleep(_REPORT_INTERVAL_S)
 
+    async def _rollup_loop() -> None:
+        # Memory-pyramid metrics cascade: keep recent windows (today + cut spill)
+        # fresh. DISABLED by default — only runs when config.rollup.enabled
+        # (TIMETRACE_ROLLUP_ENABLED=1). Gated so it can't freeze half-classified
+        # historical days into metrics before the classification backfill is done
+        # (this slice has no source_hash re-emission yet). LLM-free + pure SQL, so
+        # it does NOT depend on the VLM endpoint. Exceptions are swallowed per
+        # tick so one bad sweep can't tear down the TaskGroup.
+        if not config.rollup.enabled:
+            logger.info("rollup.loop_disabled", reason="config.rollup.enabled=False")
+            return
+        from timetrace.server.summary.rollup import MetricsCascadeBuilder
+
+        builder = MetricsCascadeBuilder(components.db, config.rollup)
+        await asyncio.sleep(config.rollup.loop_initial_delay_s)
+        logger.info("rollup.loop_started", interval_s=config.rollup.loop_interval_s)
+        while True:
+            try:
+                counts = await builder.build_recent(int(time.time() * 1000))
+                if counts:
+                    logger.info("rollup.tick", **{f"n_{g}": n for g, n in counts.items()})
+            except Exception:  # noqa: BLE001
+                logger.warning("rollup.tick_failed", exc_info=True)
+            await asyncio.sleep(config.rollup.loop_interval_s)
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(components.worker.run(), name="worker")
@@ -225,6 +252,7 @@ async def serve(
             tg.create_task(_watch_quit(), name="quit_watcher")
             tg.create_task(_reclaim_loop(), name="reclaim")
             tg.create_task(_report_scheduler(), name="report_scheduler")
+            tg.create_task(_rollup_loop(), name="rollup")
             for name, coro in (extra_tasks or {}).items():
                 tg.create_task(coro, name=name)
     finally:

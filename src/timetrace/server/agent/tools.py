@@ -14,10 +14,18 @@ for any AI driving TimeTrace: read everything, label only.
 
 from __future__ import annotations
 
+import datetime as _dt
+import json
 import time
 from typing import TYPE_CHECKING
 
 import structlog
+
+# Window math is pure (server/summary/windows.py imports only datetime), so this
+# is cycle-free. aggregate_frame_metrics is imported function-locally in
+# query_stats instead, because server/summary/metrics.py imports THIS module
+# (_clamped_dur_sql/_UNCLASSIFIED) — a top-level import there would be circular.
+from timetrace.server.summary.windows import scope_key, window_bounds
 
 if TYPE_CHECKING:
     from timetrace.server.db import Database
@@ -261,6 +269,140 @@ async def get_category_stats(db: Database, hours_back: int = 24, top_n: int = 20
 
 
 # --------------------------------------------------------------------------- #
+# query_stats — cascade-first aggregate stats over named periods               #
+# --------------------------------------------------------------------------- #
+
+_VALID_METRICS = ("seconds_by_category", "seconds_by_app", "active_seconds", "record_count")
+_VALID_PERIODS = ("today", "this_week", "this_month", "custom")
+
+
+def _parse_iso_local(s: str) -> int:
+    """Parse 'YYYY-MM-DD[ T]HH:MM[:SS]' as LOCAL time → epoch-ms."""
+    return int(_dt.datetime.fromisoformat(s.strip()).timestamp() * 1000)
+
+
+def _period_bounds(period: str, start_iso: str | None, end_iso: str | None, cut_hour: int) -> tuple[
+    int, int
+]:
+    """Resolve a named period to a half-open ``[start_ms, end_ms)`` (local time)."""
+    now = int(time.time() * 1000)
+    if period == "custom":
+        if not start_iso or not end_iso:
+            raise ValueError("period=custom requires start_iso and end_iso")
+        start_ms, end_ms = _parse_iso_local(start_iso), _parse_iso_local(end_iso)
+        if end_ms <= start_ms:
+            raise ValueError("end_iso must be after start_iso")
+        return start_ms, end_ms
+    if period == "today":
+        return window_bounds(now, "day", cut_hour)[0], now
+    if period == "this_week":
+        return window_bounds(now, "week", cut_hour)[0], now
+    if period == "this_month":
+        d = _dt.datetime.fromtimestamp(now / 1000)
+        return int(_dt.datetime(d.year, d.month, 1, cut_hour).timestamp() * 1000), now
+    raise ValueError(f"unknown period: {period}")
+
+
+async def _try_cascade_metrics(
+    db: Database, start_ms: int, end_ms: int, cut_hour: int
+) -> dict | None:
+    """Return a finalized cascade window's metrics if ``[start_ms, end_ms)`` is
+    EXACTLY a closed day/week window with a built row, else None (→ live path).
+
+    Only closed windows (``window_end <= now``) qualify; an open window's row is
+    partial and would undercount, so those always fall through to live SQL.
+    """
+    now = int(time.time() * 1000)
+    if end_ms > now:
+        return None
+    for grain in ("week", "day"):
+        if window_bounds(start_ms, grain, cut_hour) == (start_ms, end_ms):
+            row = await db.get_summary(grain, scope_key(start_ms, grain, cut_hour))
+            if row and row.get("metrics_json"):
+                return json.loads(row["metrics_json"])
+    return None
+
+
+async def query_stats(
+    db: Database,
+    metric: str = "seconds_by_category",
+    period: str = "today",
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+    filter_category: str | None = None,
+    top_n: int = 20,
+) -> dict:
+    """Aggregate time/count over a named period, cascade-first, ZERO heavy reading.
+
+    Reads a precomputed ``summaries`` row when the period is exactly a finalized
+    day/week window; otherwise aggregates live frames (pure SQL, self-correcting
+    while classification is still in flight). Never touches ``vlm_desc``. Returns
+    seconds (the cascade stores ms internally for exact additivity).
+    """
+    # cut_hour default mirrors RollupConfig.cut_hour=4; TODO thread the config
+    # through if a deployment ever changes the cut (period bounds must match the
+    # cascade's window grid for the digest path to line up).
+    cut_hour = 4
+    if metric not in _VALID_METRICS:
+        return {"error": f"unknown metric: {metric}", "valid_metrics": list(_VALID_METRICS)}
+    if period not in _VALID_PERIODS:
+        return {"error": f"unknown period: {period}", "valid_periods": list(_VALID_PERIODS)}
+    try:
+        start_ms, end_ms = _period_bounds(period, start_iso, end_iso, cut_hour)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    top_n = min(max(1, int(top_n)), _MAX_TOP_N)
+
+    m = await _try_cascade_metrics(db, start_ms, end_ms, cut_hour)
+    if m is not None:
+        source = "digest"
+    else:
+        # function-local: breaks the agent.tools ↔ summary.metrics import cycle.
+        from timetrace.server.summary.metrics import aggregate_frame_metrics  # noqa: PLC0415
+
+        m = await aggregate_frame_metrics(db, start_ms, end_ms)
+        source = "live"
+
+    out: dict = {
+        "metric": metric,
+        "period": period,
+        "source": source,
+        "period_start_iso": ms_to_iso(start_ms),
+        "period_end_iso": ms_to_iso(end_ms),
+        "capped_per_record_seconds": _MAX_PLAUSIBLE_RECORD_MS // 1000,
+    }
+    if metric == "active_seconds":
+        out["total_seconds"] = m["active_ms"] // 1000
+        return out
+    if metric == "record_count":
+        out["record_count"] = m["record_count"]
+        return out
+
+    key_ms: dict[str, int] = m["cat_ms"] if metric == "seconds_by_category" else m["app_ms"]
+    if metric == "seconds_by_category":
+        out["categories_legend"] = _CATEGORY_LEGEND
+    if filter_category:
+        key_ms = {k: v for k, v in key_ms.items() if k == filter_category}
+    total_ms = sum(key_ms.values())
+    items = []
+    for key, ms in sorted(key_ms.items(), key=lambda kv: kv[1], reverse=True)[:top_n]:
+        item = {
+            "key": key,
+            "total_seconds": ms // 1000,
+            "share": round(ms / total_ms, 4) if total_ms else 0.0,
+        }
+        if metric == "seconds_by_category" and key == _UNCLASSIFIED:
+            item["is_unclassified"] = True
+            item["note"] = _UNCLASSIFIED_NOTE
+        elif metric == "seconds_by_category" and key == "uncategorized":
+            item["is_genuinely_uncategorized"] = True
+        items.append(item)
+    out["items"] = items
+    out["total_seconds"] = total_ms // 1000  # over ALL keys, not just top_n
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Write tool (the ONLY one) — label only, never destructive                    #
 # --------------------------------------------------------------------------- #
 
@@ -381,6 +523,46 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "query_stats",
+            "description": (
+                "按命名时段聚合时长/计数，优先读预算好的金字塔摘要、否则现算原始帧（纯 SQL，"
+                "不读 AI 描述）。问『这个月/这周/今天 在某分类或某应用上花了多少』先用它。"
+                "返回秒；source=digest 表示命中预聚合、live 表示现算。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metric": {
+                        "type": "string",
+                        "enum": list(_VALID_METRICS),
+                        "description": "统计口径：按分类/按应用秒数、活跃总秒数、记录数",
+                    },
+                    "period": {
+                        "type": "string",
+                        "enum": list(_VALID_PERIODS),
+                        "description": "today/this_week/this_month/custom",
+                    },
+                    "start_iso": {
+                        "type": "string",
+                        "description": "custom 起，本地 'YYYY-MM-DD HH:MM:SS'",
+                    },
+                    "end_iso": {
+                        "type": "string",
+                        "description": "custom 止（不含）",
+                    },
+                    "filter_category": {
+                        "type": "string",
+                        "description": "可选：只看某一个分类 id",
+                    },
+                    "top_n": _int_param("返回前 N 项，默认 20，最大 50"),
+                },
+                "required": ["metric", "period"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "apply_label",
             "description": (
                 "给某条记录打/改分类标签。这是你唯一的写权限，不能删除或修改记录本身。"
@@ -404,6 +586,7 @@ _IMPLS = {
     "get_recent_activity": get_recent_activity,
     "get_app_breakdown": get_app_breakdown,
     "get_category_stats": get_category_stats,
+    "query_stats": query_stats,
     "apply_label": apply_label,
 }
 
