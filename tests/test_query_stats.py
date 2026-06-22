@@ -131,3 +131,37 @@ async def test_query_stats_today_bounds_are_sane(db):
     res = await agent_tools.query_stats(db, metric="active_seconds", period="today")
     assert res["source"] == "live"  # today's window is open → never digest
     assert res["period_start_iso"] <= res["period_end_iso"]
+
+
+async def test_query_stats_active_seconds_is_wall_clock_union(db):
+    # Two overlapping captures + one sleep-artifact (>5min span, clamped to 0).
+    await _add(db, _ms(2099, 6, 9, 10, 0, 0), 180_000, "Code", "work")  # [10:00, 10:03)
+    await _add(db, _ms(2099, 6, 9, 10, 1, 0), 180_000, "Code", "work")  # [10:01, 10:04)
+    await _add(db, _ms(2099, 6, 9, 11, 0, 0), 600_000, "Code", "work")  # 10min → clamp → 0
+    ds, de = window_bounds(_ms(2099, 6, 9, 10, 0), "day", CUT)
+    iso = dict(start_iso=ms_to_iso(ds), end_iso=ms_to_iso(de), period="custom")
+
+    active = await agent_tools.query_stats(db, metric="active_seconds", **iso)
+    by_cat = await agent_tools.query_stats(db, metric="seconds_by_category", **iso)
+
+    # union [10:00,10:03)∪[10:01,10:04) = [10:00,10:04) = 240s; sleep artifact adds 0
+    assert active["total_seconds"] == 240
+    assert active["source"] == "live"
+    # Σ own-span double-counts the 60s overlap → 360; sleep artifact still 0
+    assert by_cat["total_seconds"] == 360
+    # the contract: the union floor never exceeds the additive Σ-span
+    assert active["total_seconds"] < by_cat["total_seconds"]
+
+
+async def test_query_stats_semantics_block_present(db):
+    await _seed(db, 2099)
+    ds, de = window_bounds(_ms(2099, 6, 9, 9, 0), "day", CUT)
+    iso = dict(start_iso=ms_to_iso(ds), end_iso=ms_to_iso(de), period="custom")
+    for metric in ("seconds_by_category", "seconds_by_app", "active_seconds", "record_count"):
+        res = await agent_tools.query_stats(db, metric=metric, **iso)
+        sem = res["semantics"]
+        assert "下限" in sem["definition"]
+        assert sem["is_a_floor_because"] and sem["how_to_phrase"]
+    # active_seconds advertises the union dedup relationship
+    act = await agent_tools.query_stats(db, metric="active_seconds", **iso)
+    assert "并集" in act["semantics"]["aggregation"]

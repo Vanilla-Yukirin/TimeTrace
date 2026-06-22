@@ -323,6 +323,43 @@ async def _try_cascade_metrics(
     return None
 
 
+def _duration_semantics(metric: str) -> dict:
+    """Self-describing note on what a duration number here IS — and is NOT.
+
+    Durations are a FLOOR: only slices this device actually captured, with idle
+    and uncaptured time excluded. An agent must phrase them as "本机捕获的活跃
+    下限", never as total/wall-clock time, or it will say things like
+    "娱乐 2.5 分钟/天" as if that were real total entertainment.
+    """
+    is_count = metric == "record_count"
+    sem: dict = {
+        "definition": (
+            "本机捕获的记录条数（floor / 下限）。"
+            if is_count
+            else "本机捕获的活跃时长（floor / 下限），不是总时间，也不是墙钟时间。"
+        ),
+        "is_a_floor_because": [
+            "只计本设备采集到的瞬时切片；采集间隔与 idle(>5min) 不计入。",
+            "本设备未必全程在用户身边（关机、同步断档、多设备分摊都会少计）。",
+        ],
+        "how_to_phrase": (
+            "如实说明这是『本机捕获的活跃下限』，不要表述成『总共/一共』。"
+            "占比(share) 比绝对秒数可信；跨多天的小数字往往是设备覆盖不全，不是用户真没做。"
+        ),
+        "capped_per_record_seconds": _MAX_PLAUSIBLE_RECORD_MS // 1000,
+    }
+    if metric == "active_seconds":
+        sem["aggregation"] = (
+            "墙钟并集：重叠的采集区间已去重(union)，所以 active_seconds ≤ 各分类秒数之和。"
+        )
+    elif metric in ("seconds_by_category", "seconds_by_app"):
+        sem["aggregation"] = (
+            "各记录 clamp 后切片之和(可加、可跨层 SUM)；短暂重叠会被轻微重复计，"
+            "略高于 active_seconds 的墙钟并集。"
+        )
+    return sem
+
+
 async def query_stats(
     db: Database,
     metric: str = "seconds_by_category",
@@ -338,6 +375,11 @@ async def query_stats(
     day/week window; otherwise aggregates live frames (pure SQL, self-correcting
     while classification is still in flight). Never touches ``vlm_desc``. Returns
     seconds (the cascade stores ms internally for exact additivity).
+
+    ``active_seconds`` is special: always computed live as a wall-clock UNION
+    (dedups overlapping captures), since union is not additive and so isn't
+    rolled into the cascade. Every result carries a ``semantics`` block — these
+    numbers are a captured-activity FLOOR, not total time.
     """
     # cut_hour default mirrors RollupConfig.cut_hour=4; TODO thread the config
     # through if a deployment ever changes the cut (period bounds must match the
@@ -353,11 +395,27 @@ async def query_stats(
         return {"error": str(exc)}
     top_n = min(max(1, int(top_n)), _MAX_TOP_N)
 
+    # function-local imports break the agent.tools ↔ summary.metrics cycle.
+    if metric == "active_seconds":
+        # Always live + union: dedups overlapping captures. Not from the cascade
+        # (union is not additive across windows), and cheap enough live anyway.
+        from timetrace.server.summary.metrics import active_wall_ms  # noqa: PLC0415
+
+        wall_ms = await active_wall_ms(db, start_ms, end_ms)
+        return {
+            "metric": metric,
+            "period": period,
+            "source": "live",
+            "period_start_iso": ms_to_iso(start_ms),
+            "period_end_iso": ms_to_iso(end_ms),
+            "total_seconds": wall_ms // 1000,
+            "semantics": _duration_semantics(metric),
+        }
+
     m = await _try_cascade_metrics(db, start_ms, end_ms, cut_hour)
     if m is not None:
         source = "digest"
     else:
-        # function-local: breaks the agent.tools ↔ summary.metrics import cycle.
         from timetrace.server.summary.metrics import aggregate_frame_metrics  # noqa: PLC0415
 
         m = await aggregate_frame_metrics(db, start_ms, end_ms)
@@ -370,10 +428,8 @@ async def query_stats(
         "period_start_iso": ms_to_iso(start_ms),
         "period_end_iso": ms_to_iso(end_ms),
         "capped_per_record_seconds": _MAX_PLAUSIBLE_RECORD_MS // 1000,
+        "semantics": _duration_semantics(metric),
     }
-    if metric == "active_seconds":
-        out["total_seconds"] = m["active_ms"] // 1000
-        return out
     if metric == "record_count":
         out["record_count"] = m["record_count"]
         return out

@@ -97,3 +97,46 @@ async def aggregate_frame_metrics(db: Database, start_ms: int, end_ms: int) -> d
         "active_ms": active_ms,
         "record_count": record_count,
     }
+
+
+async def active_wall_ms(db: Database, start_ms: int, end_ms: int) -> int:
+    """Wall-clock active ms over ``[start_ms, end_ms)`` as the UNION of per-record
+    capture intervals — overlapping captures count once (ActivityWatch-style).
+
+    Each record covers ``[ts_start, ts_start + clamped_span]`` where the span uses
+    the SAME ``_clamped_dur_sql`` clamp as the additive path (negative → 0,
+    over-5min sleep/lid artifact → 0). Gaps between records (sampling interval,
+    idle) are not covered, so this is a floor on real on-screen time — but it
+    DEDUPS the brief overlaps that make the additive ``active_ms`` (Σ own-span)
+    slightly over-count. Because every record contributes an identical clamped
+    span to both, ``active_wall_ms <= active_ms`` always holds.
+
+    NOT used by the cascade: union is not additive across windows (intervals
+    straddling a window boundary would be over/under-counted by a child SUM), so
+    the stored ``active_ms`` stays Σ own-span (exact SUM-invariant). This is the
+    read-edge dedup, computed live over the exact span.
+    """
+    dur = _clamped_dur_sql()  # CASE WHEN span>cap THEN 0 ELSE MAX(0, span) END
+    async with db.lock:
+        async with db.conn.execute(
+            f"""WITH clamped AS (
+                    SELECT ts_start AS s, ts_start + ({dur}) AS e
+                    FROM records WHERE ts_start >= ? AND ts_start < ?
+                ),
+                ordered AS (
+                    SELECT s, e,
+                           MAX(e) OVER (ORDER BY s
+                               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS run_max
+                    FROM clamped
+                ),
+                grouped AS (
+                    SELECT s, e, SUM(CASE WHEN run_max IS NULL OR s > run_max THEN 1 ELSE 0 END)
+                                 OVER (ORDER BY s) AS g
+                    FROM ordered
+                )
+                SELECT COALESCE(SUM(seg_e - seg_s), 0) AS wall_ms
+                FROM (SELECT MIN(s) AS seg_s, MAX(e) AS seg_e FROM grouped GROUP BY g)""",
+            (start_ms, end_ms),
+        ) as cur:
+            row = await cur.fetchone()
+    return int(row["wall_ms"] or 0) if row else 0
