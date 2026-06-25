@@ -55,6 +55,16 @@ def build_parser() -> argparse.ArgumentParser:
     rev_p = tok_sub.add_parser("revoke", help="Revoke by label OR by token-prefix match.")
     rev_p.add_argument("identifier", help="Label, or full token, or token's last 8 chars.")
 
+    bf = sub.add_parser("backfill", help="Build the metrics cascade for a historical date range.")
+    bf.add_argument("start", help="Start (local 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS').")
+    bf.add_argument("end", help="End; the cascade tiles whole logical days in [start, end).")
+    bf.add_argument(
+        "--pause",
+        type=float,
+        default=1.0,
+        help="Seconds to pause between days, to spare the box (default 1.0).",
+    )
+
     return parser
 
 
@@ -75,6 +85,8 @@ def run(
             return _cmd_tokens_add(args.label, out)
         if args.tok_cmd == "revoke":
             return _cmd_tokens_revoke(args.identifier, out)
+    if args.cmd == "backfill":
+        return _cmd_backfill(args.start, args.end, args.pause, out)
     out(f"unhandled command: {args}")
     return 2
 
@@ -160,6 +172,55 @@ def _cmd_tokens_revoke(identifier: str, out: Callable[[str], None]) -> int:
     ServerAuth.write_tokens(remaining)
     out(f"Revoked token labelled {target.label!r} (...{target.value[-8:]}).")
     out("Restart timetrace-server for the revocation to take effect.")
+    return 0
+
+
+def _cmd_backfill(start: str, end: str, pause: float, out: Callable[[str], None]) -> int:
+    """Build the metrics cascade for ``[start, end)`` over historical logical days.
+
+    One-shot. Safe to run while the server is live: writes are idempotent UPSERTs
+    on ``(grain, scope_key)`` and SQLite WAL + ``busy_timeout`` serialize them
+    against the server's rollup loop. Only run AFTER classification backfill is
+    done, or half-classified days get frozen into metrics (no source_hash
+    re-emission yet to self-correct).
+    """
+    import asyncio
+    import datetime as _dt
+
+    from timetrace.server.db import Database
+    from timetrace.server.summary.rollup import MetricsCascadeBuilder
+
+    try:
+        start_ms = int(_dt.datetime.fromisoformat(start).timestamp() * 1000)
+        end_ms = int(_dt.datetime.fromisoformat(end).timestamp() * 1000)
+    except ValueError as exc:
+        out(f"bad date (use 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'): {exc}")
+        return 2
+    if end_ms <= start_ms:
+        out("end must be after start")
+        return 2
+
+    cfg = AppConfig()
+
+    async def _run() -> dict:
+        db = Database(cfg.storage)
+        await db.init()
+        try:
+            builder = MetricsCascadeBuilder(db, cfg.rollup)
+            days = await builder.backfill(start_ms, end_ms, per_day_pause_s=pause)
+            rows: dict[str, int] = {}
+            for grain in ("5min", "1h", "6h", "day", "week"):
+                async with db.conn.execute(
+                    "SELECT COUNT(*) FROM summaries WHERE grain=?", (grain,)
+                ) as cur:
+                    rows[grain] = (await cur.fetchone())[0]
+            return {"days": days, "rows": rows}
+        finally:
+            await db.close()
+
+    result = asyncio.run(_run())
+    out(f"backfilled {result['days']} logical day(s) over [{start} .. {end})")
+    out(f"summaries rows now (all grains): {result['rows']}")
     return 0
 
 

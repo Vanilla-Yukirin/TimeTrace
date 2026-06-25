@@ -30,6 +30,10 @@ _MAX_ORPHAN_BRIDGE_MS = 5 * 60 * 1000
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
+-- Wait up to 5s for a write lock instead of erroring immediately, so a separate
+-- one-shot writer (`timetrace-server backfill`) and the live server's rollup
+-- loop serialize cleanly rather than hitting "database is locked".
+PRAGMA busy_timeout=5000;
 
 CREATE TABLE IF NOT EXISTS records (
     id               TEXT PRIMARY KEY,

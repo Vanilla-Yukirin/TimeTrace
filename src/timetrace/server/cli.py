@@ -36,6 +36,9 @@ Usage:
   timetrace-server tokens add <label>    Mint a new token; shows the value
                                          ONCE, copy into client.toml.
   timetrace-server tokens revoke <id>    Revoke by label / full / suffix-8.
+  timetrace-server backfill <start> <end>  Build the metrics cascade for a
+                                         historical date range (one-shot; safe
+                                         while the server is running).
   timetrace-server -h | --help           Show this help.
 
 Token file lives at ~/.config/timetrace-server/tokens.json (chmod 600 on POSIX).
@@ -56,7 +59,7 @@ def main() -> None:
     if args and args[0] in ("-h", "--help"):
         print(_HELP_TEXT)
         return
-    if args and args[0] in ("info", "tokens"):
+    if args and args[0] in ("info", "tokens", "backfill"):
         from timetrace.server.admin_cmd import run as admin_run  # noqa: PLC0415
 
         sys.exit(admin_run(args))
