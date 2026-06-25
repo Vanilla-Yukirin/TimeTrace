@@ -130,38 +130,65 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
         query: str,
         limit: int = 20,
         hours_back: int | None = None,
+        start_iso: str | None = None,
+        end_iso: str | None = None,
     ) -> dict:
         """Keyword search over activity records.
 
         Searches across window title, app name, process name, URL, and VLM
         description. ≥3 char queries use FTS5 trigram + BM25 ranking
         (CJK-friendly); shorter queries fall back to multi-field LIKE.
+        Multi-word queries (whitespace-separated) match records containing ALL
+        the words, in any order.
 
         Args:
-            query: search keyword. Examples: "鸣潮", "Visual Studio Code",
-                "微信", "Weixin", "Code.exe", "github.com".
-            limit: max records to return (default 20, cap 100).
+            query: search keyword(s). Examples: "鸣潮", "judge replay history",
+                "Code.exe", "github.com".
+            limit: max records to return (default 20, cap 2000).
             hours_back: if set, limit to the last N hours. Otherwise all-time.
+            start_iso/end_iso: absolute local-time window
+                ('YYYY-MM-DD HH:MM:SS'); takes precedence over hours_back.
+                Results are relevance-ranked — narrow the window + raise limit
+                to pull more (no cursor; use get_recent_activity to page a full
+                day chronologically).
 
         Returns:
-            dict with ``items`` (list of records) and ``query`` echoed back.
-            Each record has ``id``, ``ts_start``, ``ts_end``, ``app_name``,
-            ``window_title``, ``vlm_desc``, ``thumb_path``.
+            dict with ``items``, ``query`` echoed back, and ``count``.
         """
-        return await agent_tools.search_activity(db, query, limit=limit, hours_back=hours_back)
+        return await agent_tools.search_activity(
+            db, query, limit=limit, hours_back=hours_back,
+            start_iso=start_iso, end_iso=end_iso,
+        )
 
     @mcp.tool()
-    async def get_recent_activity(hours_back: int = 24, limit: int = 50) -> dict:
-        """Return a chronological snapshot of recent activity.
+    async def get_recent_activity(
+        hours_back: int = 24,
+        limit: int = 50,
+        start_iso: str | None = None,
+        end_iso: str | None = None,
+        cursor: str | None = None,
+    ) -> dict:
+        """Return a chronological snapshot of activity (oldest→newest in window).
 
-        No keyword filter — use when the agent wants an overview before
-        deciding what to dig into.
+        No keyword filter — use for an overview before digging in. To pull a
+        FULL day, keep the window fixed and re-call with the returned
+        ``next_cursor`` as ``cursor`` until it comes back null.
 
         Args:
             hours_back: time window in hours (default 24, cap 720 = 30 days).
-            limit: max records (default 50, cap 200).
+            limit: max records per page (default 50, cap 2000).
+            start_iso/end_iso: absolute local-time window
+                ('YYYY-MM-DD HH:MM:SS'); takes precedence over hours_back.
+            cursor: pagination cursor from a previous call's ``next_cursor``.
+
+        Returns:
+            dict with ``items``, ``count``, and ``next_cursor`` (null when the
+            page wasn't full = no more records).
         """
-        return await agent_tools.get_recent_activity(db, hours_back=hours_back, limit=limit)
+        return await agent_tools.get_recent_activity(
+            db, hours_back=hours_back, limit=limit,
+            start_iso=start_iso, end_iso=end_iso, cursor=cursor,
+        )
 
     @mcp.tool()
     async def get_app_breakdown(hours_back: int = 24, top_n: int = 20) -> dict:

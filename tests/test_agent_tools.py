@@ -6,6 +6,7 @@ tool-calling loop (runner.py) needs a live model and is smoke-tested separately.
 
 from __future__ import annotations
 
+import datetime as _dt
 import time
 
 import pytest
@@ -29,6 +30,18 @@ async def _insert(database, app="Cursor", title="main.py - TimeTrace"):
         CaptureContext(app_name=app, process_name=app.lower() + ".exe", window_title=title),
         reason="test",
     )
+
+
+async def _insert_at(database, ts_start, app="Cursor", title="x"):
+    return await database.insert_record(
+        CaptureContext(app_name=app, process_name=app.lower() + ".exe", window_title=title),
+        reason="test",
+        ts_start=ts_start,
+    )
+
+
+def _ms(y, mo, d, h, mi=0, s=0):
+    return int(_dt.datetime(y, mo, d, h, mi, s).timestamp() * 1000)
 
 
 async def test_search_activity_finds_by_title(db):
@@ -150,3 +163,61 @@ async def test_dispatch_tool_routes_to_impl(db):
     await _insert(db)
     res = await agent_tools.dispatch_tool(db, "get_recent_activity", {"hours_back": 1})
     assert "items" in res
+
+
+# --- MCP usability fixes (limit / absolute window / cursor / FTS multi-word) --- #
+
+
+async def test_get_recent_activity_limit_exceeds_old_200_cap(db):
+    # #1: a full day can be >200 records; the cap was raised to 2000.
+    now = int(time.time() * 1000)
+    for i in range(205):
+        await _insert_at(db, ts_start=now - (i + 1) * 1000)
+    res = await agent_tools.get_recent_activity(db, hours_back=24, limit=205)
+    assert res["count"] == 205  # would have been clamped to 200 before
+    assert len(res["items"]) == 205
+
+
+async def test_get_recent_activity_absolute_window(db):
+    # #3: explicit start_iso/end_iso bounds win over hours_back.
+    await _insert_at(db, ts_start=_ms(2099, 6, 9, 9, 0), title="early")
+    await _insert_at(db, ts_start=_ms(2099, 6, 9, 10, 0), title="mid")
+    await _insert_at(db, ts_start=_ms(2099, 6, 9, 14, 0), title="late")
+    res = await agent_tools.get_recent_activity(
+        db, start_iso="2099-06-09 09:30:00", end_iso="2099-06-09 12:00:00"
+    )
+    assert [it["window_title"] for it in res["items"]] == ["mid"]
+
+
+async def test_get_recent_activity_bad_iso_returns_error(db):
+    res = await agent_tools.get_recent_activity(db, start_iso="not-a-date")
+    assert "error" in res
+
+
+async def test_get_recent_activity_cursor_paginates_full_set(db):
+    # #2: page a full window via next_cursor without overlap or gaps.
+    now = int(time.time() * 1000)
+    ids_in_order = []
+    for i in range(5):
+        rid = await _insert_at(db, ts_start=now - (5 - i) * 60_000, title=f"rec{i}")
+        ids_in_order.append(rid)  # ascending ts_start
+    seen: list[str] = []
+    cursor = None
+    for _ in range(10):  # safety bound
+        res = await agent_tools.get_recent_activity(db, hours_back=24, limit=2, cursor=cursor)
+        seen.extend(it["id"] for it in res["items"])
+        cursor = res["next_cursor"]
+        if cursor is None:
+            break
+    assert seen == ids_in_order  # full set, in order, no overlap, terminates
+
+
+async def test_search_activity_multiword_matches_any_order(db):
+    # #4: "judge replay history" matches a title with all 3 words non-contiguous,
+    # and does NOT match a title missing one of them.
+    await _insert(db, title="judge the replay in history view")
+    await _insert(db, title="judge the replay only")
+    res = await agent_tools.search_activity(db, query="judge replay history")
+    titles = [it["window_title"] for it in res["items"]]
+    assert any("history view" in t for t in titles)
+    assert all("only" not in t for t in titles)

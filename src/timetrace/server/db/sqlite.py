@@ -292,11 +292,20 @@ def _fts_query(keyword: str) -> str:
     "syntax error near ..." class of bug for inputs containing FTS5
     operators (``AND``/``OR``/``NEAR``/``-``/``:``/``.``/etc.) or punctuation.
 
-    The result is a single phrase, so for trigram tokenizer this means
-    "match any contiguous substring matching this string" — which is what
-    casual users expect (vs. boolean keyword AND).
+    Multi-word input (whitespace-separated) → each token ≥ the trigram minimum
+    becomes its own quoted phrase, AND-ed together, so "judge replay history"
+    matches a title containing all three words in ANY order/position (not only
+    as one contiguous phrase). Tokens shorter than the trigram minimum can't
+    match and are dropped. Input with no whitespace (incl. CJK, which has no
+    word boundaries) stays a single phrase — contiguous-substring match.
     """
-    return '"' + keyword.replace('"', '""') + '"'
+    kw = keyword.strip()
+    tokens = kw.split()
+    if len(tokens) > 1:
+        long_tokens = [t for t in tokens if len(t) >= _FTS_MIN_LEN]
+        if long_tokens:
+            return " AND ".join('"' + t.replace('"', '""') + '"' for t in long_tokens)
+    return '"' + kw.replace('"', '""') + '"'
 
 
 def _processing_to_pending(status: str) -> str:

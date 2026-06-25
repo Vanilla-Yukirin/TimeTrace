@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-_MAX_LIMIT = 200
+_MAX_LIMIT = 2000  # generous: a full day can be 1400+ records; clients page via cursor
 _MAX_TOP_N = 50
 _MAX_HOURS = 720  # 30 days
 
@@ -108,6 +108,26 @@ def _window(hours_back: int | None) -> tuple[int, int]:
     return now_ms - hb * 3600 * 1000, now_ms
 
 
+def _resolve_window(
+    hours_back: int | None, start_iso: str | None, end_iso: str | None
+) -> tuple[int, int]:
+    """Resolve a query window; explicit ISO bounds win over ``hours_back``.
+
+    ``start_iso``/``end_iso`` are local 'YYYY-MM-DD[ T]HH:MM[:SS]'. If only one
+    is given the other end defaults (start→0, end→now). Falls back to the
+    relative ``hours_back`` window when neither is set. Raises ValueError on
+    unparseable / inverted bounds (callers surface it as an error dict).
+    """
+    if start_iso or end_iso:
+        now_ms = int(time.time() * 1000)
+        start_ms = _parse_iso_local(start_iso) if start_iso else 0
+        end_ms = _parse_iso_local(end_iso) if end_iso else now_ms
+        if end_ms <= start_ms:
+            raise ValueError("end_iso must be after start_iso")
+        return start_ms, end_ms
+    return _window(hours_back)
+
+
 # --------------------------------------------------------------------------- #
 # Read tools                                                                   #
 # --------------------------------------------------------------------------- #
@@ -118,13 +138,26 @@ async def search_activity(
     query: str,
     limit: int = 20,
     hours_back: int | None = None,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
 ) -> dict:
-    """Keyword search over activity records (FTS5 trigram / multi-field LIKE)."""
-    limit = min(max(1, int(limit)), 100)
-    start_ms, end_ms = _window(hours_back)
+    """Keyword search over activity records (FTS5 trigram / multi-field LIKE).
+
+    Window: explicit ``start_iso``/``end_iso`` (local time) take precedence over
+    the relative ``hours_back``. Results are BM25-relevance-ordered, so to pull
+    more, narrow the window + raise ``limit`` (no ts_start cursor here — keyset
+    pagination doesn't compose with relevance ranking; use ``get_recent_activity``
+    for full chronological pulls).
+    """
+    limit = min(max(1, int(limit)), _MAX_LIMIT)
+    try:
+        start_ms, end_ms = _resolve_window(hours_back, start_iso, end_iso)
+    except ValueError as exc:
+        return {"error": str(exc)}
     rows = await db.query_records(start_ms=start_ms, end_ms=end_ms, limit=limit, keyword=query)
     return {
         "query": query,
+        "count": len(rows),
         "items": [
             {
                 "id": r["id"],
@@ -140,14 +173,36 @@ async def search_activity(
     }
 
 
-async def get_recent_activity(db: Database, hours_back: int = 24, limit: int = 50) -> dict:
-    """Chronological snapshot of recent activity (no keyword filter)."""
+async def get_recent_activity(
+    db: Database,
+    hours_back: int = 24,
+    limit: int = 50,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+    cursor: str | None = None,
+) -> dict:
+    """Chronological snapshot of activity (oldest→newest within the window).
+
+    To pull a FULL day, keep the window fixed and re-call with the returned
+    ``next_cursor`` as ``cursor`` until it comes back ``null`` (= last page).
+    Explicit ``start_iso``/``end_iso`` (local time) take precedence over
+    ``hours_back``.
+    """
     hours_back = min(max(1, int(hours_back)), _MAX_HOURS)
     limit = min(max(1, int(limit)), _MAX_LIMIT)
-    start_ms, end_ms = _window(hours_back)
-    rows = await db.query_records(start_ms=start_ms, end_ms=end_ms, limit=limit)
+    try:
+        start_ms, end_ms = _resolve_window(hours_back, start_iso, end_iso)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    rows = await db.query_records(
+        start_ms=start_ms, end_ms=end_ms, limit=limit, cursor=cursor
+    )
+    # ASC order → last row is the latest in this page; a full page may have more.
+    next_cursor = rows[-1]["id"] if len(rows) == limit else None
     return {
         "hours_back": hours_back,
+        "count": len(rows),
+        "next_cursor": next_cursor,
         "items": [
             {
                 "id": r["id"],
@@ -513,6 +568,10 @@ def _int_param(desc: str) -> dict:
     return {"type": "integer", "description": desc}
 
 
+def _str_param(desc: str) -> dict:
+    return {"type": "string", "description": desc}
+
+
 TOOL_SCHEMAS = [
     {
         "type": "function",
@@ -522,9 +581,11 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"},
-                    "limit": _int_param("返回条数，默认 20，最大 100"),
+                    "query": {"type": "string", "description": "搜索关键词；多词空格分隔按 AND"},
+                    "limit": _int_param("返回条数，默认 20，最大 2000"),
                     "hours_back": _int_param("只看最近 N 小时，不传则全时段"),
+                    "start_iso": _str_param("绝对起始时间（本地），优先于 hours_back"),
+                    "end_iso": _str_param("绝对结束时间（本地）"),
                 },
                 "required": ["query"],
             },
@@ -539,7 +600,10 @@ TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "hours_back": _int_param("窗口小时数，默认 24，最大 720"),
-                    "limit": _int_param("返回条数，默认 50，最大 200"),
+                    "limit": _int_param("返回条数，默认 50，最大 2000"),
+                    "start_iso": _str_param("绝对起始时间（本地），优先于 hours_back"),
+                    "end_iso": _str_param("绝对结束时间（本地）"),
+                    "cursor": _str_param("翻页游标：传回上次的 next_cursor 取下一页"),
                 },
             },
         },
