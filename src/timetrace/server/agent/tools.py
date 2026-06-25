@@ -194,9 +194,7 @@ async def get_recent_activity(
         start_ms, end_ms = _resolve_window(hours_back, start_iso, end_iso)
     except ValueError as exc:
         return {"error": str(exc)}
-    rows = await db.query_records(
-        start_ms=start_ms, end_ms=end_ms, limit=limit, cursor=cursor
-    )
+    rows = await db.query_records(start_ms=start_ms, end_ms=end_ms, limit=limit, cursor=cursor)
     # ASC order → last row is the latest in this page; a full page may have more.
     next_cursor = rows[-1]["id"] if len(rows) == limit else None
     return {
@@ -336,9 +334,9 @@ def _parse_iso_local(s: str) -> int:
     return int(_dt.datetime.fromisoformat(s.strip()).timestamp() * 1000)
 
 
-def _period_bounds(period: str, start_iso: str | None, end_iso: str | None, cut_hour: int) -> tuple[
-    int, int
-]:
+def _period_bounds(
+    period: str, start_iso: str | None, end_iso: str | None, cut_hour: int
+) -> tuple[int, int]:
     """Resolve a named period to a half-open ``[start_ms, end_ms)`` (local time)."""
     now = int(time.time() * 1000)
     if period == "custom":

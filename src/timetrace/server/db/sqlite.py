@@ -1597,9 +1597,7 @@ class SqliteDatabase:
                 row = await cur.fetchone()
         return dict(row) if row else None
 
-    async def get_summaries_in_range(
-        self, grain: str, start_ms: int, end_ms: int
-    ) -> list[dict]:
+    async def get_summaries_in_range(self, grain: str, start_ms: int, end_ms: int) -> list[dict]:
         """Cascade rows of ``grain`` whose ``window_start`` ∈ ``[start_ms, end_ms)``.
 
         Half-open + ordered by ``window_start`` so the rollup builder can group a

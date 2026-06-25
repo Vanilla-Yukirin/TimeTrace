@@ -156,8 +156,12 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             dict with ``items``, ``query`` echoed back, and ``count``.
         """
         return await agent_tools.search_activity(
-            db, query, limit=limit, hours_back=hours_back,
-            start_iso=start_iso, end_iso=end_iso,
+            db,
+            query,
+            limit=limit,
+            hours_back=hours_back,
+            start_iso=start_iso,
+            end_iso=end_iso,
         )
 
     @mcp.tool()
@@ -186,8 +190,12 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             page wasn't full = no more records).
         """
         return await agent_tools.get_recent_activity(
-            db, hours_back=hours_back, limit=limit,
-            start_iso=start_iso, end_iso=end_iso, cursor=cursor,
+            db,
+            hours_back=hours_back,
+            limit=limit,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            cursor=cursor,
         )
 
     @mcp.tool()

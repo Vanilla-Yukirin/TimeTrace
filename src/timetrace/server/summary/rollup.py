@@ -99,9 +99,7 @@ class MetricsCascadeBuilder:
             return {}
         return await self.build_range(start, last_closed)
 
-    async def backfill(
-        self, start_ms: int, end_ms: int, *, per_day_pause_s: float = 0.0
-    ) -> int:
+    async def backfill(self, start_ms: int, end_ms: int, *, per_day_pause_s: float = 0.0) -> int:
         """Build the cascade for historical logical days in ``[start_ms, end_ms)``,
         NEWEST day first, optionally pausing between days to spare the box.
 
