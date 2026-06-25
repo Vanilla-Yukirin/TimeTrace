@@ -1534,6 +1534,7 @@ class SqliteDatabase:
         metrics_json: str,
         record_count: int = 0,
         status: str = "pending_summary",
+        source_hash: str | None = None,
     ) -> str:
         """Insert/replace a cascade row keyed by ``(grain, scope_key)``.
 
@@ -1541,6 +1542,15 @@ class SqliteDatabase:
         same row (the UNIQUE index makes ``window ⇒ key`` collapse on conflict),
         so schedule overlap / crash replay never double-counts. ``id`` and
         ``created_at`` survive updates; ``updated_at`` is bookkeeping only.
+
+        Re-emission trigger: ``source_hash`` is the input fingerprint. On a
+        conflicting rebuild we compare the stored hash to the incoming one —
+        ONLY when it changed (an underlying frame was added / reclassified /
+        re-stamped, or a child's hash flipped) do we bump ``source_version`` and
+        reset ``status`` (re-queueing the narrative stage). A pure idempotent
+        rebuild with identical inputs keeps the existing status, so narrative
+        progress isn't lost. This is what makes the cascade self-correct as
+        late classification / edits land.
 
         Only the metric/identity columns are written here — the narrative
         columns (description / evaluation / body_json / *_tokens /
@@ -1554,19 +1564,27 @@ class SqliteDatabase:
             async with self.conn.execute(
                 """INSERT INTO summaries
                        (id, grain, scope_key, window_start, window_end, day_local,
-                        metrics_json, record_count, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metrics_json, record_count, status, source_hash,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(grain, scope_key) DO UPDATE SET
                        window_start = excluded.window_start,
                        window_end   = excluded.window_end,
                        day_local    = excluded.day_local,
                        metrics_json = excluded.metrics_json,
                        record_count = excluded.record_count,
-                       -- Phase 1: status is always 'pending_summary' so this is a
-                       -- no-op. Phase 2 (narrative consumer): gate this reset on a
-                       -- source_hash change, else a pure metrics rebuild would
-                       -- re-queue an already-narrativized row and lose progress.
-                       status       = excluded.status,
+                       source_hash  = excluded.source_hash,
+                       -- Bump version + re-queue narrative ONLY when the input
+                       -- fingerprint changed; a same-inputs rebuild is a no-op
+                       -- for status so an already-narrativized row keeps progress.
+                       source_version = summaries.source_version
+                           + (CASE WHEN summaries.source_hash IS NOT excluded.source_hash
+                                   THEN 1 ELSE 0 END),
+                       status = CASE
+                           WHEN summaries.source_hash IS NOT excluded.source_hash
+                               THEN excluded.status
+                           ELSE summaries.status
+                       END,
                        updated_at   = excluded.updated_at
                    RETURNING id""",
                 (
@@ -1579,6 +1597,7 @@ class SqliteDatabase:
                     metrics_json,
                     record_count,
                     status,
+                    source_hash,
                     now,
                     now,
                 ),

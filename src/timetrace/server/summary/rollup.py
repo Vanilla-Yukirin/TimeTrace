@@ -22,6 +22,7 @@ usable by pure-SQL stats.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from typing import TYPE_CHECKING
 
@@ -125,7 +126,8 @@ class MetricsCascadeBuilder:
             metrics = await aggregate_frame_metrics(self._db, w_s, w_e)
             if metrics["record_count"] == 0:  # empty window — skip (no row)
                 continue
-            await self._upsert("5min", w_s, w_e, metrics)
+            src_hash = await self._leaf_source_hash(w_s, w_e)
+            await self._upsert("5min", w_s, w_e, metrics, src_hash)
             built += 1
         return built
 
@@ -148,7 +150,9 @@ class MetricsCascadeBuilder:
             parts = [json.loads(c["metrics_json"]) for c in children]
             if not parts:
                 continue
-            await self._upsert(grain, p_start, p_end, merge_metrics(parts))
+            await self._upsert(
+                grain, p_start, p_end, merge_metrics(parts), self._rollup_source_hash(children)
+            )
         return len(touched)
 
     async def _populated_5min_starts(self, start_ms: int, end_ms: int) -> list[int]:
@@ -167,7 +171,9 @@ class MetricsCascadeBuilder:
         starts = {window_bounds(int(r["ts_start"]), "5min", cut)[0] for r in rows}
         return sorted(starts)
 
-    async def _upsert(self, grain: str, w_start: int, w_end: int, metrics: dict) -> str:
+    async def _upsert(
+        self, grain: str, w_start: int, w_end: int, metrics: dict, source_hash: str | None = None
+    ) -> str:
         key = scope_key(w_start, grain, self._cfg.cut_hour)
         return await self._db.upsert_summary(
             grain=grain,
@@ -178,4 +184,38 @@ class MetricsCascadeBuilder:
             metrics_json=json.dumps(metrics, ensure_ascii=False),
             record_count=metrics["record_count"],
             status=_METRICS_DONE_STATUS,
+            source_hash=source_hash,
         )
+
+    async def _leaf_source_hash(self, start_ms: int, end_ms: int) -> str:
+        """Input fingerprint for a 5min leaf: any add / remove / reclassify /
+        re-stamp of a contributing frame flips it → re-emission. Mirrors
+        ``aggregate_frame_metrics``' window predicate so hash and metrics see the
+        same rows; the hashed fields are exactly those the metrics depend on
+        (span via ts_start/ts_end, app_name, category_final).
+        """
+        async with self._db.lock:
+            async with self._db.conn.execute(
+                """SELECT r.id, r.ts_start, r.ts_end, r.app_name, a.category_final AS cat
+                   FROM records r LEFT JOIN analysis_results a ON a.record_id = r.id
+                   WHERE r.ts_start >= ? AND r.ts_start < ?
+                   ORDER BY r.id""",
+                (start_ms, end_ms),
+            ) as cur:
+                rows = await cur.fetchall()
+        payload = "\n".join(
+            f"{r['id']}|{r['ts_start']}|{r['ts_end']}|{r['app_name']}|{r['cat']}" for r in rows
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _rollup_source_hash(children: list[dict]) -> str:
+        """Parent fingerprint = hash of children's ``(scope_key, source_hash)``,
+        Merkle-style: a child hash flip propagates up the cascade without
+        re-reading frames.
+        """
+        payload = "\n".join(
+            f"{c['scope_key']}|{c.get('source_hash')}"
+            for c in sorted(children, key=lambda c: c["scope_key"])
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
