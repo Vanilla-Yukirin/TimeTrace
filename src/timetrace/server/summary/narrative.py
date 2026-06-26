@@ -35,11 +35,11 @@ logger = structlog.get_logger(__name__)
 # Chars/token estimate (matches infra/storage/pyramid-schema.md's scent heuristic).
 _CHARS_PER_TOKEN = 3.5
 
-# Cap leaf frames fed to the LLM so a bursty window_switch window can't overflow
-# the model's context. Only DESCRIBED frames are fed (no-description switch rows
-# carry no narrative content), so this rarely bites; bump LM Studio's loaded
-# context for fuller fidelity on very busy windows.
-_MAX_LEAF_FRAMES = 45
+# Hard character budget for the leaf frame context, so a busy window can't
+# overflow a small model context (the box LM Studio is loaded at 4096, and CJK
+# tokenizes ~1 token/char). Only DESCRIBED frames are fed (no-description switch
+# rows carry no narrative). Bump LM Studio's loaded context for fuller fidelity.
+_MAX_LEAF_CONTEXT_CHARS = 1500
 
 _GRAIN_SCOPE = {
     "5min": "这 5 分钟",
@@ -134,7 +134,7 @@ def _parse_narrative(raw: str) -> dict:
 class NarrativeBuilder:
     """Generates the narrative for a finalized cascade row via an injected LLM."""
 
-    def __init__(self, db: Database, llm: NarrativeLLM, *, max_tokens: int = 800) -> None:
+    def __init__(self, db: Database, llm: NarrativeLLM, *, max_tokens: int = 600) -> None:
         self._db = db
         self._llm = llm
         self._max_tokens = max_tokens
@@ -195,18 +195,23 @@ class NarrativeBuilder:
             ) as cur:
                 rows = await cur.fetchall()
         described = [r for r in rows if (r["vlm_desc"] or "").strip()]
-        lines = []
-        for r in described[:_MAX_LEAF_FRAMES]:
+        lines, used, shown = [], 0, 0
+        for r in described:
             desc = (r["vlm_desc"] or "").strip().replace("\n", " ")
             cat = r["category_final"] or "?"
-            lines.append(
+            line = (
                 f"{_fmt_hm(r['ts_start'])} | {r['app_name'] or ''} | "
-                f"{(r['window_title'] or '')[:60]} | [{cat}] {desc[:160]}"
+                f"{(r['window_title'] or '')[:50]} | [{cat}] {desc[:140]}"
             )
-        if len(described) > _MAX_LEAF_FRAMES:
+            if used + len(line) > _MAX_LEAF_CONTEXT_CHARS and lines:
+                break
+            lines.append(line)
+            used += len(line)
+            shown += 1
+        if shown < len(described):
             lines.append(
-                f"…（窗内共 {len(rows)} 条、{len(described)} 条有描述，"
-                f"仅列前 {_MAX_LEAF_FRAMES}；调大 LM Studio 上下文可全量）"
+                f"…（窗内共 {len(rows)} 条、{len(described)} 条有描述，上下文截断到前 "
+                f"{shown}；调大 LM Studio 上下文可全量）"
             )
         return ("\n".join(lines) or "（无逐帧描述）"), len(rows)
 
@@ -245,10 +250,22 @@ class NarrativeCascade:
             rows = await self._db.get_pending_summaries(
                 grain, start_ms, end_ms, now_ms, per_grain_limit
             )
+            done = 0
             for row in rows:
-                out = await self._builder.build_one(row)
-                await self._db.save_summary_narrative(row["id"], **out)
-            counts[grain] = len(rows)
-            if rows:
-                logger.info("narrative.grain_done", grain=grain, n=len(rows))
+                try:
+                    out = await self._builder.build_one(row)
+                    await self._db.save_summary_narrative(row["id"], **out)
+                    done += 1
+                except Exception:  # noqa: BLE001
+                    # One bad window (LLM error, context overflow, …) shouldn't
+                    # abort the whole pass; it stays pending and retries next run.
+                    logger.warning(
+                        "narrative.window_failed",
+                        grain=grain,
+                        scope=row.get("scope_key"),
+                        exc_info=True,
+                    )
+            counts[grain] = done
+            if done:
+                logger.info("narrative.grain_done", grain=grain, n=done)
         return counts
