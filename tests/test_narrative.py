@@ -186,6 +186,31 @@ async def test_empty_content_raises_and_stays_pending(db):
     assert leaf["status"] != "narrated"  # still pending → will retry
 
 
+async def test_parent_deferred_until_children_narrated(db):
+    # A coarse window must NOT be narrated while its finer children are still
+    # pending — else it's a premature metrics paraphrase that never self-corrects.
+    ts = _ms(2001, 6, 9, 9, 0)
+    await _add(db, ts, 60_000, "Code", "main.py", "写代码", "work")
+    await MetricsCascadeBuilder(db, RollupConfig()).build_day(ts)
+    now = int(time.time() * 1000)
+    cascade = NarrativeCascade(db, NarrativeBuilder(db, _MockLLM(_PAYLOAD)))
+    one_h = await db.get_summary("1h", scope_key(ts, "1h", CUT))
+
+    # 5min child still pending → gate blocks the 1h
+    assert (
+        await cascade._has_pending_children("1h", one_h["window_start"], one_h["window_end"], now)
+        is True
+    )
+    # narrate the child, then the gate opens
+    leaf = await db.get_summary("5min", scope_key(ts, "5min", CUT))
+    out = await cascade._builder.build_one(leaf)
+    await db.save_summary_narrative(leaf["id"], **out)
+    assert (
+        await cascade._has_pending_children("1h", one_h["window_start"], one_h["window_end"], now)
+        is False
+    )
+
+
 async def test_narrate_cascade_bottom_up_and_idempotent(db):
     ts = _ms(2001, 6, 9, 9, 0)
     await _add(db, ts, 60_000, "Code", "main.py", "写代码", "work")

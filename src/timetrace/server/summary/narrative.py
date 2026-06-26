@@ -363,6 +363,24 @@ class NarrativeCascade:
         self._db = db
         self._builder = builder
 
+    async def _has_pending_children(
+        self, grain: str, window_start: int, window_end: int, now_ms: int
+    ) -> bool:
+        """True if a finalized child window of this parent is still un-narrated.
+
+        Defers a coarse window until its children are narrated, so it's a real
+        summary-of-summaries and not a premature metrics paraphrase. Without this,
+        a backlog drain (per-grain limit caps each tick) narrates a 1h window
+        while most of its 5min children are still pending — and since a parent's
+        source_hash doesn't change when a child gains a narrative, that thin
+        narrative would never self-correct.
+        """
+        child = CHILD_OF.get(grain)
+        if child is None:  # 5min — no children to wait on
+            return False
+        kids = await self._db.get_summaries_in_range(child, window_start, window_end)
+        return any(k["status"] == "pending_summary" and k["window_end"] <= now_ms for k in kids)
+
     async def narrate_range(
         self,
         start_ms: int,
@@ -385,8 +403,15 @@ class NarrativeCascade:
                 rows = await self._db.get_pending_summaries(
                     grain, start_ms, end_ms, now_ms, per_grain_limit
                 )
-            done = 0
+            done, deferred = 0, 0
             for row in rows:
+                if await self._has_pending_children(
+                    grain, row["window_start"], row["window_end"], now_ms
+                ):
+                    # Children not yet narrated — defer; a later tick picks it up
+                    # once the finer grain has drained (keeps the drain bottom-up).
+                    deferred += 1
+                    continue
                 try:
                     out = await self._builder.build_one(row)
                     await self._db.save_summary_narrative(row["id"], **out)
@@ -401,6 +426,6 @@ class NarrativeCascade:
                         exc_info=True,
                     )
             counts[grain] = done
-            if done:
-                logger.info("narrative.grain_done", grain=grain, n=done)
+            if done or deferred:
+                logger.info("narrative.grain_done", grain=grain, n=done, deferred=deferred)
         return counts
