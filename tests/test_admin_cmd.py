@@ -110,13 +110,17 @@ def test_tokens_revoke_by_label(tmp_path, monkeypatch):
 
 def test_tokens_revoke_by_suffix(tmp_path, monkeypatch):
     _redirect_token_dir(monkeypatch, tmp_path)
-    auth.ServerAuth.load_or_generate(tmp_path)
-
-    full_value = json.loads((tmp_path / "tokens.json").read_text())["tokens"][0]["value"]
-    suffix = full_value[-8:]
+    # Pin a deterministic token. A *randomly generated* value's last-8 suffix can
+    # start with '-' (the base64url alphabet includes it), and argparse then treats
+    # `tokens revoke -<…>` as an option rather than the positional identifier —
+    # which flaked ~1/64 of CI runs. Use a known, dash-free suffix so this test
+    # exercises the revoke-by-suffix matching, not argparse's dash handling.
+    auth.ServerAuth.write_tokens(
+        [auth.TokenEntry(value="tt_live_deadbeefcafe12345678", label="default", created_at=1)]
+    )
 
     out = _Capture()
-    rc = admin_cmd.run(["tokens", "revoke", suffix], out=out)
+    rc = admin_cmd.run(["tokens", "revoke", "12345678"], out=out)
     assert rc == 0
     data = json.loads((tmp_path / "tokens.json").read_text())
     assert data["tokens"] == []
