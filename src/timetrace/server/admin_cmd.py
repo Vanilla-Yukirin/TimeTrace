@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Force a uniform LLM output budget across grains (omit for the "
-        "per-grain default: 2500 for 5min up to 6000 for day/week). An "
+        "per-grain default: 4000 for 5min up to 7000 for day/week). An "
         "always-thinking model spends this on reasoning before content.",
     )
 

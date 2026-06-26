@@ -51,13 +51,13 @@ _MAX_LEAF_CONTEXT_CHARS = 3000
 # headroom. A uniform override can still be forced via NarrativeBuilder(
 # max_tokens=...) for live tuning.
 _GRAIN_MAX_TOKENS = {
-    "5min": 2500,
-    "1h": 5000,
-    "6h": 6000,
-    "day": 6000,
-    "week": 6000,
+    "5min": 4000,
+    "1h": 6000,
+    "6h": 7000,
+    "day": 7000,
+    "week": 7000,
 }
-_DEFAULT_MAX_TOKENS = 3000  # fallback for an unknown grain
+_DEFAULT_MAX_TOKENS = 4000  # fallback for an unknown grain
 
 _GRAIN_SCOPE = {
     "5min": "这 5 分钟",
@@ -249,6 +249,12 @@ class NarrativeBuilder:
         budget = self._max_tokens_override or _GRAIN_MAX_TOKENS.get(grain, _DEFAULT_MAX_TOKENS)
         raw = await self._llm.complete(system=_SYSTEM_PROMPT, user=user, max_tokens=budget)
         parsed = _parse_narrative(raw)
+        if not parsed["description"]:
+            # Empty content — the always-thinking model burned the whole budget on
+            # reasoning before any answer (thinking length is large and varies run
+            # to run). Fail loudly so the row stays pending and a re-run retries it,
+            # instead of being silently marked 'narrated' with nothing in it.
+            raise ValueError("empty narrative content (model returned no usable text)")
 
         body = {"key_points": parsed["key_points"], "source_units": n_src}
         out_text = (

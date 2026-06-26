@@ -148,6 +148,23 @@ def test_parse_narrative_salvages_partial_with_keypoints():
     assert p["evaluation"].startswith("一段专注的")
 
 
+async def test_empty_content_raises_and_stays_pending(db):
+    # An always-thinking model can burn the whole budget on reasoning and return
+    # empty content. That must NOT be saved as a done narrative — it should fail
+    # so the row stays pending and a re-run retries it.
+    ts = _ms(2001, 6, 9, 9, 0)
+    await _add(db, ts, 60_000, "Code", "main.py", "写代码", "work")
+    await MetricsCascadeBuilder(db, RollupConfig()).build_day(ts)
+
+    cascade = NarrativeCascade(db, NarrativeBuilder(db, _MockLLM("")))  # empty payload
+    now = int(time.time() * 1000)
+    counts = await cascade.narrate_range(_ms(2001, 6, 9, 0, 0), _ms(2001, 6, 10, 0, 0), now)
+    assert sum(counts.values()) == 0  # nothing counted as narrated
+    leaf = await db.get_summary("5min", scope_key(ts, "5min", CUT))
+    assert not leaf["description"]  # left empty
+    assert leaf["status"] != "narrated"  # still pending → will retry
+
+
 async def test_narrate_cascade_bottom_up_and_idempotent(db):
     ts = _ms(2001, 6, 9, 9, 0)
     await _add(db, ts, 60_000, "Code", "main.py", "写代码", "work")
