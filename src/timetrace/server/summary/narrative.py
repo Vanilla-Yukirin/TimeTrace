@@ -75,11 +75,15 @@ class NarrativeLLM(Protocol):
 class OpenAINarrativeLLM:
     """``NarrativeLLM`` backed by an OpenAI-compatible chat endpoint (LM Studio)."""
 
-    def __init__(self, client: AsyncOpenAI, model: str) -> None:
+    def __init__(self, client: AsyncOpenAI, model: str, *, disable_thinking: bool = False) -> None:
         self._client = client
         self._model = model
+        self._disable_thinking = disable_thinking
 
     async def complete(self, *, system: str, user: str, max_tokens: int) -> str:
+        # Qwen3+ reasoning models otherwise burn the whole token budget on
+        # <think> and return empty content — same opt-out the VLM client uses.
+        extra = {"extra_body": {"enable_thinking": False}} if self._disable_thinking else {}
         resp = await self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -88,6 +92,7 @@ class OpenAINarrativeLLM:
             ],
             max_tokens=max_tokens,
             temperature=0.3,
+            **extra,
         )
         return resp.choices[0].message.content or ""
 
@@ -243,13 +248,27 @@ class NarrativeCascade:
         self._builder = builder
 
     async def narrate_range(
-        self, start_ms: int, end_ms: int, now_ms: int, *, per_grain_limit: int = 500
+        self,
+        start_ms: int,
+        end_ms: int,
+        now_ms: int,
+        *,
+        per_grain_limit: int = 500,
+        force: bool = False,
     ) -> dict[str, int]:
         counts: dict[str, int] = {}
         for grain in GRAINS:  # fine→coarse: parents see freshly-written children
-            rows = await self._db.get_pending_summaries(
-                grain, start_ms, end_ms, now_ms, per_grain_limit
-            )
+            if force:
+                # re-narrate any finalized window in range, ignoring status
+                rows = [
+                    r
+                    for r in await self._db.get_summaries_in_range(grain, start_ms, end_ms)
+                    if r["window_end"] <= now_ms
+                ][:per_grain_limit]
+            else:
+                rows = await self._db.get_pending_summaries(
+                    grain, start_ms, end_ms, now_ms, per_grain_limit
+                )
             done = 0
             for row in rows:
                 try:

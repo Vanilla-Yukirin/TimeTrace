@@ -69,6 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
     nr.add_argument("start", help="Start (local 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS').")
     nr.add_argument("end", help="End; narrates finalized windows in [start, end), bottom-up.")
     nr.add_argument("--limit", type=int, default=500, help="Max windows per grain (default 500).")
+    nr.add_argument(
+        "--force", action="store_true", help="Re-narrate even already-narrated windows."
+    )
 
     return parser
 
@@ -93,7 +96,7 @@ def run(
     if args.cmd == "backfill":
         return _cmd_backfill(args.start, args.end, args.pause, out)
     if args.cmd == "narrate":
-        return _cmd_narrate(args.start, args.end, args.limit, out)
+        return _cmd_narrate(args.start, args.end, args.limit, args.force, out)
     out(f"unhandled command: {args}")
     return 2
 
@@ -231,7 +234,7 @@ def _cmd_backfill(start: str, end: str, pause: float, out: Callable[[str], None]
     return 0
 
 
-def _cmd_narrate(start: str, end: str, limit: int, out: Callable[[str], None]) -> int:
+def _cmd_narrate(start: str, end: str, limit: int, force: bool, out: Callable[[str], None]) -> int:
     """Generate LLM narratives for finalized windows in ``[start, end)``, bottom-up.
 
     One-shot, idempotent (only narrates rows still pending). Uses the configured
@@ -273,11 +276,12 @@ def _cmd_narrate(start: str, end: str, limit: int, out: Callable[[str], None]) -
         await db.init()
         try:
             client = AsyncOpenAI(base_url=cfg.vlm.base_url, api_key=cfg.vlm.api_key)
-            cascade = NarrativeCascade(
-                db, NarrativeBuilder(db, OpenAINarrativeLLM(client, cfg.vlm.model))
+            llm = OpenAINarrativeLLM(
+                client, cfg.vlm.model, disable_thinking=cfg.vlm.disable_thinking
             )
+            cascade = NarrativeCascade(db, NarrativeBuilder(db, llm))
             counts = await cascade.narrate_range(
-                start_ms, end_ms, int(_time.time() * 1000), per_grain_limit=limit
+                start_ms, end_ms, int(_time.time() * 1000), per_grain_limit=limit, force=force
             )
             samples: list[dict] = []
             for grain in ("day", "6h", "1h", "5min"):  # coarse first (most interesting)
