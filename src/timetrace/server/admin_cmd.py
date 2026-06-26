@@ -75,9 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     nr.add_argument(
         "--max-tokens",
         type=int,
-        default=3000,
-        help="LLM output budget per window (default 3000). An always-thinking "
-        "model spends this on reasoning before content — too low yields empty.",
+        default=None,
+        help="Force a uniform LLM output budget across grains (omit for the "
+        "per-grain default: 2500 for 5min up to 6000 for day/week). An "
+        "always-thinking model spends this on reasoning before content.",
     )
 
     return parser
@@ -242,7 +243,12 @@ def _cmd_backfill(start: str, end: str, pause: float, out: Callable[[str], None]
 
 
 def _cmd_narrate(
-    start: str, end: str, limit: int, force: bool, max_tokens: int, out: Callable[[str], None]
+    start: str,
+    end: str,
+    limit: int,
+    force: bool,
+    max_tokens: int | None,
+    out: Callable[[str], None],
 ) -> int:
     """Generate LLM narratives for finalized windows in ``[start, end)``, bottom-up.
 

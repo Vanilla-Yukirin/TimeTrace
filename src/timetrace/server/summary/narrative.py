@@ -18,6 +18,7 @@ mock and has no hard dependency on the box VLM endpoint.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import TYPE_CHECKING, Protocol
 
@@ -42,6 +43,21 @@ _CHARS_PER_TOKEN = 3.5
 # constraint is ``max_tokens`` (an always-thinking model spends it on reasoning
 # before content — keep it generous, see NarrativeBuilder.max_tokens).
 _MAX_LEAF_CONTEXT_CHARS = 3000
+
+# Per-grain output budget. Coarser windows legitimately produce a longer
+# narrative (a summary-of-summaries spans more time), and the always-thinking
+# model spends part of this budget on reasoning before any content — so a flat
+# 3000 truncates the dense / aggregate windows mid-JSON. Give the coarse grains
+# headroom. A uniform override can still be forced via NarrativeBuilder(
+# max_tokens=...) for live tuning.
+_GRAIN_MAX_TOKENS = {
+    "5min": 2500,
+    "1h": 5000,
+    "6h": 6000,
+    "day": 6000,
+    "week": 6000,
+}
+_DEFAULT_MAX_TOKENS = 3000  # fallback for an unknown grain
 
 _GRAIN_SCOPE = {
     "5min": "这 5 分钟",
@@ -121,9 +137,68 @@ def _metrics_line(metrics: dict) -> str:
     )
 
 
+def _strip_fences(s: str) -> str:
+    """Drop a leading ```json / ``` line and a trailing ``` if present."""
+    s = s.strip()
+    if s.startswith("```"):
+        nl = s.find("\n")
+        if nl != -1:
+            s = s[nl + 1 :]
+    if s.endswith("```"):
+        s = s[: s.rfind("```")]
+    return s.strip()
+
+
+def _read_json_string(s: str) -> str:
+    """Read a JSON string body up to the next unescaped quote (or end if the
+    stream was truncated mid-value). ``s`` starts right after the opening quote.
+    """
+    out: list[str] = []
+    i = 0
+    escapes = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s):
+            out.append(escapes.get(s[i + 1], s[i + 1]))
+            i += 2
+            continue
+        if ch == '"':
+            break
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _salvage_fields(s: str) -> dict:
+    """Recover fields from a truncated / unparseable JSON blob.
+
+    The model writes ``description`` first, so on a max_tokens truncation the
+    description usually survives (possibly clipped) while later fields are gone.
+    Pull whatever landed instead of dumping the raw blob into ``description``.
+    """
+    desc = ""
+    m = re.search(r'"description"\s*:\s*"', s)
+    if m:
+        desc = _read_json_string(s[m.end() :])
+    ev = ""
+    me = re.search(r'"evaluation"\s*:\s*"', s)
+    if me:
+        ev = _read_json_string(s[me.end() :])
+    kps: list[str] = []
+    mk = re.search(r'"key_points"\s*:\s*\[(.*?)\]', s, re.DOTALL)
+    if mk:
+        kps = re.findall(r'"((?:[^"\\]|\\.)*)"', mk.group(1))
+    return {"description": desc.strip(), "key_points": kps, "evaluation": ev.strip()}
+
+
 def _parse_narrative(raw: str) -> dict:
-    """Best-effort extract the JSON object; fall back to raw-as-description."""
-    s = raw.strip()
+    """Best-effort extract the structured fields.
+
+    First try a clean JSON parse (after stripping code fences); on failure
+    (truncated output is the common one) salvage the description / key_points /
+    evaluation that did land, rather than dumping the raw ```json blob.
+    """
+    s = _strip_fences(raw)
     a, b = s.find("{"), s.rfind("}")
     if a != -1 and b > a:
         try:
@@ -135,16 +210,21 @@ def _parse_narrative(raw: str) -> dict:
             }
         except (json.JSONDecodeError, TypeError):
             pass
+    salvaged = _salvage_fields(s)
+    if salvaged["description"]:
+        return salvaged
     return {"description": s, "key_points": [], "evaluation": ""}
 
 
 class NarrativeBuilder:
     """Generates the narrative for a finalized cascade row via an injected LLM."""
 
-    def __init__(self, db: Database, llm: NarrativeLLM, *, max_tokens: int = 3000) -> None:
+    def __init__(self, db: Database, llm: NarrativeLLM, *, max_tokens: int | None = None) -> None:
         self._db = db
         self._llm = llm
-        self._max_tokens = max_tokens
+        # None → smart per-grain budget (_GRAIN_MAX_TOKENS); an int forces that
+        # value uniformly across grains (live tuning via the CLI flag).
+        self._max_tokens_override = max_tokens
 
     async def build_one(self, summary: dict) -> dict:
         """Build {description, evaluation, body_json, src/out_tokens, compression_ratio}.
@@ -166,9 +246,8 @@ class NarrativeBuilder:
             f"【指标】\n{_metrics_line(metrics)}\n\n"
             f"【{'逐帧描述' if grain == '5min' else '下层摘要'}】（共 {n_src} 条）\n{context}"
         )
-        raw = await self._llm.complete(
-            system=_SYSTEM_PROMPT, user=user, max_tokens=self._max_tokens
-        )
+        budget = self._max_tokens_override or _GRAIN_MAX_TOKENS.get(grain, _DEFAULT_MAX_TOKENS)
+        raw = await self._llm.complete(system=_SYSTEM_PROMPT, user=user, max_tokens=budget)
         parsed = _parse_narrative(raw)
 
         body = {"key_points": parsed["key_points"], "source_units": n_src}

@@ -124,6 +124,30 @@ def test_parse_narrative_falls_back_on_garbage():
     assert p["key_points"] == []
 
 
+def test_parse_narrative_salvages_truncated_json():
+    # A max_tokens truncation: description-first, clipped mid-value, JSON never
+    # closes. We should recover the (clipped) description, not dump the ```json.
+    raw = '```json\n{\n  "description": "16:00 起在调脚本，随后切到 QQ 群看了一会'
+    p = _parse_narrative(raw)
+    assert p["description"].startswith("16:00 起在调脚本")
+    assert "```json" not in p["description"]
+    assert "description" not in p["description"]  # no leaked JSON key
+    assert p["key_points"] == []  # the later fields were cut off
+
+
+def test_parse_narrative_salvages_partial_with_keypoints():
+    # description complete + key_points landed, but evaluation got truncated.
+    raw = (
+        '{"description": "写了金字塔叙述层",'
+        ' "key_points": ["分级预算", "截断兜底"],'
+        ' "evaluation": "一段专注的'
+    )
+    p = _parse_narrative(raw)
+    assert p["description"] == "写了金字塔叙述层"
+    assert p["key_points"] == ["分级预算", "截断兜底"]
+    assert p["evaluation"].startswith("一段专注的")
+
+
 async def test_narrate_cascade_bottom_up_and_idempotent(db):
     ts = _ms(2001, 6, 9, 9, 0)
     await _add(db, ts, 60_000, "Code", "main.py", "写代码", "work")
