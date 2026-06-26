@@ -53,6 +53,16 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 - 没设 API Key → `VLMConfig.from_env()` 返回 `None` → worker 跳过 `_describe`，搜索接口的 semantic 通道返回 `unavailable`，**不报错**
 - 退出前必须 `await vlm_client.aclose()`，否则 httpx 连接池会在 atexit 报警
 
+**「金字塔」记忆层**（指标级联 + 叙述层，[server/summary/](src/timetrace/server/summary/)）：
+
+- **指标级联**（`rollup.py`）：L1 帧按固定时间窗 `5min→1h→6h→day→week` 自底向上滚进单张自相似 `summaries` 表。`cat_seconds`/`app_seconds` 是可加的 Σ-own-span（能跨层 SUM），`active_seconds` 是墙钟并集（不可加、不入级联、读时现算）。时长口径是「本机捕获活跃下限」非总时间——深度文档 [infra/storage/pyramid-schema.md](infra/storage/pyramid-schema.md)
+- **叙述层**（`narrative.py`）：每窗用 LLM 生成 `description`(流水账)/`key_points`/`evaluation`。叶子读帧描述、父层读子叙述（summary-of-summaries），**严格自底向上**——父窗必须等子窗叙述完才生成（`NarrativeCascade._has_pending_children` 门控），否则只会复述指标且**永不自纠**。零描述帧的窗（纯 window_switch 无截图）短路跳 LLM、写指标版极简叙述
+- **source_hash 重发**：父窗 source_hash 是子窗 Merkle，**只指纹指标/分类、不含叙述文本**；记录被重分类→叶子哈希变→冒泡→`upsert_summary` 重置 pending→重新叙述。注意：子窗叙述本身变了**不**触发父窗重做（已知缺口，目前只在手动 `--force` 下碰到）
+- **两个后台 loop**（`bootstrap.py`，均默认关）：`_rollup_loop`（`TIMETRACE_ROLLUP_ENABLED=1`，纯 SQL、不依赖 VLM）+ `_narrate_loop`（`TIMETRACE_NARRATE_ENABLED=1`，依赖 VLM）。轮询式：每 tick 每 grain 限 20 窗、间隔 `loop_interval_s` 配速单卡——为稳态设计，大积压排空时偏慢（可临时连续灌或调大 batch）。env 开关别加行内注释（`=1  # x` 会被当成值，`_env_truthy` 不认）
+- **暴露给 agent/MCP**：`search_summaries`（`agent/tools.py` + `mcp_layer/server.py`）——粗粒度总览→按返回的 `drill_down_grain` + 该窗 iso 区间换细 grain 下钻，**时间区间即父子链路**
+- **admin CLI**：`timetrace-server backfill <start> <end>`（建指标）、`narrate <start> <end> [--force] [--grains 1h,6h,day,week] [--max-tokens N]`（生成/重叙述；`--grains` 只重跑指定层）
+- **LM Studio 配置硬约束**（box 的 35B 端点，叙述/VLM/报告共用）：必须 **context ≥16384 + `max concurrent predictions`(=parallel)=1**。parallel 默认 4 会把 KV cache 等分成 1/4（4096→实际每请求 1024），叙述 prompt 立刻溢出。该 35B 是**永远思考**模型（`enable_thinking:false` 与 `/no_think` 实测都关不掉），思考算进输出 token → `max_tokens` 要给够（per-grain：5min 4000、聚合窗 6000-7000）。单卡 parallel=1 → 所有消费者（worker 图片分析 / 叙述 / 报告 / ask_agent）**FIFO 排队串行**，嵌入(nomic)是另一个模型、抢卡时会触发换模型 thrash
+
 **数据流挂钩**：
 
 - `Capture → Database`：每条 record 触发 `INSERT INTO analysis_tasks` 入队
@@ -71,7 +81,7 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 - **入口**：三个 `[project.scripts]`：
   - `timetrace` → `main.py:main` 单进程默认（pystray 主线程 + asyncio loop）
   - `timetrace-client` → `client/cli.py:main` 客户端守护；子命令 `init` (交互/--non-interactive)、`print-config`
-  - `timetrace-server` → `server/cli.py:main` 服务端守护；子命令 `info`、`tokens list/add/revoke`
+  - `timetrace-server` → `server/cli.py:main` 服务端守护；子命令 `info`、`tokens list/add/revoke`、`backfill <start> <end>`（建指标级联）、`narrate <start> <end> [--force] [--grains] [--max-tokens]`（生成/重叙述）—— 后两个见 admin_cmd.py
   - main.py 与 server/cli.py 共享 `server/bootstrap.py`（build_server_components + serve(extra_tasks=...)），不会再次漂移
 - **三层目录**：`src/timetrace/{common,client,server}/`。配置在 `common/config.py` + `client/core/config.py`（ClientConfig 现在吃 storage/capture/privacy 三段，是双进程 client 的单一 source of truth；含 `apply_env_overrides()` 接 9 个 TIMETRACE_* env vars）；wire schema 在 `common/protocol.py`；capture / 托盘 / outbox / backend / init_cmd 在 `client/`；api / db / queue / blob / worker / vlm / phash / mcp / admin_cmd / bootstrap 在 `server/`。
 - **DB 路径**：`server/db/sqlite.py::SqliteDatabase`，`server/db/__init__.py` 导出 `Database = SqliteDatabase` 别名 —— 现在所有调用方都还是用 `from timetrace.server.db import Database`，PostgresDatabase 在 P5 进来时这条别名升级为 typing.Protocol。
@@ -102,12 +112,12 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 
 | 文件 | 问题 | 状态 |
 |------|------|------|
-| `server/mcp_layer/tools.py` | `get_category_stats()` / `search_activity()` | Phase 1.5+ stub |
+| `server/mcp_layer/tools.py` | 整个文件是早期 Phase 1.5 桩（`get_category_stats`/`search_activity` 返回空） | ⚠️ **死代码**：真正的 MCP 走 `mcp_layer/server.py` → `agent/tools.py`（已全实装），没人 import 这个文件，可删 |
 | ~~`client/capture/window.py::_get_process_info`~~ | ~~app_name 全 "Unknown"~~ | ✅ 已修：`0ec105e` ctypes 直调 `QueryFullProcessImageNameW`；416 PID 实测 242 (58%) 拿到真名，剩余 174 是系统进程权限不允许 |
 
 ## 测试
 
-- `tests/` 当前 261 passed：`test_api / test_auth / test_backend_inprocess / test_blob_local / test_client_config / test_http_backend / test_ingest / test_outbox / test_outbox_sender / test_phash_index / test_privacy / test_queue_inmemory / test_rules / test_search / test_storage / test_vlm / test_vlm_smoke / test_worker_pipeline`
+- `tests/` 当前 **535 passed**（46 个 test 文件）。除早期那批（api/auth/backend/ingest/outbox/phash/rules/search/storage/vlm/worker…），金字塔与 agent 相关的有：`test_rollup_cascade / test_summary_windows / test_source_hash / test_narrative`（指标级联 + source_hash + 叙述层，全 mock LLM）、`test_agent_tools / test_agent_runner / test_query_stats / test_mcp_tools / test_mcp_auth`（agent/MCP 读面，含 `search_summaries`）、`test_admin_backfill / test_admin_cmd`（backfill/narrate 子命令）
 - `pytest-asyncio` `asyncio_mode = "auto"`（pyproject.toml）
 - 不 mock DB，全部用 `tmp_path` 下的真实 SQLite 文件；HttpBackend E2E 用 `httpx.ASGITransport(app=...)` 直接打 in-process FastAPI，零 socket 零线程
 - VLM 测试分两层：`test_vlm.py` 单元（mock httpx），`test_vlm_smoke.py` 真实端点（需 `.env`，无 key 自动 skip）

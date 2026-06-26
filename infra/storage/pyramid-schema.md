@@ -177,6 +177,17 @@ drill_down_hint 示例：
 - **自描述契约**：`query_stats` 每个结果都带 `semantics` 块（definition / is_a_floor_because / how_to_phrase / aggregation），让外部 MCP agent 不靠读代码就知道该怎么如实表述这些数。
 - **设备覆盖**才是真正的精度前沿（多设备 ingest / 标注哪台机哪段没覆盖），单独大工程，排在叙述层之后。
 
+### 5.2 叙述层（LLM 把每个窗写成流水账 / 重点 / 评价）
+
+指标级联之上的 LLM 层（`server/summary/narrative.py`）。每个 finalized 窗生成结构化中文叙述，存进 `summaries` 三列：`description`(流水账) / `evaluation`(评价) + `body_json.key_points`(重点)。
+
+- **summary-of-summaries，严格自底向上**：叶子(`5min`)读窗内**有截图描述**的帧；父层(`1h`+)读**子窗的叙述**、不再重扫帧。父窗必须等所有子窗叙述完才生成——`NarrativeCascade._has_pending_children` 门控：子窗还 `pending_summary` 就跳过、留到后续 tick。否则父窗只能复述指标（"下层缺乏具体叙述"）且**永不自纠**（见下）。
+- **零描述窗短路**：纯 `window_switch` 无截图的窗没有可叙述的料，跳过 LLM、写一条 `body_json.metrics_only=true` 的指标版极简叙述，避免自动 loop 空转重试。
+- **叙述不进 `source_hash`**：父窗 `source_hash` 只指纹子窗的指标/分类（Merkle），**不含叙述文本**。所以子窗叙述填进来**不冒泡**、不触发父窗重做——已知缺口：子窗叙述本身变了父窗不自动同步（目前只在手动 `narrate --force` 下碰到；正常流程每窗一生只叙述一次，碰不到）。只有重分类→指标变→哈希变→才级联重做。
+- **后台 loop**：`_narrate_loop`（`bootstrap.py`，`TIMETRACE_NARRATE_ENABLED=1`，默认关）。轮询：每 tick 每 grain 限 `per_grain_limit=20` 窗、间隔 `loop_interval_s=300` 配速单卡 LM Studio——为稳态（每 5min 才一个新窗）设计，大积压排空偏慢（可临时 `narrate` 连续灌或 `--grains` 只补父层）。空叙述（模型返空）抛异常留 pending 下次重试。
+- **读出口**：`search_summaries`（agent + MCP 工具）——折叠/下钻：粗粒度总览 → 按返回的 `drill_down_grain` + 窗 `window_start_iso/end_iso` 换细 grain，时间区间即父子链路。
+- **生成硬依赖 LM Studio 配置**：context ≥16384 + parallel(`max concurrent predictions`)=1 + per-grain `max_tokens`（5min 4000、聚合窗 6000-7000）；box 那个 35B **永远思考**、思考算进输出预算。详见 [CLAUDE.md 架构关键点](../../CLAUDE.md)。
+
 ---
 
 ## 6. 幂等、watermark 与跨层组合
