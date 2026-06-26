@@ -35,6 +35,12 @@ logger = structlog.get_logger(__name__)
 # Chars/token estimate (matches infra/storage/pyramid-schema.md's scent heuristic).
 _CHARS_PER_TOKEN = 3.5
 
+# Cap leaf frames fed to the LLM so a bursty window_switch window can't overflow
+# the model's context. Only DESCRIBED frames are fed (no-description switch rows
+# carry no narrative content), so this rarely bites; bump LM Studio's loaded
+# context for fuller fidelity on very busy windows.
+_MAX_LEAF_FRAMES = 45
+
 _GRAIN_SCOPE = {
     "5min": "这 5 分钟",
     "1h": "这 1 小时",
@@ -128,7 +134,7 @@ def _parse_narrative(raw: str) -> dict:
 class NarrativeBuilder:
     """Generates the narrative for a finalized cascade row via an injected LLM."""
 
-    def __init__(self, db: Database, llm: NarrativeLLM, *, max_tokens: int = 1200) -> None:
+    def __init__(self, db: Database, llm: NarrativeLLM, *, max_tokens: int = 800) -> None:
         self._db = db
         self._llm = llm
         self._max_tokens = max_tokens
@@ -174,7 +180,11 @@ class NarrativeBuilder:
         }
 
     async def _leaf_context(self, summary: dict) -> tuple[str, int]:
-        """Chronological frame lines (ts | app | title | vlm_desc) for a 5min window."""
+        """Chronological frame lines for a 5min window. Only frames WITH a VLM
+        description are fed (they carry the story); no-description window_switch
+        rows are dropped from the context but still counted in ``n_src``. Capped
+        to ``_MAX_LEAF_FRAMES`` to stay inside the model context.
+        """
         async with self._db.lock:
             async with self._db.conn.execute(
                 """SELECT r.ts_start, r.app_name, r.window_title, a.vlm_desc, a.category_final
@@ -184,13 +194,19 @@ class NarrativeBuilder:
                 (summary["window_start"], summary["window_end"]),
             ) as cur:
                 rows = await cur.fetchall()
+        described = [r for r in rows if (r["vlm_desc"] or "").strip()]
         lines = []
-        for r in rows:
+        for r in described[:_MAX_LEAF_FRAMES]:
             desc = (r["vlm_desc"] or "").strip().replace("\n", " ")
             cat = r["category_final"] or "?"
             lines.append(
                 f"{_fmt_hm(r['ts_start'])} | {r['app_name'] or ''} | "
-                f"{(r['window_title'] or '')[:60]} | [{cat}] {desc[:200]}"
+                f"{(r['window_title'] or '')[:60]} | [{cat}] {desc[:160]}"
+            )
+        if len(described) > _MAX_LEAF_FRAMES:
+            lines.append(
+                f"…（窗内共 {len(rows)} 条、{len(described)} 条有描述，"
+                f"仅列前 {_MAX_LEAF_FRAMES}；调大 LM Studio 上下文可全量）"
             )
         return ("\n".join(lines) or "（无逐帧描述）"), len(rows)
 
