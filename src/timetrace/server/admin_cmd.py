@@ -65,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to pause between days, to spare the box (default 1.0).",
     )
 
+    nr = sub.add_parser("narrate", help="Generate LLM narratives for finalized cascade windows.")
+    nr.add_argument("start", help="Start (local 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS').")
+    nr.add_argument("end", help="End; narrates finalized windows in [start, end), bottom-up.")
+    nr.add_argument("--limit", type=int, default=500, help="Max windows per grain (default 500).")
+
     return parser
 
 
@@ -87,6 +92,8 @@ def run(
             return _cmd_tokens_revoke(args.identifier, out)
     if args.cmd == "backfill":
         return _cmd_backfill(args.start, args.end, args.pause, out)
+    if args.cmd == "narrate":
+        return _cmd_narrate(args.start, args.end, args.limit, out)
     out(f"unhandled command: {args}")
     return 2
 
@@ -221,6 +228,75 @@ def _cmd_backfill(start: str, end: str, pause: float, out: Callable[[str], None]
     result = asyncio.run(_run())
     out(f"backfilled {result['days']} logical day(s) over [{start} .. {end})")
     out(f"summaries rows now (all grains): {result['rows']}")
+    return 0
+
+
+def _cmd_narrate(start: str, end: str, limit: int, out: Callable[[str], None]) -> int:
+    """Generate LLM narratives for finalized windows in ``[start, end)``, bottom-up.
+
+    One-shot, idempotent (only narrates rows still pending). Uses the configured
+    VLM chat endpoint (LM Studio). Prints a few real samples so the voice can be
+    eyeballed. Run AFTER the metrics cascade is built for the range (backfill /
+    rollup loop) — it narrates existing summary rows, it does not build metrics.
+    """
+    import asyncio
+    import datetime as _dt
+    import json as _json
+    import time as _time
+
+    from openai import AsyncOpenAI
+
+    from timetrace.server.db import Database
+    from timetrace.server.summary.narrative import (
+        NarrativeBuilder,
+        NarrativeCascade,
+        OpenAINarrativeLLM,
+    )
+
+    try:
+        start_ms = int(_dt.datetime.fromisoformat(start).timestamp() * 1000)
+        end_ms = int(_dt.datetime.fromisoformat(end).timestamp() * 1000)
+    except ValueError as exc:
+        out(f"bad date (use 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'): {exc}")
+        return 2
+    if end_ms <= start_ms:
+        out("end must be after start")
+        return 2
+
+    cfg = AppConfig()
+    if cfg.vlm is None:
+        out("no LLM configured (set TIMETRACE_VLM_*) — narrative needs a chat endpoint")
+        return 1
+
+    async def _run() -> tuple[dict, list[dict]]:
+        db = Database(cfg.storage)
+        await db.init()
+        try:
+            client = AsyncOpenAI(base_url=cfg.vlm.base_url, api_key=cfg.vlm.api_key)
+            cascade = NarrativeCascade(
+                db, NarrativeBuilder(db, OpenAINarrativeLLM(client, cfg.vlm.model))
+            )
+            counts = await cascade.narrate_range(
+                start_ms, end_ms, int(_time.time() * 1000), per_grain_limit=limit
+            )
+            samples: list[dict] = []
+            for grain in ("day", "6h", "1h", "5min"):  # coarse first (most interesting)
+                for r in await db.get_summaries_in_range(grain, start_ms, end_ms):
+                    if r.get("description"):
+                        samples.append(r)
+            return counts, samples[:4]
+        finally:
+            await db.close()
+
+    counts, samples = asyncio.run(_run())
+    out(f"narrated: {counts}")
+    for s in samples:
+        body = _json.loads(s.get("body_json") or "{}")
+        out("")
+        out(f"--- [{s['grain']}] {s['scope_key']} ---")
+        out(f"description: {s['description']}")
+        out(f"key_points:  {body.get('key_points')}")
+        out(f"evaluation:  {s['evaluation']}")
     return 0
 
 

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
-from timetrace.server.summary.windows import CHILD_OF
+from timetrace.server.summary.windows import CHILD_OF, GRAINS
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -206,3 +206,33 @@ class NarrativeBuilder:
             desc = (c["description"] or "").strip().replace("\n", " ")
             lines.append(f"[{span}] {desc[:400]}" if desc else f"[{span}] （下层暂无叙述，仅指标）")
         return ("\n".join(lines) or "（无下层摘要）"), len(children)
+
+
+class NarrativeCascade:
+    """Drives narrative generation bottom-up over finalized windows in a range.
+
+    Walks grains fine→coarse, so by the time a parent is narrated its children's
+    fresh narratives already exist (summary-of-summaries). Idempotent: only
+    narrates rows still at ``status='pending_summary'`` — a re-emission (source
+    change) resets a row back to pending, so it gets re-narrated next run.
+    """
+
+    def __init__(self, db: Database, builder: NarrativeBuilder) -> None:
+        self._db = db
+        self._builder = builder
+
+    async def narrate_range(
+        self, start_ms: int, end_ms: int, now_ms: int, *, per_grain_limit: int = 500
+    ) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for grain in GRAINS:  # fine→coarse: parents see freshly-written children
+            rows = await self._db.get_pending_summaries(
+                grain, start_ms, end_ms, now_ms, per_grain_limit
+            )
+            for row in rows:
+                out = await self._builder.build_one(row)
+                await self._db.save_summary_narrative(row["id"], **out)
+            counts[grain] = len(rows)
+            if rows:
+                logger.info("narrative.grain_done", grain=grain, n=len(rows))
+        return counts

@@ -39,6 +39,8 @@ Usage:
   timetrace-server backfill <start> <end>  Build the metrics cascade for a
                                          historical date range (one-shot; safe
                                          while the server is running).
+  timetrace-server narrate <start> <end>   Generate LLM narratives for finalized
+                                         cascade windows in a range (one-shot).
   timetrace-server -h | --help           Show this help.
 
 Token file lives at ~/.config/timetrace-server/tokens.json (chmod 600 on POSIX).
@@ -59,7 +61,7 @@ def main() -> None:
     if args and args[0] in ("-h", "--help"):
         print(_HELP_TEXT)
         return
-    if args and args[0] in ("info", "tokens", "backfill"):
+    if args and args[0] in ("info", "tokens", "backfill", "narrate"):
         from timetrace.server.admin_cmd import run as admin_run  # noqa: PLC0415
 
         sys.exit(admin_run(args))

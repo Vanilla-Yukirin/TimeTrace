@@ -1632,6 +1632,59 @@ class SqliteDatabase:
                 rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def get_pending_summaries(
+        self, grain: str, start_ms: int, end_ms: int, before_ms: int, limit: int = 500
+    ) -> list[dict]:
+        """Finalized rows of ``grain`` still awaiting a narrative: status
+        'pending_summary', ``window_start`` ∈ [start_ms, end_ms), and
+        ``window_end <= before_ms`` (= 'now', so an open window is never
+        narrated). Oldest-first so a bottom-up pass narrates children first.
+        """
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT * FROM summaries "
+                "WHERE grain = ? AND status = 'pending_summary' "
+                "AND window_start >= ? AND window_start < ? AND window_end <= ? "
+                "ORDER BY window_start LIMIT ?",
+                (grain, start_ms, end_ms, before_ms, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def save_summary_narrative(
+        self,
+        summary_id: str,
+        *,
+        description: str,
+        evaluation: str,
+        body_json: str,
+        src_tokens: int | None = None,
+        out_tokens: int | None = None,
+        compression_ratio: float | None = None,
+        status: str = "narrated",
+    ) -> None:
+        """Persist the narrative stage's output onto a summary row (metrics +
+        identity columns untouched)."""
+        now = _now_ms()
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE summaries SET description=?, evaluation=?, body_json=?, "
+                "src_tokens=?, out_tokens=?, compression_ratio=?, status=?, updated_at=? "
+                "WHERE id=?",
+                (
+                    description,
+                    evaluation,
+                    body_json,
+                    src_tokens,
+                    out_tokens,
+                    compression_ratio,
+                    status,
+                    now,
+                    summary_id,
+                ),
+            )
+            await self.conn.commit()
+
     async def get_category_final(self, record_id: str) -> str | None:
         """Return analysis_results.category_final for a record, or None."""
         async with self._lock:

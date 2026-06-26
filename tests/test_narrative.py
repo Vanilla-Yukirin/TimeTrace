@@ -9,13 +9,18 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import time
 
 import pytest
 
 from timetrace.common.config import RollupConfig, StorageConfig
 from timetrace.common.models import CaptureContext
 from timetrace.server.db import Database
-from timetrace.server.summary.narrative import NarrativeBuilder, _parse_narrative
+from timetrace.server.summary.narrative import (
+    NarrativeBuilder,
+    NarrativeCascade,
+    _parse_narrative,
+)
 from timetrace.server.summary.rollup import MetricsCascadeBuilder
 from timetrace.server.summary.windows import scope_key
 
@@ -117,3 +122,31 @@ def test_parse_narrative_falls_back_on_garbage():
     p = _parse_narrative("not json at all")
     assert p["description"] == "not json at all"
     assert p["key_points"] == []
+
+
+async def test_narrate_cascade_bottom_up_and_idempotent(db):
+    ts = _ms(2001, 6, 9, 9, 0)
+    await _add(db, ts, 60_000, "Code", "main.py", "写代码", "work")
+    await MetricsCascadeBuilder(db, RollupConfig()).build_day(ts)
+
+    mock = _MockLLM(_PAYLOAD)  # payload description mentions "outbox"
+    cascade = NarrativeCascade(db, NarrativeBuilder(db, mock))
+    now = int(time.time() * 1000)  # 2001 windows are long finalized
+    counts = await cascade.narrate_range(_ms(2001, 6, 9, 0, 0), _ms(2001, 6, 10, 0, 0), now)
+    # 5min..day sit inside the range; the week window starts Monday (before this
+    # single-day range), so it's correctly NOT narrated from just one day.
+    assert counts["5min"] == 1 and counts["1h"] == 1
+    assert counts["6h"] == 1 and counts["day"] == 1
+    assert counts["week"] == 0
+
+    leaf = await db.get_summary("5min", scope_key(ts, "5min", CUT))
+    day = await db.get_summary("day", scope_key(ts, "day", CUT))
+    assert leaf["description"] and leaf["status"] == "narrated"
+    assert day["description"] and day["status"] == "narrated"
+    # bottom-up: leaf prompt carried the frame desc; parents carried child narrative
+    assert "写代码" in mock.calls[0]
+    assert any("outbox" in c for c in mock.calls[1:])
+
+    # idempotent: nothing left pending → a second pass narrates 0
+    again = await cascade.narrate_range(_ms(2001, 6, 9, 0, 0), _ms(2001, 6, 10, 0, 0), now)
+    assert sum(again.values()) == 0
