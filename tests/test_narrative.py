@@ -211,6 +211,28 @@ async def test_parent_deferred_until_children_narrated(db):
     )
 
 
+async def test_narrate_range_grains_filter(db):
+    # grains filter restricts which layers get (re)narrated — used to redo only
+    # parent layers after a backlog drain without touching the good leaves.
+    ts = _ms(2001, 6, 9, 9, 0)
+    await _add(db, ts, 60_000, "Code", "main.py", "写代码", "work")
+    await MetricsCascadeBuilder(db, RollupConfig()).build_day(ts)
+    now = int(time.time() * 1000)
+    cascade = NarrativeCascade(db, NarrativeBuilder(db, _MockLLM(_PAYLOAD)))
+
+    # narrate only the leaf
+    counts = await cascade.narrate_range(
+        _ms(2001, 6, 9, 0, 0), _ms(2001, 6, 10, 0, 0), now, grains=("5min",)
+    )
+    assert counts == {"5min": 1}  # only the 5min layer was walked
+    # now redo only parents (children are done → gate passes)
+    counts2 = await cascade.narrate_range(
+        _ms(2001, 6, 9, 0, 0), _ms(2001, 6, 10, 0, 0), now, force=True, grains=("1h", "6h", "day")
+    )
+    assert set(counts2) == {"1h", "6h", "day"}  # leaves untouched
+    assert counts2["1h"] == 1
+
+
 async def test_narrate_cascade_bottom_up_and_idempotent(db):
     ts = _ms(2001, 6, 9, 9, 0)
     await _add(db, ts, 60_000, "Code", "main.py", "写代码", "work")

@@ -80,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
         "per-grain default: 4000 for 5min up to 7000 for day/week). An "
         "always-thinking model spends this on reasoning before content.",
     )
+    nr.add_argument(
+        "--grains",
+        default=None,
+        help="Comma-separated grains to (re)narrate, e.g. '1h,6h,day,week' to "
+        "redo only parent layers. Default: all (5min,1h,6h,day,week).",
+    )
 
     return parser
 
@@ -104,7 +110,9 @@ def run(
     if args.cmd == "backfill":
         return _cmd_backfill(args.start, args.end, args.pause, out)
     if args.cmd == "narrate":
-        return _cmd_narrate(args.start, args.end, args.limit, args.force, args.max_tokens, out)
+        return _cmd_narrate(
+            args.start, args.end, args.limit, args.force, args.max_tokens, args.grains, out
+        )
     out(f"unhandled command: {args}")
     return 2
 
@@ -248,6 +256,7 @@ def _cmd_narrate(
     limit: int,
     force: bool,
     max_tokens: int | None,
+    grains: str | None,
     out: Callable[[str], None],
 ) -> int:
     """Generate LLM narratives for finalized windows in ``[start, end)``, bottom-up.
@@ -286,6 +295,8 @@ def _cmd_narrate(
         out("no LLM configured (set TIMETRACE_VLM_*) — narrative needs a chat endpoint")
         return 1
 
+    grain_filter = tuple(g.strip() for g in grains.split(",") if g.strip()) if grains else None
+
     async def _run() -> tuple[dict, list[dict]]:
         db = Database(cfg.storage)
         await db.init()
@@ -296,7 +307,12 @@ def _cmd_narrate(
             )
             cascade = NarrativeCascade(db, NarrativeBuilder(db, llm, max_tokens=max_tokens))
             counts = await cascade.narrate_range(
-                start_ms, end_ms, int(_time.time() * 1000), per_grain_limit=limit, force=force
+                start_ms,
+                end_ms,
+                int(_time.time() * 1000),
+                per_grain_limit=limit,
+                force=force,
+                grains=grain_filter,
             )
             samples: list[dict] = []
             for grain in ("day", "6h", "1h", "5min"):  # coarse first (most interesting)

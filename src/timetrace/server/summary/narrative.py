@@ -389,9 +389,15 @@ class NarrativeCascade:
         *,
         per_grain_limit: int = 500,
         force: bool = False,
+        grains: tuple[str, ...] | None = None,
     ) -> dict[str, int]:
+        # ``grains`` restricts which layers to (re)narrate — still walked in the
+        # canonical fine→coarse order so a parent sees fresh children. Used to
+        # re-narrate ONLY parent layers (e.g. after a backlog drain) without
+        # touching the good leaves.
+        walk = GRAINS if grains is None else tuple(g for g in GRAINS if g in grains)
         counts: dict[str, int] = {}
-        for grain in GRAINS:  # fine→coarse: parents see freshly-written children
+        for grain in walk:  # fine→coarse: parents see freshly-written children
             if force:
                 # re-narrate any finalized window in range, ignoring status
                 rows = [
