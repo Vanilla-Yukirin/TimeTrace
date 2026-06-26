@@ -185,7 +185,13 @@ async def serve(
         logger.info("server.stop_requested")
         server.should_exit = True
         for task in asyncio.all_tasks():
-            cancel_names = {"worker", "reclaim", "report_scheduler", "rollup"} | extra_task_names
+            cancel_names = {
+                "worker",
+                "reclaim",
+                "report_scheduler",
+                "rollup",
+                "narrate",
+            } | extra_task_names
             if task.get_name() in cancel_names:
                 task.cancel()
 
@@ -245,6 +251,52 @@ async def serve(
                 logger.warning("rollup.tick_failed", exc_info=True)
             await asyncio.sleep(config.rollup.loop_interval_s)
 
+    async def _narrate_loop() -> None:
+        # Memory-pyramid narrative stage: turn finalized metric windows the rollup
+        # cascade wrote into structured 流水账/重点/评价 via the VLM chat endpoint.
+        # DISABLED by default (TIMETRACE_NARRATE_ENABLED=1) and independent of the
+        # rollup loop — it DOES depend on the VLM endpoint, so it no-ops when no
+        # VLM is configured. Each tick narrates only still-pending finalized
+        # windows (force=False), bounded per grain to pace the single GPU.
+        # Exceptions per tick are swallowed; an empty window stays pending and
+        # retries next tick (the model's thinking length varies run to run).
+        if not config.narrate.enabled:
+            logger.info("narrate.loop_disabled", reason="config.narrate.enabled=False")
+            return
+        if config.vlm is None:
+            logger.info("narrate.loop_disabled", reason="no_vlm")
+            return
+        from openai import AsyncOpenAI
+
+        from timetrace.server.summary.narrative import (
+            NarrativeBuilder,
+            NarrativeCascade,
+            OpenAINarrativeLLM,
+        )
+
+        client = AsyncOpenAI(base_url=config.vlm.base_url, api_key=config.vlm.api_key)
+        llm = OpenAINarrativeLLM(
+            client, config.vlm.model, disable_thinking=config.vlm.disable_thinking
+        )
+        cascade = NarrativeCascade(components.db, NarrativeBuilder(components.db, llm))
+        await asyncio.sleep(config.narrate.loop_initial_delay_s)
+        logger.info("narrate.loop_started", interval_s=config.narrate.loop_interval_s)
+        try:
+            while True:
+                try:
+                    now = int(time.time() * 1000)
+                    start = now - config.narrate.loop_lookback_h * 3_600_000
+                    counts = await cascade.narrate_range(
+                        start, now, now, per_grain_limit=config.narrate.per_grain_limit
+                    )
+                    if any(counts.values()):
+                        logger.info("narrate.tick", **{f"n_{g}": n for g, n in counts.items()})
+                except Exception:  # noqa: BLE001
+                    logger.warning("narrate.tick_failed", exc_info=True)
+                await asyncio.sleep(config.narrate.loop_interval_s)
+        finally:
+            await client.close()
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(components.worker.run(), name="worker")
@@ -253,6 +305,7 @@ async def serve(
             tg.create_task(_reclaim_loop(), name="reclaim")
             tg.create_task(_report_scheduler(), name="report_scheduler")
             tg.create_task(_rollup_loop(), name="rollup")
+            tg.create_task(_narrate_loop(), name="narrate")
             for name, coro in (extra_tasks or {}).items():
                 tg.create_task(coro, name=name)
     finally:

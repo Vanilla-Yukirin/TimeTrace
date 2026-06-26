@@ -144,6 +144,32 @@ class RollupConfig:
 
 
 @dataclass
+class NarrativeConfig:
+    """Tunables for the background narrative loop (the LLM stage of the pyramid).
+
+    The loop walks finalized-but-not-yet-narrated summary rows (those the rollup
+    cascade already wrote) and asks the VLM chat endpoint for a structured
+    流水账 / 重点 / 评价 per window — see server/summary/narrative.py.
+
+    DISABLED by default and independent of the rollup loop: narrating depends on
+    the VLM endpoint (rollup is pure SQL), and a half-narrated range is harmless
+    (empty windows stay pending and retry), so the two are gated separately. Flip
+    with TIMETRACE_NARRATE_ENABLED=1 once the rollup loop is producing rows and
+    the LLM endpoint is sized for the narrative prompt.
+    """
+
+    enabled: bool = False
+    loop_initial_delay_s: int = 90  # after rollup has had a tick or two to write rows
+    loop_interval_s: int = 300  # narrate freshly-finalized windows every 5 min
+    loop_lookback_h: int = 192  # 8 days — covers a full week window + spill
+    per_grain_limit: int = 20  # windows per grain per tick; paces the single GPU
+
+    @classmethod
+    def from_env(cls) -> NarrativeConfig:
+        return cls(enabled=_env_truthy(os.getenv("TIMETRACE_NARRATE_ENABLED")))
+
+
+@dataclass
 class StorageConfig:
     """Paths for SQLite database and image files."""
 
@@ -255,6 +281,7 @@ class AppConfig:
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     worker: WorkerConfig = field(default_factory=WorkerConfig)
     rollup: RollupConfig = field(default_factory=RollupConfig.from_env)
+    narrate: NarrativeConfig = field(default_factory=NarrativeConfig.from_env)
     vlm: VLMConfig | None = field(default_factory=VLMConfig.from_env)
     embedding: EmbeddingConfig | None = field(default_factory=EmbeddingConfig.from_env)
     auth: AuthConfig = field(default_factory=AuthConfig.from_env)
