@@ -148,6 +148,27 @@ def test_parse_narrative_salvages_partial_with_keypoints():
     assert p["evaluation"].startswith("一段专注的")
 
 
+async def test_leaf_with_no_described_frames_skips_llm(db):
+    # A window_switch burst: records + category, but NO vlm_desc. The builder
+    # must NOT call the LLM (it could only come back empty) — it writes a
+    # deterministic metrics-only narrative so the loop never retries it.
+    ts = _ms(2001, 6, 9, 9, 0)
+    ctx = CaptureContext(app_name="Explorer", process_name="explorer", window_title="x")
+    rid = await db.insert_record(ctx, reason="window_switch", ts_start=ts)
+    async with db.lock:
+        await db.conn.execute("UPDATE records SET ts_end=? WHERE id=?", (ts + 60_000, rid))
+        await db.conn.commit()
+    await db.set_category_final(rid, "other")  # analysis row exists, but no description
+    await MetricsCascadeBuilder(db, RollupConfig()).build_day(ts)
+    leaf = await db.get_summary("5min", scope_key(ts, "5min", CUT))
+
+    mock = _MockLLM(_PAYLOAD)
+    out = await NarrativeBuilder(db, mock).build_one(leaf)
+    assert mock.calls == []  # LLM never called
+    assert "无可叙述" in out["description"]
+    assert json.loads(out["body_json"])["metrics_only"] is True
+
+
 async def test_empty_content_raises_and_stays_pending(db):
     # An always-thinking model can burn the whole budget on reasoning and return
     # empty content. That must NOT be saved as a done narrative — it should fail

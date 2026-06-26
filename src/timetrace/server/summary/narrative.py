@@ -137,6 +137,26 @@ def _metrics_line(metrics: dict) -> str:
     )
 
 
+def _metrics_only_narrative(metrics: dict, n_src: int) -> dict:
+    """Deterministic, LLM-free narrative for a window with nothing to describe
+    (no described frames / no child narratives — e.g. a window_switch burst with
+    no screenshots). Skipping the LLM here is what keeps the background loop from
+    spinning forever retrying hopeless windows (empty content → pending → retry).
+    Still carries the metric line so the row says something concrete.
+    """
+    metric_str = _metrics_line(metrics).replace("\n", "；")
+    desc = f"本窗无可叙述的视觉记录（{n_src} 条活动，多为窗口切换/无截图）。指标：{metric_str}"
+    body = {"key_points": [], "source_units": n_src, "metrics_only": True}
+    return {
+        "description": desc,
+        "evaluation": "",
+        "body_json": json.dumps(body, ensure_ascii=False),
+        "src_tokens": 0,
+        "out_tokens": _est_tokens(desc),
+        "compression_ratio": None,
+    }
+
+
 def _strip_fences(s: str) -> str:
     """Drop a leading ```json / ``` line and a trailing ``` if present."""
     s = s.strip()
@@ -235,9 +255,15 @@ class NarrativeBuilder:
         grain = summary["grain"]
         metrics = json.loads(summary.get("metrics_json") or "{}")
         if grain == "5min":
-            context, n_src = await self._leaf_context(summary)
+            context, n_src, n_desc = await self._leaf_context(summary)
+            if n_desc == 0:
+                # No describable frames — don't spend the GPU (or the loop's
+                # retries) on a window that can only ever come back empty.
+                return _metrics_only_narrative(metrics, n_src)
         else:
             context, n_src = await self._rollup_context(summary)
+            if n_src == 0:
+                return _metrics_only_narrative(metrics, n_src)
 
         scope = _GRAIN_SCOPE.get(grain, grain)
         span = f"{_fmt_hm(summary['window_start'])}–{_fmt_hm(summary['window_end'])}"
@@ -271,11 +297,14 @@ class NarrativeBuilder:
             "compression_ratio": round(out_tokens / src_tokens, 4) if src_tokens else None,
         }
 
-    async def _leaf_context(self, summary: dict) -> tuple[str, int]:
+    async def _leaf_context(self, summary: dict) -> tuple[str, int, int]:
         """Chronological frame lines for a 5min window. Only frames WITH a VLM
         description are fed (they carry the story); no-description window_switch
         rows are dropped from the context but still counted in ``n_src``. Capped
-        to ``_MAX_LEAF_FRAMES`` to stay inside the model context.
+        to ``_MAX_LEAF_CONTEXT_CHARS`` to stay inside the model context.
+
+        Returns ``(context, n_total, n_described)`` — the caller skips the LLM
+        entirely when ``n_described`` is 0.
         """
         async with self._db.lock:
             async with self._db.conn.execute(
@@ -305,7 +334,7 @@ class NarrativeBuilder:
                 f"…（窗内共 {len(rows)} 条、{len(described)} 条有描述，上下文截断到前 "
                 f"{shown}；调大 LM Studio 上下文可全量）"
             )
-        return ("\n".join(lines) or "（无逐帧描述）"), len(rows)
+        return ("\n".join(lines) or "（无逐帧描述）"), len(rows), len(described)
 
     async def _rollup_context(self, summary: dict) -> tuple[str, int]:
         """Child-grain narratives feeding a higher window (summary-of-summaries)."""
