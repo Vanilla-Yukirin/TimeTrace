@@ -25,7 +25,7 @@ import structlog
 # is cycle-free. aggregate_frame_metrics is imported function-locally in
 # query_stats instead, because server/summary/metrics.py imports THIS module
 # (_clamped_dur_sql/_UNCLASSIFIED) — a top-level import there would be circular.
-from timetrace.server.summary.windows import scope_key, window_bounds
+from timetrace.server.summary.windows import CHILD_OF, GRAINS, scope_key, window_bounds
 
 if TYPE_CHECKING:
     from timetrace.server.db import Database
@@ -511,6 +511,105 @@ async def query_stats(
     return out
 
 
+def _top_cats(metrics: dict, top_n: int = 3) -> list[dict]:
+    """Top categories of a window's metrics by captured seconds (+ share)."""
+    cat = metrics.get("cat_ms") or {}
+    total = sum(cat.values())
+    return [
+        {
+            "category": k,
+            "seconds": ms // 1000,
+            "share": round(ms / total, 3) if total else 0.0,
+        }
+        for k, ms in sorted(cat.items(), key=lambda kv: -kv[1])[:top_n]
+    ]
+
+
+async def search_summaries(
+    db: Database,
+    grain: str = "day",
+    period: str = "today",
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+    query: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """Read the narrative pyramid: per-window 流水账/重点/评价 at a chosen grain.
+
+    The FOLDING entry point for "what did I do". Start coarse (``grain='day'``)
+    for an overview, then drill into an interesting window by calling again with
+    a finer grain (returned as ``drill_down_grain``) and that window's
+    ``window_start_iso`` / ``window_end_iso`` as ``period='custom'`` bounds — the
+    time range IS the parent→child link. Optional ``query`` filters windows whose
+    description / key_points / evaluation contain the substring.
+
+    Durations inside are a captured-activity FLOOR, not total wall-clock time.
+    """
+    cut_hour = 4  # mirrors RollupConfig.cut_hour; see query_stats note
+    if grain not in GRAINS:
+        return {"error": f"unknown grain: {grain}", "valid_grains": list(GRAINS)}
+    if period not in _VALID_PERIODS:
+        return {"error": f"unknown period: {period}", "valid_periods": list(_VALID_PERIODS)}
+    try:
+        start_ms, end_ms = _period_bounds(period, start_iso, end_iso, cut_hour)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    limit = min(max(1, int(limit)), _MAX_LIMIT)
+
+    rows = await db.get_summaries_in_range(grain, start_ms, end_ms)
+    q = (query or "").strip().lower()
+    items: list[dict] = []
+    for r in rows:
+        body = json.loads(r.get("body_json") or "{}")
+        key_points = body.get("key_points") or []
+        desc = r.get("description") or ""
+        evaluation = r.get("evaluation") or ""
+        if q and q not in (desc + " " + evaluation + " " + " ".join(key_points)).lower():
+            continue
+        metrics = json.loads(r.get("metrics_json") or "{}")
+        items.append(
+            {
+                "grain": grain,
+                "scope_key": r["scope_key"],
+                "window_start_iso": ms_to_iso(r["window_start"]),
+                "window_end_iso": ms_to_iso(r["window_end"]),
+                "day_local": r.get("day_local"),
+                "description": desc,
+                "key_points": key_points,
+                "evaluation": evaluation,
+                "top_categories": _top_cats(metrics),
+                "record_count": metrics.get("record_count", 0),
+                "narrated": bool(desc) and r.get("status") == "narrated",
+                "metrics_only": bool(body.get("metrics_only")),
+                "compression_ratio": r.get("compression_ratio"),
+            }
+        )
+        if len(items) >= limit:
+            break
+
+    out: dict = {
+        "grain": grain,
+        "period": period,
+        "period_start_iso": ms_to_iso(start_ms),
+        "period_end_iso": ms_to_iso(end_ms),
+        "count": len(items),
+        "items": items,
+        "note": (
+            "叙述层：每个时间窗的流水账(description)/重点(key_points)/评价(evaluation)。"
+            "时长是『本机捕获活跃下限』，不是总时间。metrics_only=true 表示该窗无截图、"
+            "仅指标无叙述。"
+        ),
+    }
+    child = CHILD_OF.get(grain)
+    if child:
+        out["drill_down_grain"] = child
+        out["drill_down_hint"] = (
+            f"想看某窗更细的内容：grain='{child}' + period='custom' + 该窗的 "
+            f"window_start_iso/window_end_iso 再调一次。"
+        )
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Write tool (the ONLY one) — label only, never destructive                    #
 # --------------------------------------------------------------------------- #
@@ -681,6 +780,40 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "search_summaries",
+            "description": (
+                "读『金字塔』叙述层：某时间窗的流水账/重点/评价（按 5min→1h→6h→day→week 分层）。"
+                "问『我那天/那周在做什么』先用它：先用粗粒度(day/week)总览，再按返回的 "
+                "drill_down_grain + 该窗的 window_start_iso/window_end_iso 下钻细看。"
+                "比逐条 search_activity 高效得多。时长是『本机捕获活跃下限』。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "grain": {
+                        "type": "string",
+                        "enum": list(GRAINS),
+                        "description": "粒度：5min/1h/6h/day/week，总览用 day 或 week",
+                    },
+                    "period": {
+                        "type": "string",
+                        "enum": list(_VALID_PERIODS),
+                        "description": "today/this_week/this_month/custom",
+                    },
+                    "start_iso": _str_param(
+                        "custom 起，本地 'YYYY-MM-DD HH:MM:SS'；下钻时传上层窗口的 start"
+                    ),
+                    "end_iso": _str_param("custom 止（不含）；下钻时传上层窗口的 end"),
+                    "query": _str_param("可选：只返回叙述里含该关键词的窗口"),
+                    "limit": _int_param("返回窗口数，默认 50，最大 2000"),
+                },
+                "required": ["grain", "period"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "apply_label",
             "description": (
                 "给某条记录打/改分类标签。这是你唯一的写权限，不能删除或修改记录本身。"
@@ -705,6 +838,7 @@ _IMPLS = {
     "get_app_breakdown": get_app_breakdown,
     "get_category_stats": get_category_stats,
     "query_stats": query_stats,
+    "search_summaries": search_summaries,
     "apply_label": apply_label,
 }
 

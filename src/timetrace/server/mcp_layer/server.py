@@ -7,11 +7,14 @@ session manager from the FastAPI lifespan (required even with
 same SSH-tunnel as the REST API — no extra wiring for clients (Claude
 Code / Desktop).
 
-External agents see four tools:
+External agents see these tools:
   - ``search_activity`` — keyword search backed by FTS5 trigram + multi-field
     LIKE (server-side), returns the same shape /v1/records does
   - ``get_recent_activity`` — recent-N-hours snapshot, no keyword
-  - ``get_app_breakdown`` — duration aggregates per app for a time window
+  - ``get_app_breakdown`` / ``get_category_stats`` — duration aggregates
+  - ``search_summaries`` — the memory-pyramid narrative layer (per-window
+    流水账/重点/评价), fold coarse→fine; the efficient "what did I do" path
+  - ``apply_label`` — the only write tool (set a record's category)
   - ``ask_agent`` — internal Qwen3-35BA3B agent: takes a natural-language
     question, retrieves relevant records, asks the LLM to synthesize a
     natural-language answer. Single LLM round-trip (no tool-calling loop)
@@ -225,6 +228,51 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             top_n: max categories, sorted by duration desc (default 20, cap 50).
         """
         return await agent_tools.get_category_stats(db, hours_back=hours_back, top_n=top_n)
+
+    @mcp.tool()
+    async def search_summaries(
+        grain: str = "day",
+        period: str = "today",
+        start_iso: str | None = None,
+        end_iso: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """Read the narrative pyramid: per-window 流水账 / 重点 / 评价.
+
+        The efficient way to answer "what did I do" — instead of paging hundreds
+        of raw records, read pre-written narratives at a chosen granularity, then
+        fold/drill. Start coarse for an overview, then zoom into one window.
+
+        Folding workflow:
+          1. Overview: grain='day' (or 'week'), period='this_week'
+          2. Pick an interesting window from the results
+          3. Drill: call again with grain=<the returned drill_down_grain> and
+             period='custom' + that window's window_start_iso / window_end_iso
+          4. Repeat down to grain='5min' for frame-level detail
+
+        Args:
+            grain: 5min / 1h / 6h / day / week (overview: day or week).
+            period: today / this_week / this_month / custom.
+            start_iso/end_iso: custom-period bounds (local 'YYYY-MM-DD HH:MM:SS');
+                when drilling, pass the parent window's start/end here.
+            query: optional substring filter over description/key_points/evaluation.
+            limit: max windows (default 50, cap 2000).
+
+        Returns:
+            dict with ``items`` (each: description, key_points, evaluation,
+            top_categories, window_start_iso/end_iso), ``drill_down_grain``, and a
+            ``note``. Durations are a captured-activity FLOOR, not total time.
+        """
+        return await agent_tools.search_summaries(
+            db,
+            grain=grain,
+            period=period,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            query=query,
+            limit=limit,
+        )
 
     @mcp.tool()
     async def apply_label(record_id: str, category: str, note: str | None = None) -> dict:

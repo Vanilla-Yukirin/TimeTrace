@@ -221,3 +221,58 @@ async def test_search_activity_multiword_matches_any_order(db):
     titles = [it["window_title"] for it in res["items"]]
     assert any("history view" in t for t in titles)
     assert all("only" not in t for t in titles)
+
+
+async def test_search_summaries_reads_narrative_and_folds(db):
+    # Build a day's metrics cascade + a hand-written day narrative, then read it
+    # back through search_summaries with the drill-down hint.
+    from timetrace.common.config import RollupConfig
+    from timetrace.server.summary.rollup import MetricsCascadeBuilder
+    from timetrace.server.summary.windows import scope_key
+
+    ts = _ms(2001, 6, 9, 9, 0)  # sentinel date, never "today"
+    rid = await _insert_at(db, ts, app="Code", title="main.py")
+    await db.set_category_final(rid, "work")
+    await db.save_description(rid, "编辑 outbox 队列代码")
+    await MetricsCascadeBuilder(db, RollupConfig()).build_day(ts)
+
+    day = await db.get_summary("day", scope_key(ts, "day", 4))
+    await db.save_summary_narrative(
+        day["id"],
+        description="这一天主要在写 outbox 队列代码",
+        evaluation="专注",
+        body_json='{"key_points": ["写 outbox 队列"]}',
+        src_tokens=10,
+        out_tokens=5,
+        compression_ratio=0.5,
+    )
+
+    res = await agent_tools.search_summaries(
+        db,
+        grain="day",
+        period="custom",
+        start_iso="2001-06-09 00:00:00",
+        end_iso="2001-06-10 00:00:00",
+    )
+    assert res["count"] >= 1
+    it = res["items"][0]
+    assert "outbox" in it["description"]
+    assert it["key_points"] == ["写 outbox 队列"]
+    assert it["narrated"] is True
+    assert res["drill_down_grain"] == "6h"  # fold day → 6h
+
+    # query filter excludes non-matching windows
+    miss = await agent_tools.search_summaries(
+        db,
+        grain="day",
+        period="custom",
+        start_iso="2001-06-09 00:00:00",
+        end_iso="2001-06-10 00:00:00",
+        query="不存在的关键词",
+    )
+    assert miss["count"] == 0
+
+
+async def test_search_summaries_rejects_bad_grain(db):
+    res = await agent_tools.search_summaries(db, grain="nope", period="today")
+    assert "error" in res and "valid_grains" in res
