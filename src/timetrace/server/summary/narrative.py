@@ -36,10 +36,12 @@ logger = structlog.get_logger(__name__)
 _CHARS_PER_TOKEN = 3.5
 
 # Hard character budget for the leaf frame context, so a busy window can't
-# overflow a small model context (the box LM Studio is loaded at 4096, and CJK
-# tokenizes ~1 token/char). Only DESCRIBED frames are fed (no-description switch
-# rows carry no narrative). Bump LM Studio's loaded context for fuller fidelity.
-_MAX_LEAF_CONTEXT_CHARS = 1500
+# overflow the model's input window (CJK tokenizes ~1 token/char). Only DESCRIBED
+# frames are fed (no-description switch rows carry no narrative). With the box LM
+# Studio reloaded at 16384 / parallel=1 there's ample input room; the real output
+# constraint is ``max_tokens`` (an always-thinking model spends it on reasoning
+# before content — keep it generous, see NarrativeBuilder.max_tokens).
+_MAX_LEAF_CONTEXT_CHARS = 3000
 
 _GRAIN_SCOPE = {
     "5min": "这 5 分钟",
@@ -139,7 +141,7 @@ def _parse_narrative(raw: str) -> dict:
 class NarrativeBuilder:
     """Generates the narrative for a finalized cascade row via an injected LLM."""
 
-    def __init__(self, db: Database, llm: NarrativeLLM, *, max_tokens: int = 600) -> None:
+    def __init__(self, db: Database, llm: NarrativeLLM, *, max_tokens: int = 3000) -> None:
         self._db = db
         self._llm = llm
         self._max_tokens = max_tokens
