@@ -257,6 +257,32 @@ CREATE INDEX IF NOT EXISTS idx_signals_kind_ts ON signals(kind, ts);
 
 > 比早期 episode 方案的摘要调用更多（~120 vs ~50），但每个 `5min` 调用输入极小（~30 帧）、且**完全确定性、无 γ 风险**，后台/夜间在 3080 上跑得动。这是用"多一些廉价确定的小调用"换"砍掉最大质量风险点"。
 
+### 运维 CLI（手动建指标 / 叙述）
+
+两条管理员子命令（`server/admin_cmd.py`），一次性独立进程、可复现、**不依赖 server 在不在跑**。box 上 `./.venv/bin/timetrace-server <cmd>`。
+
+**`backfill <start> <end> [--pause SECONDS]`** —— 给历史区间建指标级联（`5min→week`）。幂等 UPSERT，server 在跑时也能并行跑。⚠️ 只在分类回填完后跑，否则半分类的天被冻进指标（这层没 source_hash 自纠）。
+
+**`narrate <start> <end> [--limit N] [--force] [--grains "1h,6h,…"] [--max-tokens N]`** —— 给已建好指标的窗生成叙述：
+- 默认只叙述 `pending_summary` 窗（幂等，可重复跑补漏）；`--force` 连已叙述的也重做。
+- `--grains "1h,6h,day,week"` 只跑指定层——典型用途：积压排空后**只补父层、不重做好叶子**。
+- `--max-tokens N` 强制统一输出预算（默认按 grain：`5min` 4000、聚合窗 6000-7000）。
+- `--limit N` 每层最多几窗（默认 500）。跑完打几条真样本，便于肉眼校准语气。
+
+常用 recipe：
+
+```bash
+# 给某区间先建指标、再叙述
+timetrace-server backfill "2026-06-22" "2026-06-27"
+timetrace-server narrate  "2026-06-22" "2026-06-27"
+# 语气/prompt 改了之后，全量重叙述
+timetrace-server narrate "2026-06-22" "2026-06-27" --force
+# 只重叙述父层（修被提前生成的废父窗，不动那批好叶子）
+timetrace-server narrate "2026-06-22" "2026-06-27" --force --grains "1h,6h,day,week"
+```
+
+> 稳态下不用手动跑——`_rollup_loop` / `_narrate_loop` 后台自动做（默认关，`TIMETRACE_ROLLUP_ENABLED=1` / `TIMETRACE_NARRATE_ENABLED=1` 开）。这两条 CLI 是给**回填存量 / 调试 / 语气校准 / 修残留**用的。
+
 ---
 
 ## 相关文件
