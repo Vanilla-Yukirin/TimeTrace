@@ -222,3 +222,58 @@ export interface AppOverrides {
   version: number
   apps: Record<string, AppOverride>
 }
+
+// ---- LLM request ledger (/llm-log) -----------------------------------------
+export interface LlmRequest {
+  id: string
+  caller: string
+  model: string | null
+  ts_start: number
+  ts_end: number
+  duration_ms: number
+  status: string
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  reasoning_tokens: number | null
+  total_tokens: number | null
+  prompt_chars: number | null
+  completion_chars: number | null
+  error: string | null
+}
+
+export interface LlmRequestsResponse {
+  items: LlmRequest[]
+  next_cursor: number | null
+}
+
+export interface LlmStats {
+  n: number
+  n_error: number
+  prompt_tokens: number
+  completion_tokens: number
+  reasoning_tokens: number
+  avg_duration_ms: number | null
+}
+
+// ---- pyramid day view (/pyramid) -------------------------------------------
+export interface SummaryWindow {
+  scope_key: string
+  grain: string
+  window_start: number
+  window_end: number
+  status: string
+  description: string | null
+  evaluation: string | null
+  key_points: string[]
+  metrics_only: boolean
+  record_count: number
+  active_seconds: number
+  top_categories: { category: string; seconds: number }[]
+}
+
+export interface SummariesDay {
+  day: string
+  day_start: number
+  day_end: number
+  grains: Record<string, SummaryWindow[]>
+}

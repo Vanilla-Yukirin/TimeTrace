@@ -7,10 +7,13 @@ import type {
   ChangePasswordRequest,
   FeedbackRequest,
   FeedbackResponse,
+  LlmRequestsResponse,
+  LlmStats,
   LoginRequest,
   LoginResponse,
   RecordsResponse,
   RuntimeInfo,
+  SummariesDay,
   TokenCreated,
   TokenSummary,
 } from '@/types/api'
@@ -111,6 +114,26 @@ export const api = {
     if (params.cursor) p.set('cursor', params.cursor)
     return apiFetch<AuditResponse>(`/v1/audit/records?${p}`)
   },
+
+  // Unified LLM-request ledger (/llm-log panel).
+  getLlmRequests: (params: {
+    caller?: string
+    status?: string
+    before_ts?: number
+    limit?: number
+  }) => {
+    const p = new URLSearchParams({ limit: String(params.limit ?? 100) })
+    if (params.caller) p.set('caller', params.caller)
+    if (params.status) p.set('status', params.status)
+    if (params.before_ts != null) p.set('before_ts', String(params.before_ts))
+    return apiFetch<LlmRequestsResponse>(`/v1/llm-requests?${p}`)
+  },
+
+  getLlmStats: () => apiFetch<LlmStats>('/v1/llm-requests/stats'),
+
+  // Memory-pyramid day view (/pyramid panel): all grains for one logical day.
+  getSummariesForDay: (day?: string) =>
+    apiFetch<SummariesDay>(`/v1/summaries${day ? `?day=${encodeURIComponent(day)}` : ''}`),
 
   getCategories: () =>
     apiFetch<CategoriesResponse>('/v1/categories'),

@@ -14,6 +14,8 @@ import { TimelinePage } from './pages/TimelinePage'
 import { AgentPage } from './pages/AgentPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { AuditPage } from './pages/AuditPage'
+import { LlmLogPage } from './pages/LlmLogPage'
+import { PyramidPage } from './pages/PyramidPage'
 import { SearchPage } from './pages/SearchPage'
 import { SettingsPage } from './pages/SettingsPage'
 
@@ -76,6 +78,8 @@ export function App() {
                       <Route path="/agent" element={<AgentPage />} />
                       <Route path="/dashboard" element={<DashboardPage />} />
                       <Route path="/audit" element={<AuditPage />} />
+                      <Route path="/pyramid" element={<PyramidPage />} />
+                      <Route path="/llm-log" element={<LlmLogPage />} />
                       <Route path="/search" element={<SearchPage />} />
                       <Route path="/settings" element={<SettingsPage />} />
                     </Routes>
