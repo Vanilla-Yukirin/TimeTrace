@@ -34,6 +34,7 @@ from openai import AsyncOpenAI
 from PIL import Image
 
 from timetrace.common.config import VLMConfig
+from timetrace.server.llm_log import timed_chat_completion
 
 logger = structlog.get_logger(__name__)
 
@@ -217,8 +218,11 @@ class VLMClient:
             text = f"{text}\n关于当前应用的额外背景（用户提供，仅供参考）：{app_note}"
 
         try:
-            resp = await self._client.chat.completions.create(
+            resp = await timed_chat_completion(
+                self._client,
+                caller="worker_vlm",
                 model=self._cfg.model,
+                prompt_chars=len(text),
                 messages=[
                     {
                         "role": "user",

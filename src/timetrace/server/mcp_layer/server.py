@@ -32,6 +32,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from openai import AsyncOpenAI
 
 from timetrace.server.agent import tools as agent_tools
+from timetrace.server.llm_log import timed_chat_completion
 
 if TYPE_CHECKING:
     from timetrace.common.config import VLMConfig
@@ -364,8 +365,11 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
         if vlm_cfg.disable_thinking:
             extra["extra_body"] = {"enable_thinking": False}
         try:
-            resp = await chat_client.chat.completions.create(
+            resp = await timed_chat_completion(
+                chat_client,
+                caller="ask_agent",
                 model=vlm_cfg.model,
+                prompt_chars=len(system) + len(user),
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},

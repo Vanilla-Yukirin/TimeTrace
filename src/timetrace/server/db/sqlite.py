@@ -259,6 +259,29 @@ CREATE INDEX IF NOT EXISTS idx_summaries_status ON summaries(status) WHERE statu
 CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
     summary_id UNINDEXED, grain UNINDEXED, description, evaluation, tokenize='trigram'
 );
+
+-- Unified LLM-request ledger: every LLM call (worker VLM describe / narrate /
+-- report / ask_agent) logs one row with timing + REAL token usage (from the
+-- response, not estimated) + content sizes. Powers the /llm-log panel.
+CREATE TABLE IF NOT EXISTS llm_requests (
+    id                  TEXT PRIMARY KEY,
+    caller              TEXT NOT NULL,      -- 'worker_vlm'|'narrate'|'report'|'ask_agent'
+    model               TEXT,
+    ts_start            INTEGER NOT NULL,   -- epoch-ms request sent
+    ts_end              INTEGER NOT NULL,   -- epoch-ms response/error returned
+    duration_ms         INTEGER NOT NULL,
+    status              TEXT NOT NULL,      -- 'ok'|'error'
+    prompt_tokens       INTEGER,           -- response.usage (real)
+    completion_tokens   INTEGER,
+    reasoning_tokens    INTEGER,           -- usage.completion_tokens_details.reasoning_tokens
+    total_tokens        INTEGER,
+    prompt_chars        INTEGER,           -- input content size (caller-supplied)
+    completion_chars    INTEGER,           -- output size (content + reasoning_content)
+    error               TEXT,
+    created_at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_requests_ts ON llm_requests(ts_start);
+CREATE INDEX IF NOT EXISTS idx_llm_requests_caller_ts ON llm_requests(caller, ts_start);
 """
 
 # Minimum keyword length where trigram FTS5 can match. Below this, we fall back
@@ -993,6 +1016,105 @@ class SqliteDatabase:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------ #
+    # LLM request ledger (powers /llm-log)                                 #
+    # ------------------------------------------------------------------ #
+
+    async def insert_llm_request(
+        self,
+        *,
+        caller: str,
+        model: str | None,
+        ts_start: int,
+        ts_end: int,
+        duration_ms: int,
+        status: str,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        reasoning_tokens: int | None = None,
+        total_tokens: int | None = None,
+        prompt_chars: int | None = None,
+        completion_chars: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Append one row to the unified LLM-request ledger. Fire-and-forget:
+        called from the llm_log sink, must not raise into the LLM call path."""
+        async with self._lock:
+            await self._conn.execute(
+                """INSERT INTO llm_requests
+                       (id, caller, model, ts_start, ts_end, duration_ms, status,
+                        prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
+                        prompt_chars, completion_chars, error, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    _new_id(),
+                    caller,
+                    model,
+                    ts_start,
+                    ts_end,
+                    duration_ms,
+                    status,
+                    prompt_tokens,
+                    completion_tokens,
+                    reasoning_tokens,
+                    total_tokens,
+                    prompt_chars,
+                    completion_chars,
+                    error,
+                    _now_ms(),
+                ),
+            )
+            await self._conn.commit()
+
+    async def query_llm_requests(
+        self,
+        *,
+        caller: str | None = None,
+        status: str | None = None,
+        before_ts: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Newest-first page of ledger rows. ``before_ts`` (a row's ts_start)
+        is the keyset cursor — pass the last row's ts_start to page back."""
+        where = ["1=1"]
+        params: list = []
+        if caller:
+            where.append("caller = ?")
+            params.append(caller)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if before_ts is not None:
+            where.append("ts_start < ?")
+            params.append(before_ts)
+        params.append(max(1, min(limit, 2000)))
+        async with self._lock:
+            async with self._conn.execute(
+                f"SELECT * FROM llm_requests WHERE {' AND '.join(where)} "
+                f"ORDER BY ts_start DESC LIMIT ?",
+                params,
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def llm_request_stats(self, *, since_ts: int | None = None) -> dict:
+        """Aggregate counts/tokens for the ledger header (optionally since a ts)."""
+        clause = "WHERE ts_start >= ?" if since_ts is not None else ""
+        params = [since_ts] if since_ts is not None else []
+        async with self._lock:
+            async with self._conn.execute(
+                f"""SELECT COUNT(*) n,
+                           SUM(status='error') n_error,
+                           SUM(COALESCE(prompt_tokens,0)) prompt_tokens,
+                           SUM(COALESCE(completion_tokens,0)) completion_tokens,
+                           SUM(COALESCE(reasoning_tokens,0)) reasoning_tokens,
+                           AVG(duration_ms) avg_duration_ms
+                    FROM llm_requests {clause}""",
+                params,
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else {}
+
+    # ------------------------------------------------------------------ #
     # Screenshots                                                          #
     # ------------------------------------------------------------------ #
 
@@ -1615,6 +1737,23 @@ class SqliteDatabase:
             ) as cur:
                 row = await cur.fetchone()
         return dict(row) if row else None
+
+    async def get_summaries_overlapping(self, grain: str, start_ms: int, end_ms: int) -> list[dict]:
+        """Cascade rows of ``grain`` whose window OVERLAPS ``[start_ms, end_ms)``.
+
+        Unlike :meth:`get_summaries_in_range` (window_start in range), this catches
+        coarse windows that *contain* the range — e.g. the ``week`` row whose start
+        is days before a given day. Used by the /summaries day view (pyramid panel).
+        """
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT * FROM summaries "
+                "WHERE grain = ? AND window_start < ? AND window_end > ? "
+                "ORDER BY window_start",
+                (grain, end_ms, start_ms),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     async def get_summaries_in_range(self, grain: str, start_ms: int, end_ms: int) -> list[dict]:
         """Cascade rows of ``grain`` whose ``window_start`` ∈ ``[start_ms, end_ms)``.

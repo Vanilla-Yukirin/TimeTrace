@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Coroutine
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import structlog
@@ -32,6 +32,7 @@ from timetrace.server.api.app import create_app
 from timetrace.server.auth import ServerAuth
 from timetrace.server.db import Database
 from timetrace.server.embedding.client import EmbeddingClient
+from timetrace.server.llm_log import LLMRequestLog, set_default_sink
 from timetrace.server.phash_index.index import PHashIndex
 from timetrace.server.storage.blob import LocalBlobStorage
 from timetrace.server.users import UserStore
@@ -67,6 +68,15 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
     """Build the full server stack but DON'T run it yet. ``serve()`` does that."""
     db = Database(config.storage)
     await db.init()
+
+    # Wire the unified LLM-request ledger: every instrumented LLM call site
+    # (worker VLM / narrate / ask_agent) writes one row via this sink. Set once,
+    # process-wide, so call sites need no DB reference. Sink errors are swallowed
+    # inside llm_log so they can't break the actual LLM call.
+    async def _llm_request_sink(entry: LLMRequestLog) -> None:
+        await db.insert_llm_request(**asdict(entry))
+
+    set_default_sink(_llm_request_sink)
 
     phash_index = await PHashIndex.from_db(db)
 

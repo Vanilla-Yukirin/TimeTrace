@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
+from timetrace.server.llm_log import timed_chat_completion
 from timetrace.server.summary.windows import CHILD_OF, GRAINS
 
 if TYPE_CHECKING:
@@ -102,8 +103,11 @@ class OpenAINarrativeLLM:
         # Qwen3+ reasoning models otherwise burn the whole token budget on
         # <think> and return empty content — same opt-out the VLM client uses.
         extra = {"extra_body": {"enable_thinking": False}} if self._disable_thinking else {}
-        resp = await self._client.chat.completions.create(
+        resp = await timed_chat_completion(
+            self._client,
+            caller="narrate",
             model=self._model,
+            prompt_chars=len(system) + len(user),
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

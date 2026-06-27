@@ -24,11 +24,13 @@ from timetrace.server.api.routes import (
     blob,
     feedback,
     ingest,
+    llm_requests,
     records,
     reports,
     search,
     settings,
     skill,
+    summaries,
     thumbs,
 )
 from timetrace.server.api.routes import auth as auth_routes
@@ -125,6 +127,8 @@ def create_app(
     business_deps = [Depends(require_principal)] if users is not None else []
     app.include_router(records.router, prefix="/v1", dependencies=business_deps)
     app.include_router(audit.router, prefix="/v1", dependencies=business_deps)
+    app.include_router(llm_requests.router, prefix="/v1", dependencies=business_deps)
+    app.include_router(summaries.router, prefix="/v1", dependencies=business_deps)
     app.include_router(search.router, prefix="/v1", dependencies=business_deps)
     app.include_router(feedback.router, prefix="/v1", dependencies=business_deps)
     app.include_router(agent_routes.router, prefix="/v1", dependencies=business_deps)
