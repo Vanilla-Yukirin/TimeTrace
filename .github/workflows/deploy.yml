@@ -67,7 +67,7 @@
 #   - change the GitHub raw URL in the curl step to their fork's path
 #   - configure the 4 secrets in their own repo settings
 #
-# === Required secrets (4) =====================================================
+# === Required secrets (4 backend + 3 frontend) ================================
 # Configure under repo Settings → Secrets and variables → Actions:
 #
 #   DEPLOY_SSH_KEY            ed25519 private key (no passphrase) whose .pub
@@ -82,6 +82,17 @@
 #   DEPLOY_TARGET_PORT        Public port the cloud-side FRP listener exposes,
 #                             reverse-tunneled to the home box's sshd:22
 #                             (e.g. 10089). This is what `-p` uses.
+#
+# publish-frontend job (SPA → xcy reverse-proxy VPS docroot):
+#
+#   XCY_SSH_KEY               ed25519 private key for the DEDICATED low-priv
+#                             `ghdeploy` user on xcy (owns ONLY the frontend
+#                             docroot, no sudo). Deliberately NOT root: a leaked
+#                             key swaps static files, it does not take the
+#                             reverse-proxy box.
+#   XCY_KNOWN_HOSTS           `ssh-keyscan -p 22000 -t ed25519 <xcy-ip>` line.
+#   XCY_TARGET                "ghdeploy@<xcy-ip>" (user@host; port is the
+#                             XCY_PORT env below).
 #
 # === Env vars on target (NOT touched by this workflow) =======================
 # Server config like VLM API keys lives in ~/Github/TimeTrace/.env on the target.
@@ -187,6 +198,87 @@ jobs:
             echo "## Deploy summary"
             echo "- Repo: ${{ github.repository }}"
             echo "- Trigger: ${{ github.event_name }}"
+            echo "- Ref: ${{ github.event.inputs.ref || github.ref_name }}"
+            echo "- Outcome: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # publish-frontend — build the SPA on the runner and push it to the xcy
+  # reverse-proxy VPS docroot (which is what timetrace.yukirin.me serves).
+  #
+  # Exists because this used to be a MANUAL `npm run build && scp` step that
+  # nobody remembered to run — the public frontend once sat 3 weeks stale while
+  # the backend deployed on every push. Workflow-izing it turns "must remember"
+  # into "can't forget" (same discipline the backend job already follows).
+  #
+  # Runs PARALLEL to the backend job, independent failure domains: a broken
+  # frontend build doesn't block the backend rollout, and vice versa. No path
+  # filter on purpose — build+rsync is minute-scale and idempotent; publishing
+  # every deploy beats guessing whether the diff touched frontend/.
+  #
+  # Update order matters: hashed assets first, index.html LAST — a visitor
+  # mid-publish gets either the old page (old assets still present; rsync
+  # doesn't delete) or the new page (new assets already there), never a page
+  # pointing at missing chunks. nginx serves index.html with
+  # Cache-Control: no-cache so browsers pick up the new pointer on reload.
+  #
+  # Emergency manual fallback (CI down): deploy/publish-frontend.sh.
+  # ---------------------------------------------------------------------------
+  publish-frontend:
+    if: github.repository == 'Vanilla-Yukirin/TimeTrace' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      XCY_PORT: "22000"
+      DOCROOT: /var/www/timetrace.yukirin.me
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref_name }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build SPA
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend   # tsc -b && vite build → frontend-dist/
+
+      - name: Set up SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.XCY_SSH_KEY }}
+
+      - name: Trust xcy host key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.XCY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Publish to xcy docroot (assets first, index.html last)
+        env:
+          TARGET: ${{ secrets.XCY_TARGET }}
+        run: |
+          set -euo pipefail
+          RSH="ssh -p ${XCY_PORT} -o StrictHostKeyChecking=yes"
+          # 1) everything except the entry point (hashed assets are new names —
+          #    old ones stay behind for tabs still holding the previous page)
+          rsync -rtz -e "$RSH" --exclude index.html frontend-dist/ "${TARGET}:${DOCROOT}/"
+          # 2) flip the pointer
+          rsync -tz -e "$RSH" frontend-dist/index.html "${TARGET}:${DOCROOT}/index.html"
+          echo "Published bundle: $(grep -oE 'index-[A-Za-z0-9_-]+\.js' frontend-dist/index.html | head -1)"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Frontend publish summary"
             echo "- Ref: ${{ github.event.inputs.ref || github.ref_name }}"
             echo "- Outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
