@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback } from 'react'
+import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react'
 import type { ApiRecord } from '@/types/api'
 import { useTimelineState } from '@/hooks/useTimelineState'
 import { useTheme } from '@/contexts/theme'
@@ -33,13 +33,10 @@ export function TimelineCanvas({
   const recordsRef = useRef(records)
   const viewportRef = useRef(viewport)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     recordsRef.current = records
-  }, [records])
-
-  useEffect(() => {
     viewportRef.current = viewport
-  }, [viewport])
+  }, [records, viewport])
 
   // Track whether the canvas has been initialized at least once
   const initializedRef = useRef(false)
