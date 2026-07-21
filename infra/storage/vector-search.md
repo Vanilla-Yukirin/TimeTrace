@@ -13,14 +13,15 @@
 
 ---
 
-## 双通道设计（核心决策）
+## 三类召回（当前实现）
 
-TimeTrace 把相似检索拆成两条正交通道：
+TimeTrace 同时保留像素相似、关键词相关和文本语义三类信号；不同入口选择其中两路再用 RRF 融合：
 
 | 通道 | 指纹类型 | 度量 | 查询形态 | 典型用例 |
 |------|---------|------|---------|---------|
 | **视觉（pHash）** | 64-bit 感知哈希 | 汉明距离 | 以图搜图 | "找一模一样的画面" |
-| **语义（BM25 over VLM desc）** | 文本 | 词项打分 | 文本查询，或图→VLM 描述→文本 | "找做类似的事的时段" |
+| **关键词（FTS5/LIKE）** | 标题/应用/URL/VLM 描述 | BM25 或子串 | 文本，或图→VLM 描述→文本 | "找出现过某个词/产品的时段" |
+| **文本语义（embedding）** | `vlm_desc` 文本向量 | cosine | 自然语言文本 | "找表达不同但意思相近的活动" |
 
 **为何不用图像 embedding**：换一个 VLM/embedding 模型就要整库重算、存储不可迁移；而 pHash 与 VLM 描述文本都是**模型无关**的（pHash 纯算法，描述文本即使换 VLM 也仍是人类可读的 token）。此决策的代价是视觉检索放弃语义泛化、语义检索放弃像素精准，两者互补由 RRF 弥合。
 
@@ -126,9 +127,11 @@ FTS5 BM25 已经落地，但形态与下方原计划不同，落地实况是：
 
 ---
 
-## 向量通道：文本 embedding 余弦（已实装，未接搜索路由）
+## 向量通道：文本 embedding 余弦（已接 `/v1/search/text`）
 
-embedding 子系统已落地——本地 embserver（`src/timetrace/embserver/`）+ server 端 client（[src/timetrace/server/embedding/client.py](../../src/timetrace/server/embedding/client.py)），融合层 [src/timetrace/server/retrieval.py](../../src/timetrace/server/retrieval.py) 也已写好把关键词通道（FTS5 BM25 / LIKE）与向量通道（vlm_desc 文本 embedding 的余弦）做 RRF 融合的逻辑。但目前**还没有任何搜索路由接入它**：`/v1/search/by-image` 与 `/v1/records?q=` 都未调用 `retrieval.py`，向量通道尚未进入线上检索链路。
+文本 embedding 写侧由 worker 的 `EmbeddingClient` 生成并写入 `analysis_results.text_embedding`；读侧由 `GET /v1/search/text` 取查询向量，调用 `SqliteDatabase.vector_search()` 做 numpy cosine，再与关键词结果通过 `retrieval.reciprocal_rank_fusion()` 融合。`create_app` 与 `bootstrap` 已把同一个 embedding client 注入 `app.state`；端点未配置或 embedding 请求失败时，路由优雅降级为 keyword-only。
+
+这条生产链路使用 OpenAI-compatible 文本 embedding 端点；独立的 `embserver`/Qwen3-VL 图像 embedding 尚未接入主 worker 或检索。当前向量读路径是全量 numpy 扫描，只在现有个人数据规模验证过；增长前先补 10K/50K/100K 基准，再评估 sqlite-vec/pgvector。
 
 ---
 
@@ -142,30 +145,20 @@ RRF(doc) = Σ_{channel c} 1 / (k + rank_c(doc))   # k = 60
 
 - 只看 rank，不看各通道原始分数，天然解决量纲不一致
 - 不命中某通道的条目视为 rank = ∞（贡献 0），不因此被枪毙
-- 实现在 [search.py](../../src/timetrace/server/api/routes/search.py) 的 `_rrf_merge()`
+- 通用实现在 [retrieval.py](../../src/timetrace/server/retrieval.py) 的 `reciprocal_rank_fusion()`；图搜路由仍保留自己的结果整形逻辑
 
 ---
 
 ## 推荐检索流程
 
 ```
-用户查询（文本 + 可选参考图 + 筛选器）
-  │
-  ├── 视觉（有图 & 启用）→ compute_phash → PHashIndex.search(radius, ts_range) → [(dist, sid)]
-  ├── 语义（启用）     → _describe_image → BM25 over vlm_desc → [(sid, score)]
-  └── 关键词（无语义时）→ LIKE window_title / vlm_desc      → [(sid, score)]
-        │
-        ▼
-  RRF 合并 → 候选集
-        │
-        ▼
-  JOIN screenshots + records + analysis_results 取元数据
-        │
-        ▼
-  post-filter（apps / categories）
-        │
-        ▼
-  top-N 返回 UI / MCP
+文本查询 → FTS5/LIKE ─┐
+                    ├→ RRF → enrichment/filter → `/v1/search/text`
+          embedding ─┘
+
+参考图   → pHash ─────┐
+                    ├→ RRF → enrichment/filter → `/v1/search/by-image`
+      VLM 描述→LIKE ──┘
 ```
 
 ---

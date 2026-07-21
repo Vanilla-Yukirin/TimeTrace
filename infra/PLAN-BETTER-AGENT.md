@@ -1,6 +1,6 @@
 # PLAN · 更好的 Agent —— 分层记忆金字塔 + 薄路由器
 
-> **状态**：设计草案（2026-06-02 起草，2026-06-05 改为时间窗级联 + 自描述结果），**未实装**。本文是激进重设计的总纲（single source of truth），三个支撑 spec 从这里链出。DDL / prompt 一律为 **sketch**（架构级），不是逐字 spec。
+> **状态（2026-07-20 校准）**：**部分实装**。固定时间窗 `summaries`、指标级联、source_hash、rollup/narrate loop、`query_stats` 与 `search_summaries` 已上线；signals/episode、完整 thin-router、deep scan/子 agent fallback 仍是设计。本文保留原始设计推导，历史工具数和阶段描述不代表当前代码；当前待办以 [`devlogs/PLAN.md`](../devlogs/PLAN.md) 为准。
 >
 > **这不是 devlog**：放在 `infra/` wiki 是因为它是前瞻性活计划，会随推进更新；不进 `devlogs/`（那里只追加历史快照）。完工后可整理为 devlog 归档 + 翻新相关 wiki 子页。
 >
@@ -294,7 +294,7 @@ WRITE   apply_label       唯一写权限（不变：category_final + feedback�
 ## 11. 拓扑安全性
 
 - 所有 builder 挂 `bootstrap.serve()` TaskGroup，`main.py` 与 `server/cli.py` 共用 → **单/双进程自动同时生效**；client 哑（无 DB），派生层纯 server 侧。不动 `common/protocol.py` / ingest 路由。
-- 全部在 `feature/refactor-split` 上做；部署走 `gh workflow run deploy.yml --ref feature/refactor-split`，**`origin/main` legacy 不动**直到重构完工。新表对 Linux / 未来 Postgres seam 无害（`Database` 别名 P5 升 Protocol 时一并带上）。
+- **当前分支规则覆盖原计划**：实现进入 `main`，等待该 SHA 的 CI 全绿后再 fast-forward `deploy`；不要复制早期 `feature/refactor-split` / `--ref` 部署命令。新表仍需保持 Linux / 未来 Postgres seam 无害。
 
 ---
 

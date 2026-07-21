@@ -22,7 +22,7 @@ cd frontend && npm run dev                 # http://127.0.0.1:5173/，vite 代�
 cd frontend && npm run build               # 产物到仓库根的 frontend-dist/
 ```
 
-API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活。
+API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先登录并完成首次改密。
 
 ## 运行模式（重要：常被混淆）
 
@@ -31,7 +31,7 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 | 入口 | 状态 | 进程数 | 适用场景 |
 |------|------|--------|----------|
 | `uv run timetrace` (`main.py`) | ✅ 默认、稳定 | **1 个**（capture + API + worker + 托盘 全装一起） | 单机日常使用 |
-| `uv run timetrace-server` + `uv run timetrace-client` | 🚧 P3a-5b 在做 | 2 个（client 只采集，server 跑 API+DB+VLM） | 多设备、远程访问、headless 小主机 |
+| `uv run timetrace-server` + `uv run timetrace-client` | ✅ 已生产使用 | 2 个（client 只采集，server 跑 API+DB+VLM） | 多设备、远程访问、headless 小主机 |
 
 **关键事实**：单进程模式下 `capture` 通过 `InProcessBackend` 直接调 `Database` + `PHashIndex`，不走 HTTP。HttpBackend / Outbox / OutboxSender / `/v1/ingest/*` 路由都已实装但**单进程模式不使用**，只在双进程模式下被 client 端激活。改 capture 行为时记得两条路径都要想到。
 
@@ -42,7 +42,7 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 **进程拓扑**（[main.py](src/timetrace/main.py)）：
 
 - 主线程跑 pystray 托盘 + asyncio event loop
-- `asyncio.TaskGroup` 同时运行 5 个任务：`capture`、`worker`、`api`、`quit_watcher`、`reclaim`
+- `asyncio.TaskGroup` 并行管理 `capture`、`worker`、`api`、`quit_watcher`、`reclaim`、`report_scheduler`，以及受配置开关控制的 `rollup` / `narrate`；不要依赖固定任务数判断拓扑
 - SIGINT / 托盘 Quit / uvicorn 退出**统一路由到** `quit_event`（`loop.call_soon_threadsafe(quit_event.set)`），由 `_watch_quit` 设置 `server.should_exit=True` 并取消同伴任务，避免 uvicorn 二次抛 SIGINT 中断 event loop
 - `_reclaim_loop` 每 60s 清理 worker 异常退出残留的 `analysis_task` 行
 
@@ -68,11 +68,11 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 - `Capture → Database`：每条 record 触发 `INSERT INTO analysis_tasks` 入队
 - `Worker → VLM`：从 `analysis_tasks` 拉任务、调 VLM、回写 `analysis_results.vlm_desc` + `category_final`
 - `Capture → PHashIndex`：每张 thumb 计算 pHash，加入内存 BK-tree（`PHashIndex.from_db` 启动时从 DB 重建）
-- `API /v1/search/by-image`：pHash 视觉通道（BK-tree 距离）+ FTS5 BM25 语义通道 + RRF 融合
+- `API /v1/search/by-image`：pHash 视觉通道（BK-tree 距离）+ 图→VLM 描述→`vlm_desc LIKE` 文本通道 + RRF；这里的 `_bm25_search` 名字是历史残留，尚未迁 FTS5
 
 **前后端契约**：
 
-- 前端**不被** Python 后端托管。`api/app.py` 只 mount 了 `/thumbs/`（StaticFiles 指向 `~/TimeTraceData/thumbs/`），前端独立 vite 服务通过代理调 API
+- 前端**不被** Python 后端托管。`/thumbs/{path}` 与 `/blob/{path}` 是受 `require_principal` 保护的 `FileResponse` 路由，不是裸 `StaticFiles`；前端开发时由 Vite 代理 API，生产静态文件由 xcy nginx 托管
 - 缩略图 URL 模式：`/thumbs/{path.replace(/\\/g, '/')}`（windows 反斜杠转正斜杠）
 - 列表项已包含 `vlm_desc / category_final / app_name / window_title / url`，详情切换无需再请求
 
@@ -88,9 +88,9 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 - **BackendClient Protocol** in `client/core/backend.py`：capture 不再直接用 db，全走 `BackendClient`。三种实现：
   - `InProcessBackend`：直调 `SqliteDatabase` + `PHashIndex`，单进程模式用
   - `HttpBackend`：POST `/v1/ingest/record` + `.../close`，双进程下底层 transport（支持 `data_dir` 相对路径解析、`auth_token` + `device_id` 双 header 注入）
-  - `OutboxBackend`：把 capture 调用先 append 进 Outbox，由 `OutboxSender` 后台串行 drain 给 HttpBackend（P3a-5b 接线后是 timetrace-client 默认 backend）
+  - `OutboxBackend`：把 capture 调用先 append 进 Outbox，由 `OutboxSender` 后台 drain 给 HttpBackend；已是 timetrace-client 默认 backend
 - **Outbox**：`client/core/outbox.py`，append-only `log.jsonl` + `blobs/` + `state.json`（atomic rename + fsync）。`_read_log` 对末尾 partial JSON 行容错。`OutboxSender` 严格 FIFO + 指数 backoff + 可选 token bucket 限速 + `compact_every_n_acks=200` inline compaction（crash-safe 顺序：state.acked=0 先于 log 重写，最坏 at-least-once replay）。
-- **Auth**：`server/auth.py::ServerAuth`，`load_or_generate()` 读 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600）或首启自动生成 `tt_live_<32urlbytes>` 并 logger.info；`create_app(..., auth=...)` 给 `/v1/ingest/*` 套 `Depends(bearer)`，`/healthz` 与 frontend-facing 的 records / search / feedback 不要 token。token CRUD 通过 `timetrace-server tokens` 子命令（admin_cmd.py），改完重启 server 才生效。
+- **Auth**：`server/auth.py::ServerAuth`，`load_or_generate()` 读 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600）或首启自动生成 `tt_live_<32urlbytes>`；`/v1/ingest/*` 与 `/mcp` 是 bearer-only，records/search/feedback 等浏览器业务路由要求 cookie 或 bearer principal，只有 `/healthz` 是公开探活。token CRUD 通过 `timetrace-server tokens` 子命令或 Web admin；CLI 改完重启 server 才生效。
 - **Ingest 路由幂等性**：`/v1/ingest/record` 用 `client_record_id` UNIQUE 索引做 record 级幂等；`screenshots(record_id, hash_sha256)` UNIQUE 索引做 screenshot 级幂等防 outbox at-least-once replay 双插。`/close` 路由按 server id 或 client_record_id 兜底，未知 id 返 404；blob 路径用 record.ts_start 算日期目录（不是上传时刻）。
 - **数据目录**：`%USERPROFILE%/TimeTraceData/`（不在仓库内）
 - **日志**：`structlog.get_logger(__name__)`，禁用 `print`
@@ -102,9 +102,9 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 
 - **GitHub identity**：仓库是 `Vanilla-Yukirin/TimeTrace`。本地 git config 的 `Yuki` 只是临时本地标签，不要混
 - **部署目标**：家里 Ubuntu 小主机（NAT 后），CI 经云服务器 FRP 隧道 SSH 进；详见 [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
-- **Web UI 永不公网**：前端 / OpenAPI 走临时 `ssh -L 5173:localhost:5173 tt-rb4g` 隧道，按需起
-- **CI/CD 触发**：`push` 到 `deploy` 分支自动部署 + `workflow_dispatch` 手动兜底（GH Web 按钮 / `gh workflow run deploy.yml --ref <branch>`）；Fork 安全 = `if: github.repository == 'Vanilla-Yukirin/TimeTrace'` + GH secret 不被 fork 继承双保险
-- **部署模型（重要，别再误判分支"乱了"）**：部署 = 把要上线的分支推到 `deploy` 分支（`git push origin <branch>:deploy`），deploy.yml 在 push 时触发，box 上跑 `git reset --hard origin/deploy`。所以**部署机本地那个名叫 `main` 的分支会指向 deploy ref 的提交链**——这是设计的镜像状态，不是污染、不是 bug、不需要"修复"。部署机是 deployment mirror 不是 dev box，本地指向跟着部署 ref 走。判断真实代码状态看 `origin/*`，不看部署机本地分支名。**纠正一条过时残留**：早先文档说"`origin/main` 是冻结的 v1 legacy、pywin32 无平台 marker、Linux uv sync 会失败"——**这是错的**。origin/main 带 `pywin32>=306; sys_platform == 'win32'` 平台 marker（与 feature 一致），Linux sync 正常，能直接部署；且 origin/main 已是重构期近期代码（auth 审计 / 前端登录 / ci 修复），不是 v1 快照。重构主线在 `feature/refactor-split`，曾领先 `origin/main` 96 个 commit 且为干净 fast-forward；正把 main 追平为开发主干，之后 dev 在 `main`、部署推 `main:deploy`。
+- **公网入口**：xcy nginx VPS 托管 SPA 并反代受登录/bearer 保护的 API；后端仍跑在家里 box，通过 FRP 接入。敏感接口必须经过现有鉴权，MCP 不返回原始截图
+- **CI/CD 触发**：`push` 到 `deploy` 分支自动部署 + `workflow_dispatch` 手动兜底。手动部署任意目标必须同时指定 workflow ref 与 input：`gh workflow run deploy.yml --ref main -f ref=<branch|tag|sha>`；Fork 安全 = repo guard + secret 不被 fork 继承
+- **部署模型（唯一长期模型）**：`main` 是开发主干，`deploy` 是只接受 main fast-forward 的生产指针；发布命令是 `git push origin main:deploy`，deploy.yml 随后让 box 镜像 `origin/deploy`，并在 xcy 发布 SPA。`feature/refactor-split` 是重构期历史长分支，main 追平后停止继续开发并进入退役。部署机是 deployment mirror 不是 dev box，本地分支名不代表开发分支；判断真实状态看 `origin/*`
 - **部署一律走工作流，禁止手动 ssh 改部署机 git/重启**：不要 `ssh <box> 'git reset/pull/checkout'` 或手动 `systemctl restart` —— 那样没 CI 留痕、跳过 healthz 探针 / systemd unit 同步 / 沙箱目录预建。唯一例外是 deploy.sh **不管的** LM Studio 模型加载（`lms load/unload/ps`），这个本就在部署流程之外，可手动。
 - **systemd 用户**：`systemctl --user`（不 root）+ `loginctl enable-linger`，service 模板在 `deploy/timetrace-server.service`
 
@@ -117,7 +117,7 @@ API 启动后访问 `http://127.0.0.1:8765/docs` 看 OpenAPI、`/healthz` 探活
 
 ## 测试
 
-- `tests/` 当前 **535 passed**（46 个 test 文件）。除早期那批（api/auth/backend/ingest/outbox/phash/rules/search/storage/vlm/worker…），金字塔与 agent 相关的有：`test_rollup_cascade / test_summary_windows / test_source_hash / test_narrative`（指标级联 + source_hash + 叙述层，全 mock LLM）、`test_agent_tools / test_agent_runner / test_query_stats / test_mcp_tools / test_mcp_auth`（agent/MCP 读面，含 `search_summaries`）、`test_admin_backfill / test_admin_cmd`（backfill/narrate 子命令）
+- 最近一次全量基线与日期只维护在 `devlogs/PLAN.md`；不要在本文件复制动态测试数。金字塔与 agent 相关入口包括：`test_rollup_cascade / test_summary_windows / test_source_hash / test_narrative / test_agent_tools / test_agent_runner / test_query_stats / test_mcp_tools / test_mcp_auth / test_admin_backfill / test_admin_cmd / test_llm_log / test_pyramid_routes`
 - `pytest-asyncio` `asyncio_mode = "auto"`（pyproject.toml）
 - 不 mock DB，全部用 `tmp_path` 下的真实 SQLite 文件；HttpBackend E2E 用 `httpx.ASGITransport(app=...)` 直接打 in-process FastAPI，零 socket 零线程
 - VLM 测试分两层：`test_vlm.py` 单元（mock httpx），`test_vlm_smoke.py` 真实端点（需 `.env`，无 key 自动 skip）

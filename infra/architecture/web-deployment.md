@@ -20,8 +20,10 @@ TimeTrace 原本是纯本地工具（`127.0.0.1:8765`，靠 SSH `-L` 隧道按�
 Cloudflare (DNS / 可选 CDN，子域 timetrace.yukirin.me)
   │
   ▼
-云 VPS：nginx 反代 (TLS 终结 + 登录限速)
-  │ proxy_pass http://127.0.0.1:18765
+云 VPS xcy：nginx（TLS + SPA 静态文件 + API 反代）
+  ├── /var/www/timetrace.yukirin.me 直接提供前端
+  │
+  │ API 路径 proxy_pass http://127.0.0.1:18765
   ▼
 frps (VPS 上的 FRP 服务端)
   ╎ FRP 隧道（家里小主机在 NAT 后主动外连建立）
@@ -29,13 +31,13 @@ frps (VPS 上的 FRP 服务端)
 家用小主机 (Ubuntu，NAT 后)：
   ├── frpc → 把 127.0.0.1:8765 暴露到 VPS 的 127.0.0.1:18765
   ├── timetrace-server.service   (API + worker + VLM，loopback 8765)
-  └── timetrace-embserver.service (Qwen3-VL embedder，loopback 8766)
+  └── timetrace-embserver.service（可选，当前生产未启用；loopback 8766）
 ```
 
 关键事实：
 
 - **家用主机在 NAT 后，不开任何入站端口**。是它主动外连 VPS 建 FRP 隧道，所以家里路由器不用做端口映射，也没有暴露面
-- **VPS 只是 SSH 跳板 + TLS 终结 + 反代**，不存活动数据。它能看到经过的流量（TLS 已在它这里终结），所以它本身要可信——这是这套架构的信任假设
+- **VPS 保存构建后的 SPA 静态文件，但不保存活动数据库或截图**。它同时承担 TLS 终结与反代，能看到经过的流量，因此 VPS 本身要可信——这是这套架构的信任假设
 - nginx `proxy_pass` 到 `127.0.0.1:18765`（FRP 隧道在 VPS 侧的落地端口），FRP 再把它接到家里的 `127.0.0.1:8765`
 - 配置文件：[`deploy/nginx-timetrace.yukirin.me.conf`](../../deploy/nginx-timetrace.yukirin.me.conf)、[`deploy/timetrace-server.service`](../../deploy/timetrace-server.service)、[`deploy/timetrace-embserver.service`](../../deploy/timetrace-embserver.service)
 - 完整部署架构归档：[`devlogs/infra/archive-202605161000-deployment-architecture.md`](../../devlogs/infra/archive-202605161000-deployment-architecture.md)
@@ -66,7 +68,7 @@ nginx vhost（[`deploy/nginx-timetrace.yukirin.me.conf`](../../deploy/nginx-time
 - `client_max_body_size 50M`（multipart ingest 可能较大；见 `deploy/nginx-timetrace.yukirin.me.conf`）
 - MCP 的 SSE / streamable-HTTP：`proxy_buffering off` + `proxy_read_timeout 3600s`，否则分块不 flush
 
-前端 SPA 静态资源由 nginx 直接从磁盘 `/var/www/timetrace` 提供，`try_files ... /index.html` 兜底 SPA 路由。后端拥有的路径（`/v1` `/v1/agent`（SSE）`/v1/reports`（长阻塞）`/healthz` `/mcp` `/thumbs` `/blob` `/skill` `/docs` `/openapi.json`）才 `proxy_pass` 给隧道。
+前端 SPA 静态资源由 nginx 从 `/var/www/timetrace.yukirin.me` 提供，`try_files ... /index.html` 兜底 SPA 路由；hash 资产长期缓存，`index.html` 明确 `no-cache`。后端拥有的路径（`/v1` `/v1/agent`（SSE）`/v1/reports`（长阻塞）`/healthz` `/mcp` `/thumbs` `/blob` `/skill` `/docs` `/openapi.json`）才 `proxy_pass` 给隧道。
 
 ---
 
@@ -103,21 +105,23 @@ nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给
 
 ## CI/CD 与 fork 安全
 
-- **触发方式**：仅 `workflow_dispatch`（GH Web 按钮 / `gh workflow run deploy.yml --ref <ref>`），不在 push/PR 上自动部署
+- **触发方式**：push `deploy` 分支自动发布；`workflow_dispatch` 可手动部署指定 ref，默认 `main`
 - **fork 安全双保险**：
   1. `if: github.repository == 'Vanilla-Yukirin/TimeTrace'` —— fork 跑不起来这个 job
   2. GH secret 不被 fork 继承 —— 即便 fork 改了 guard 也拿不到 SSH key
-- 部署流程（[`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)）：workflow **不 checkout、不 pipe 脚本**，它只持 SSH key + 让 box 自取——经 FRP 隧道 `ssh` 到家用主机，由 box 自己 `git fetch origin <ref>` → `git checkout FETCH_HEAD -- deploy/deploy.sh` → `bash deploy/deploy.sh`。`deploy.sh` 内部再做 `git reset --hard` + `uv sync` + restart + healthz 探针（healthz smoke-check 在脚本里，不在 workflow 里）
-- CI（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)）：push 到 `main` / `feature/refactor-split` 或对其 PR 触发，plain `uv sync` → `ruff check` → `ruff format --check` → `pytest`。`uv sync` 不带 `--extra embserver`，所以 CI 不拉 torch/transformers
+- 后端 job **不 checkout、不 pipe 远端脚本**：它经 FRP SSH 到 box，由 box 自己 `git fetch origin <ref>` → 取该 ref 的 `deploy.sh` → `git reset --hard origin/<ref>` → `uv sync` → restart → healthz。
+- `publish-frontend` job 与后端并行：runner checkout 同一 ref、`npm ci && npm run build`，再用 xcy 专用低权 `ghdeploy` 用户先 rsync hash 资产、最后替换 `index.html`。两个 job 故障域独立。
+- CI（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)）：`main` push/PR 触发，plain `uv sync` → `ruff check` → `ruff format --check` → `pytest`。`uv sync` 不带 `--extra embserver`，所以 CI 不拉 torch/transformers。
 
 ---
 
-## deploy.sh 镜像语义（重要：别误判分支"乱了"）
+## 分支与 deploy.sh 镜像语义
 
 [`deploy/deploy.sh`](../../deploy/deploy.sh) 在家用主机上跑 `git reset --hard origin/<ref>`：
 
 - **镜像语义**：本地 git 状态是一次性的、可丢弃的，`origin` 才是真相
-- 因为重构期默认部署 ref 是 `feature/refactor-split`，**部署机本地那个叫 `main` 的分支会指向 feature 分支的提交链**——这是设计的镜像状态，不是污染、不是 bug、不需要"修复"
+- 长期分支模型只有 `main`（开发主干）和 `deploy`（生产指针）。发布时把已通过 CI 的 main fast-forward 到 deploy：`git push origin main:deploy`。历史 `feature/refactor-split` 不再作为默认部署源
+- **部署机本地分支可能指向 deploy ref 的提交链**——这是镜像语义，不是开发分支污染，不要在部署机上“整理分支”
 - 判断真实代码状态看 `origin/*`，不看部署机本地分支名
 - 部署一律走工作流，**禁止手动 ssh 改部署机 git / 重启 systemd**——那样没 CI 留痕、跳过 healthz 探针 / unit 同步 / 沙箱目录预建。唯一例外是 deploy.sh 不管的 LM Studio 模型加载（`lms load/unload`），本就在流程外
 - `uv sync`（plain）：deploy.sh 第 138 行实跑 plain `uv sync`（读 pyproject + uv.lock），不带 `--extra embserver`，所以部署机不拉 torch/transformers
@@ -128,8 +132,8 @@ nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给
 
 - `systemctl --user`（非 root）+ `loginctl enable-linger`（survive logout / headless）
 - 模板：[`deploy/timetrace-server.service`](../../deploy/timetrace-server.service)、[`deploy/timetrace-embserver.service`](../../deploy/timetrace-embserver.service)
-- 秘密（VLM creds / `TIMETRACE_*`）走仓库根的 `.env`（chmod 600，**不进 git**），unit 文件用 `EnvironmentFile=-%h/TimeTrace/.env`（`-` 前缀 = 文件缺失不阻止启动）
-- 加固：`NoNewPrivileges` / `PrivateTmp` / `ProtectSystem=strict` / `ProtectHome=read-only` + `ReadWritePaths=%h/TimeTraceData %h/TimeTrace`
+- 秘密（VLM creds / `TIMETRACE_*`）走仓库根的 `.env`（chmod 600，**不进 git**），unit 文件用 `EnvironmentFile=-%h/Github/TimeTrace/.env`（`-` 前缀 = 文件缺失不阻止启动）
+- 加固：`NoNewPrivileges` / `PrivateTmp` / `ProtectSystem=strict` / `ProtectHome=read-only` + `ReadWritePaths=%h/Github/TimeTrace %h/TimeTraceData %h/.cache %h/.local %h/.config/timetrace-server`
 
 ---
 

@@ -27,18 +27,19 @@
 
 ---
 
-## 当前工具集（6 个，均已实装）
+## 当前工具集（7 个，均已实装）
 
-工具以 `build_mcp_server` 内 `@mcp.tool()` 装饰的闭包形式注册，但**真实实现已抽到 `server/agent/tools.py` 共享层**（Web 聊天 agent 的 `server/agent/runner.py` 与 MCP server 共用同一份实现，read 表面不会在两个客户端之间漂移）。`server.py` 里的 read 工具（`search_activity` / `get_recent_activity` / `get_app_breakdown` / `get_category_stats`）与写工具 `apply_label` 都只是 `return await agent_tools.<name>(db, ...)` 的转发壳；只有 `ask_agent` 的检索 + 推理逻辑仍内联在 `server.py`。闭包捕获 `db`（所有工具）与 `vlm_cfg` / `chat_client`（仅 `ask_agent`）。
+工具以 `build_mcp_server` 内 `@mcp.tool()` 装饰的闭包形式注册，真实读写实现主要复用 `server/agent/tools.py`。MCP 暴露的 7 个工具与 Web Agent 的 7 个 schema 并不完全相同：MCP 有高层 `ask_agent`，Web Agent 则有指标工具 `query_stats`；其余读写能力共享实现。`ask_agent` 的检索 + 推理逻辑仍内联在 `mcp_layer/server.py`。
 
-下表 6 个工具中，`apply_label` 是**唯一写面**（只改 `category_final` + 写 feedback 审计行，绝不删改记录/截图），其余 5 个全是只读。
+下表 7 个工具中，`apply_label` 是**唯一写面**（只改 `category_final` + 写 feedback 审计行，绝不删改记录/截图），其余 6 个全是只读。
 
 | 工具 | 签名要点 | 用途 |
 |------|----------|------|
-| `search_activity` | `query: str, limit=20(≤100), hours_back: int\|None` | 关键词检索活动记录，跨窗口标题 / 应用名 / 进程名 / URL / VLM 描述 |
-| `get_recent_activity` | `hours_back=24(≤720), limit=50(≤200)` | 无关键词的最近 N 小时时间序快照，供 agent 概览后再决定深挖 |
+| `search_activity` | `query: str, limit=20(≤2000), hours_back/start_iso/end_iso` | 关键词检索活动记录；多词按 AND，可用绝对时间窗 |
+| `get_recent_activity` | `hours_back=24(≤720), limit=50(≤2000), cursor` | 无关键词时间序快照；支持绝对时间窗和游标分页 |
 | `get_app_breakdown` | `hours_back=24(≤720), top_n=20` | 按应用聚合活跃时长（`SUM(clamped duration)`：单条记录时长经 `_clamped_dur_sql` 封顶——负跨度归 0、超 5min 的休眠/合盖伪影贡献 0；返回里带 `capped_per_record_seconds`），回答「我在 X 上花了多久」 |
 | `get_category_stats` | `hours_back=24(≤720), top_n=20(≤50)` | 按分类聚合活跃时长（同样经 `_clamped_dur_sql("r")` 封顶），区分 `_unclassified`（系统内部尚未分类的积压桶）与 `uncategorized`（分类器真正判为「未分类」的桶）两个桶，返回带 `categories_legend` |
+| `search_summaries` | `grain, period, start_iso/end_iso, query, limit` | 读取 `5min/1h/6h/day/week` 叙述层；先 day/week 总览，再按返回时间窗下钻 |
 | `apply_label` | `record_id: str, category: str, note: str\|None` | **唯一写工具**：只改某条记录的 `category_final`（写一行 `feedback` 审计行，action=edit），绝不删改记录/截图；未知 record/category 返回 `error` dict 而不抛异常 |
 | `ask_agent` | `question: str, hours_back=24(≤720)` | 检索 + 推理：取最近活动喂给本地 LLM，直接产出中文自然语言回答 |
 
@@ -57,7 +58,7 @@
 
 `ask_agent` 是唯一依赖 LLM 的工具，依赖 `AppConfig.vlm`（`common/config.py::VLMConfig`，由 `TIMETRACE_VLM_*` env 构建）：
 
-- **优雅降级**：`vlm_cfg is None`（未配 API Key）时，工具不报错，返回一句「LLM endpoint not configured」，其余 5 个工具照常工作。
+- **优雅降级**：`vlm_cfg is None`（未配 API Key）时，工具不报错，返回一句「LLM endpoint not configured」，其余 6 个工具照常工作。
 - **单轮 round-trip**：流程是「取最近记录 → 每条压缩成一行 → 一次性喂给本地 Qwen3 模型让它读时间线后作答」，**不做 tool-calling 循环**。这样 demo 延迟可控、也更好调试。
 - **上下文预算**：最多取 `_ASK_AGENT_MAX_RECORDS = 80` 条，每条描述截断到 160 字；假设 LM Studio 以 ≥16K 上下文加载模型（默认 4096 容易溢出，部署时需自行 `lms load <model> -c 16384`）。
 - **空窗兜底**：请求窗口内无数据时，自动改用 all-time `order="desc"` 再查一次，确保拿到**最近** N 条而不是最老 80 条（这是默认 ASC 排序会踩的坑，已规避），并在回答前加一句「已自动扩窗到 ~Nh」的提示。
@@ -103,8 +104,8 @@ FastMCP 的 streamable HTTP 传输自带一个 anyio task group（即「session 
 登录系统（cookie session）是给浏览器 Web UI 用的；MCP 客户端（Claude Code / Desktop）是程序化调用，**只走 bearer token**（`server/auth.py::ServerAuth`，`tt_live_` 前缀）。换言之：
 
 - `/mcp` 与 `/v1/ingest/*` 同属「机器对机器」面，用 bearer token 鉴权，不接 cookie 登录态。具体实现：mount 前用 `BearerOnlyMiddleware(mcp_app, auth)` 把整个 MCP 子应用裹一层 ASGI 中间件，统一校验 `Authorization: Bearer tt_live_...`。
-- `/healthz` 与面向前端的 records / search / feedback 路由不要 token。
-- 本地默认监听 `127.0.0.1`，MCP **不直接对公网开放**；公网访问统一走 nginx 反代 + frp 隧道 + 鉴权之后再说。
+- `/healthz` 是公开探活；浏览器业务路由走 cookie/bearer principal，MCP 与 ingest 只接受 bearer。
+- server 默认监听 loopback；公网 MCP 经 nginx + FRP 到同一进程，并继续受 bearer 与 Host allowlist 双重保护。
 
 `.mcp.json`（仓库根，本机连法）：
 
@@ -125,9 +126,9 @@ FastMCP 的 streamable HTTP 传输自带一个 anyio task group（即「session 
 
 | 约束 | 说明 |
 |------|------|
-| **不返回原始截图** | 6 个工具只返回文本描述 / 元数据 / 统计 / 自然语言回答，绝不含图片 URL 或 base64 |
+| **不返回原始截图** | 7 个工具只返回文本描述 / 元数据 / 统计 / 自然语言回答，绝不含图片 URL 或 base64 |
 | **数量上限** | 每个工具都对 `limit` / `top_n` / `hours_back` 做 `min(max(...))` 夹取，防止一次塞给模型海量帧 |
-| **本地监听** | API 默认 `127.0.0.1`，MCP 随之不对外网暴露 |
+| **loopback 服务** | API 默认 `127.0.0.1`；公网只经 nginx + FRP + 鉴权进入 |
 | **bearer 鉴权** | 机器面统一 bearer token，不复用浏览器 cookie 登录态 |
 
 ---
@@ -136,7 +137,7 @@ FastMCP 的 streamable HTTP 传输自带一个 anyio task group（即「session 
 
 `server/mcp_layer/tools.py` 里还留着一组早期（Phase 1.5）独立的 async 工具函数：`list_categories` / `get_activity` / `get_category_stats` / `search_activity`。其中 `get_category_stats` 与 `search_activity` 仍是**返回桩数据**的占位实现，且 `get_category_stats` / `list_categories` 依赖一张 `categories` 表。
 
-**这组函数已不是当前 MCP 的对外接口**——真正暴露给 agent 的是 `server.py::build_mcp_server` 里那 6 个 `@mcp.tool()`（read 工具的实现在 `server/agent/tools.py` 共享层，写工具 `apply_label` 同理）。tools.py 视为待清理的遗留模块，新功能一律加到 `server.py` / `server/agent/tools.py`。
+**这组函数已不是当前 MCP 的对外接口**——真正暴露给 agent 的是 `server.py::build_mcp_server` 里那 7 个 `@mcp.tool()`。tools.py 视为待清理的遗留模块，新功能一律加到 `server.py` / `server/agent/tools.py`。
 
 ---
 

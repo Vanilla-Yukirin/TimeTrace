@@ -1,23 +1,25 @@
 # TimeTrace 项目 Wiki
 
-> TimeTrace 是一个 **Windows Only、本地优先**的"桌面活动记忆层"。低打扰采集活跃窗口与关键帧截图，落地到 SQLite + 本地文件系统；本地 VLM 给每帧生结构化描述（`vlm_desc`）与 flat-6 分类，支持时间轴回放、多模态搜索（关键词 FTS5 BM25 + 以图搜图 pHash + RRF 融合）、AI 看板报告，并通过 Local API + MCP（6 工具，bearer-gated）对外暴露结构化上下文（MCP 不返回原始截图）。
+> TimeTrace 是一个 **Windows-first、本地优先**的桌面活动记忆层。采集端记录活跃窗口与关键帧，服务端完成 SQLite/文件存储、VLM 描述与分类、混合检索、五层记忆金字塔和 LLM 叙述，再通过 Web、REST 与 bearer-gated MCP 暴露结构化上下文；MCP 不返回原始截图。
 
 ---
 
 ## 当前状态（活文档，持续更新到现状）
 
-客户端 / 服务端三层重构（P0–P3）已完成并生产验证，代码在 `src/timetrace/{common,client,server}/`。**本 wiki 各子页持续更新到现状**（不再是冻结的 v1 快照）；个别尚未实装的设计点在所属段落顶部用 `## **⚠️ …**` 标注。
+客户端 / 服务端三层重构（P0–P3）、本地 AI 分析链路、分层记忆与公网发布链路均已生产验证，代码在 `src/timetrace/{common,client,server}/`。**本页是架构现状入口；子页可能滞后**，与本页或代码冲突时以代码和最新 devlog 为准。尚未实装的设计点应在所属段落顶部用 `## **⚠️ …**` 标注。
 **下一步该做什么看滚动 TODO [`devlogs/PLAN.md`](../devlogs/PLAN.md)。**
 
 ### 重构之上已上线的能力
 
 - **本地 LLM 全链路**：VLM（LM Studio）给每帧生 `vlm_desc` + 直接产 flat-6 分类（`work/study/social/entertainment/system/uncategorized`）；分类走 `decide_category` 规则+VLM **加权投票**（KNN 已删除）。worker 同时生文本 embedding 入库。
-- **多模态搜索**：关键词 FTS5 trigram+BM25 ✅、以图搜图 pHash+BK-tree ✅、RRF(k=60) 融合 ✅。语义向量 `vector_search` 已实装但**未接进搜索路由**（沉睡的第三路，见 PLAN）。
-- **MCP**：`server/mcp_layer/server.py`（FastMCP，**6 工具**：`search_activity` / `get_recent_activity` / `get_app_breakdown` / `get_category_stats` / `apply_label`（唯一写工具，只打标签）/ `ask_agent`），挂 `/mcp/`、bearer-gated（DNS-rebinding allowlist 放行公网域名）。`mcp_layer/tools.py` 是废弃死 stub。
+- **多模态搜索**：records 查询走 FTS5 trigram+BM25；`POST /v1/search/by-image` 走 pHash+BK-tree 与 VLM 描述文本通道，再用 RRF(k=60) 融合；`GET /v1/search/text` 已接通 FTS5/LIKE + 文本 embedding cosine + RRF。图搜文本侧仍是 LIKE，向量仍为 numpy 全量扫描。
+- **MCP**：`server/mcp_layer/server.py` 是对外工具注册的唯一事实源，挂 `/mcp/`、bearer-gated；`search_summaries` 提供分层叙述，`apply_label` 是唯一写工具。Web Agent 工具集来自 `server/agent/tools.py`，不要用两边的数量推断能力相同。`mcp_layer/tools.py` 是废弃死 stub。
 - **登录鉴权系统**：cookie session + bearer 双通道 + admin seed 强制改密 + per-IP 锁定 + token CRUD。详见 [auth-system](architecture/auth-system.md)。
 - **Web Agent + AI 看板报告**：有界 tool-calling loop（与 MCP 共享 `server/agent/tools.py`）+ 定时 `report_scheduler` + SSE 流式 + skill 下载；per-app 覆盖（看板准确性 Phase 0）+ 读侧时长封顶 `_clamped_dur_sql`。
+- **分层记忆金字塔**：固定时间窗 `5min→1h→6h→day→week` 自底向上级联；指标层纯 SQL、叙述层为 summary-of-summaries；`source_hash` 驱动重发，后台 rollup/narrate 默认关闭、生产通过 env 开启；`search_summaries` 支持粗粒度总览后按时间窗下钻。
+- **可观测性与页面**：LLM 请求账本已覆盖 worker VLM、narrative 与 MCP `ask_agent`，记录 caller/模型/耗时/token/字符数/错误；report 与 Web Agent streaming 尚未接入。Web 已有 `/audit`、`/pyramid`、`/llm-log` 页面。
 - **embserver**：本地 Qwen3-VL 多模态 embedding 守护服务（独立第四入口 + systemd unit），**未接进主 worker/检索**。详见 [embserver](architecture/embserver.md)。
-- **公网部署**：家里 box（NAT 后）+ frp 隧道 + nginx VPS（`timetrace.yukirin.me`）+ `deploy.yml` 工作流。详见 [web-deployment](architecture/web-deployment.md)。
+- **公网部署**：家里 box（NAT 后）+ frp 隧道承载 API，xcy nginx VPS 托管公网 SPA；`deploy.yml` 在 `deploy` push 时并行发布后端和前端，前端用低权 `ghdeploy` 用户并保证 hash 资产先于 `index.html`。详见 [web-deployment](architecture/web-deployment.md)。
 
 ### 重构阶段状态
 
@@ -33,13 +35,13 @@
 | P4 客户端隐私管线 | ⚠️ 仅周边硬化 | Outbox compaction / _safe_close_record / ctypes 长路径完成；**OCR + 区域检测 + 模糊重编码未启**（隐私层仍是 v1 黑名单） | [outbox-compaction](../devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md) |
 | P5 容器化 + 适配器 | ⚠️ 容器完成 | Dockerfile / docker-compose / pyproject 平台标记；**PostgresDatabase / RedisQueue / S3BlobStorage 未启** | [packaging-and-container](../devlogs/infra/archive-202605171502-packaging-and-container.md) |
 | P6 Headless TUI | ❌ 未启动 | — | — |
-| P7 分发自动化 | ❌ 未启动 | — | — |
+| P7 分发自动化 | 🟡 部分完成 | `deploy` push 自动发布后端 + SPA；通用 release/安装包/ghcr 尚未做 | [frontend-publish](../devlogs/infra/archive-202607200155-frontend-publish-workflow.md) |
 
 ### 阅读约定
 
 - **与现状冲突以代码 + 最新 devlog 为准**：尚未实装的设计点在所属段落顶部加 H2 deprecation 警告。
 - **过期标注格式**：`## **⚠️ 一句话标题**`（H2 + 加粗紧贴 emoji，无空格）。递归定位全 infra 的过期标注：`grep -rn '^## \*\*⚠️' infra/`。
-- **完整重构脉络看 [kickoff devlog](../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)**（滚动更新的"重构宪法"，所有 PR 应能追溯到其中某个 P）。
+- **完整重构脉络看 [kickoff devlog](../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)**；它是历史起点，不是当前阶段状态，当前状态只看本页与滚动 PLAN。
 
 ---
 
@@ -49,25 +51,25 @@
 
 | 角色 | 从这里开始 |
 |------|-----------|
-| **新开发者** | [概览 → 执行摘要](overview/summary.md) → [架构总览](architecture/overview.md) → [开发路线图](overview/roadmap.md) |
+| **新开发者 / 新 agent** | [根 README](../README.md) → 本页「当前状态」→ [滚动 PLAN](../devlogs/PLAN.md) → 再按任务进入下方专题页 |
 | **存储 / 数据库** | [存储策略](storage/overview.md) → [数据库 Schema](storage/schema.md) → [相似检索层](storage/vector-search.md) |
 | **AI 接入 / MCP** | [MCP Layer](architecture/mcp-layer.md) → [Local API Server](architecture/api-server.md) → [隐私策略](privacy/strategy.md) |
 | **鉴权 / 部署** | [登录鉴权系统](architecture/auth-system.md) → [公网部署](architecture/web-deployment.md) → [客户端/服务端拆分](architecture/client-server-split.md) |
-| **Agent / 记忆架构（规划中）** | [PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) → [分层 schema](storage/pyramid-schema.md) → [写时管线](architecture/episode-and-rollup-pipeline.md) → [薄路由器](architecture/thin-router-agent.md) |
+| **Agent / 记忆架构（已部分上线）** | [分层 schema](storage/pyramid-schema.md) → [写时管线](architecture/episode-and-rollup-pipeline.md) → [薄路由器](architecture/thin-router-agent.md) → [最新叙述层 devlog](../devlogs/backend/archive-202606270722-narrative-loop-search-golive.md) |
 
 ---
 
 ## 目录
 
-### 🧭 规划 / 设计草案（前瞻，未实装）
+### 🧭 演进设计（部分已实装）
 
-> 这些是**前瞻性活计划**（非 v1 快照、非 devlog）。描述的是「更好的 Agent」的目标架构，会随推进更新；落地后再整理为 devlog 归档 + 翻新相关 wiki 子页。
+> 这些文档最初是前瞻设计；其中固定时间窗级联、叙述层、`query_stats` 与 `search_summaries` 已落地，episode/signal、deep scan、完整 thin-router 仍是规划。判断完成度以 [滚动 PLAN](../devlogs/PLAN.md) 为准。
 
 | 文件 | 内容 |
 |------|------|
-| [PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) | **总纲（先读）**：分层记忆金字塔 + 薄路由器 agent —— 问题陈述与 token 数学、prior-art 对比、金字塔/agent 设计、子 agent fallback、分阶段路线、评估、风险 |
-| [storage/pyramid-schema.md](storage/pyramid-schema.md) | 支撑 spec：统一 `summaries` 时间窗级联表（grain 5min/1h/6h/day/week）+ `signals` DDL sketch、压缩率/下钻提示/脱敏字段、幂等键与 watermark、回填、删除传播 |
-| [architecture/episode-and-rollup-pipeline.md](architecture/episode-and-rollup-pipeline.md) | 支撑 spec：写时级联 builder（tumbling 时间窗 rollup / 信号检测）如何挂 worker 状态机与 `bootstrap.serve()` 调度器、降级契约、并发预算 |
+| [PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) | **总纲**：分层记忆 + 薄路由器 agent；时间窗金字塔主链已落地，其余仍作演进参考 |
+| [storage/pyramid-schema.md](storage/pyramid-schema.md) | `summaries` 五层时间窗、指标/叙述/source_hash/回填与运维说明；`signals` 等扩展仍是规划 |
+| [architecture/episode-and-rollup-pipeline.md](architecture/episode-and-rollup-pipeline.md) | 时间窗 rollup 与调度设计；当前实际实现见 `server/summary/` 与 `bootstrap.py` |
 | [architecture/thin-router-agent.md](architecture/thin-router-agent.md) | 支撑 spec：agent 重塑为 route→retrieve→light-reason 路由器、分层工具、自描述结果信封、MCP 多入口引导、子 agent map-reduce、前端协同清单 |
 
 ### 📋 已落地的计划 / 设计（done-doc）
@@ -75,7 +77,7 @@
 | 文件 | 内容 |
 |------|------|
 | [PLAN-MULTIPATH-CLIENT.md](PLAN-MULTIPATH-CLIENT.md) | 多路径客户端 P0–P3（已实装）：endpoint failover + 原生 SSH 隧道托管 + 滑动窗口并发上传 + 托盘连接子菜单 |
-| [PLAN-REPORT-ACCURACY-FIXES.md](PLAN-REPORT-ACCURACY-FIXES.md) | 看板报告准确性 Phase 0（已上线）+ per-app 覆盖 + pyramid 落地排期（演示后开始） |
+| [PLAN-REPORT-ACCURACY-FIXES.md](PLAN-REPORT-ACCURACY-FIXES.md) | 历史计划：看板准确性 Phase 0 已上线；其中 pyramid 排期与手动发布待办已经过期，仅用于追溯决策 |
 
 ### 概览
 
@@ -94,7 +96,7 @@
 | [architecture/rule-engine.md](architecture/rule-engine.md) | 规则/反馈引擎：规则 + VLM 加权投票（decide_category）、来源权重、decision_trace |
 | [architecture/api-server.md](architecture/api-server.md) | Local API Server：接口约定、分页/采样、鉴权 |
 | [architecture/web-ui.md](architecture/web-ui.md) | Web UI：TimelineCanvas、检索页、看板/Agent 页、反馈交互、技术选型 |
-| [architecture/mcp-layer.md](architecture/mcp-layer.md) | MCP Layer：6 工具、JSON Schema、bearer 鉴权、隐私边界 |
+| [architecture/mcp-layer.md](architecture/mcp-layer.md) | MCP Layer：工具清单、bearer 鉴权、隐私边界；若冲突以 `mcp_layer/server.py` 为准 |
 | [architecture/auth-system.md](architecture/auth-system.md) | 登录鉴权系统：cookie session + bearer 双通道、admin seed、token CRUD |
 | [architecture/client-server-split.md](architecture/client-server-split.md) | 客户端/服务端三层拆分：common/client/server 职责、wire 协议、backend 实现 |
 | [architecture/web-deployment.md](architecture/web-deployment.md) | 公网部署：家里 box + frp 隧道 + nginx VPS + deploy.yml + 安全论证 |
@@ -108,7 +110,7 @@
 | [storage/overview.md](storage/overview.md) | 存储策略：SQLite + 文件系统 + 相似检索索引 |
 | [storage/schema.md](storage/schema.md) | 全部数据库表定义与索引建议 |
 | [storage/file-layout.md](storage/file-layout.md) | TimeTraceData/ 目录结构与文件命名规范 |
-| [storage/vector-search.md](storage/vector-search.md) | 相似检索层：pHash + BK-tree（视觉）、FTS5 BM25（关键词）、embedding 余弦（语义，未接路由）、RRF 融合 |
+| [storage/vector-search.md](storage/vector-search.md) | 相似检索层：pHash + BK-tree、FTS5 BM25、文本 embedding cosine 与 RRF；文本向量已接 `/v1/search/text`，图搜文本侧仍待迁 FTS5 |
 
 ### 隐私
 

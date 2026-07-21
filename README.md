@@ -1,6 +1,6 @@
 # TimeTrace
 
-**Windows-first, local-first 桌面活动记忆层。** 低打扰采集活跃窗口与关键帧截图，落地到 SQLite + 本地文件系统；时间轴回放、关键词 + 以图搜图 + VLM 语义搜索；MCP 上下文导出。
+**Windows-first、local-first 的个人工作记忆层。** TimeTrace 在后台按窗口事件与画面变化采集活跃窗口和关键帧，把原始记录存进本地 SQLite + 文件系统，再通过时间轴、混合搜索、分层摘要和 MCP，把「我刚才做过什么」变成可回放、可检索、可供 AI 使用的上下文；CPU、内存与每日磁盘增长的长期基准仍待补。
 
 > **架构说明**：项目从单进程拆为 **客户端 / 服务端可分离**。**两种模式都可用**：
 >
@@ -8,6 +8,19 @@
 > - **双进程 / 分布式**（多设备 / 远程）：`uv run timetrace-server` 跑服务端 + `uv run timetrace-client` 跑采集端，可分别部署在不同机器
 >
 > 完整重构方案见 [devlogs/infra/](devlogs/infra/)。
+
+## 当前能力与边界
+
+| 层 | 已上线 | 当前边界 |
+|---|---|---|
+| 采集 | 活跃窗口、关键帧、idle、隐私黑名单、单/双进程 outbox | OCR 区域识别与落盘前模糊尚未实现 |
+| 检索 | records FTS5、以图搜图 pHash、`/v1/search/text` 的 FTS5 + 文本向量 RRF | `/v1/search/by-image` 的文本通道仍是 LIKE；向量索引仍是 numpy 全量 cosine |
+| 分析 | 本地 VLM 描述、flat-6 分类、审计日志、文本 embedding | Classifier V2 只有校准实验和预备稿，未进生产 |
+| 记忆 | `5min → 1h → 6h → day → week` 指标级联、LLM 叙述、粗到细下钻 | `source_hash` 不包含子叙述文本，手动重叙述父层仍需 `--force` |
+| AI 接口 | Web Agent、报告、MCP、`search_summaries` | 唯一写工具是 `apply_label`，MCP 不返回原始截图；实时工具清单看 `mcp_layer/server.py` |
+| 运维 | 登录鉴权、box 后端部署、xcy 前端发布、GitHub Actions 双 job | 生产 LLM 单卡串行；客户端公网故障转移仍需专项验证 |
+
+这里的「已上线」表示仓库代码已落地并在个人生产环境跑通过，不等于每项都已经完成通用产品化或长期性能验收。当前真实待办统一维护在 [devlogs/PLAN.md](devlogs/PLAN.md)。
 
 ---
 
@@ -24,7 +37,7 @@ uv run timetrace
 
 跑起来之后：
 
-- API 在 `http://127.0.0.1:8765/docs`（OpenAPI 文档），`/healthz` 探活
+- API 在 `http://127.0.0.1:8765`，`/healthz` 可直接探活；`/docs` 需要先登录并完成首次改密
 - 系统托盘出现 TimeTrace 图标，右键 Quit 退出
 - 数据写在 `%USERPROFILE%/TimeTraceData/`（不在仓库里）
 
@@ -46,11 +59,11 @@ npm run dev          # http://127.0.0.1:5173
 
 适用场景：
 
-- 在 Windows 桌面 + Mac + Linux 小主机同时采集，归到同一时间线
+- 在多台 Windows 桌面采集，并汇总到 Windows/Linux/macOS server；当前 capture client 只支持 Windows
 - 把 server 部署在家里小主机或云服务器，外出时仍能采集（断网时 outbox 缓冲）
 - VLM key 集中放服务端，客户端只采集
 
-### Server 端（任意机器：Linux / macOS / Windows 都行）
+### Server 端（Linux / macOS / Windows）
 
 ```bash
 uv sync
@@ -66,6 +79,8 @@ uv run timetrace-server info                     # 看 data_dir / token_file / �
 uv run timetrace-server tokens list              # 列所有 token（值已 mask，只显示 label + 后 8 位）
 uv run timetrace-server tokens add Yuki-Laptop   # 给新设备发 token，完整值打印一次
 uv run timetrace-server tokens revoke Yuki-Laptop  # 吊销
+uv run timetrace-server backfill <start> <end>      # 历史指标级联回填
+uv run timetrace-server narrate <start> <end>       # 生成待处理分层叙述；重跑需加 --force
 ```
 
 `tokens add/revoke` 后**重启服务端**，新 token 才生效。
@@ -99,13 +114,13 @@ uv run timetrace-client print-config                # 看实际生效的配置�
 
 ### 部署到家里小主机
 
-我自己的部署方式：server 跑在家里 Ubuntu 小主机（NAT 后），通过 FRP 反向隧道映射 SSH 端口到云服务器，CI/CD 通过云服务器 ProxyJump SSH 进小主机部署。Web UI 永不公网，看页面走 `ssh -L`。完整部署架构与脚手架见：
+当前生产部署：server 跑在家里 Ubuntu 小主机（NAT 后），通过 FRP 暴露受鉴权保护的 API；xcy VPS 负责 nginx、HTTPS 和公网 SPA。推送 `deploy` 分支后，GitHub Actions 并行部署后端并构建/发布前端；`workflow_dispatch` 是手动兜底。完整部署架构与脚手架见：
 
 - [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
 - [devlogs/infra/archive-202605161015-cicd-workflow.md](devlogs/infra/archive-202605161015-cicd-workflow.md)
 - [`deploy/deploy.sh`](deploy/deploy.sh) — 在小主机上跑的部署脚本（带详尽注释）
 - [`deploy/timetrace-server.service`](deploy/timetrace-server.service) — systemd `--user` 单元模板
-- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — workflow_dispatch 手动触发，带 fork-safe repo guard
+- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — `deploy` push 自动触发，后端/前端并行发布，带 fork-safe repo guard
 
 ---
 
@@ -119,7 +134,7 @@ uv run ruff check src/
 uv run ruff format src/
 ```
 
-测试当前 252 passed，对所有 PR 在 GitHub Actions 上跑（`ci.yml`）。
+GitHub Actions 对 `main` 的 push 和 PR 运行 lint、format check 与 pytest。最近一次带日期和 commit 的全量结果只记录在 [滚动 PLAN](devlogs/PLAN.md)，避免多个 README 复制后漂移。
 
 ---
 
@@ -145,7 +160,10 @@ src/timetrace/
 │   ├── phash_index/ # BK-tree 内存索引
 │   ├── vlm/         # OpenAI 兼容 VLM 客户端
 │   ├── worker/      # 分析 Worker
-│   └── mcp_layer/   # MCP 工具
+│   ├── summary/     # 五层指标级联 + LLM 叙述
+│   ├── agent/       # Web Agent 与共享工具实现
+│   ├── llm_log.py   # 跨调用方 LLM 请求账本
+│   └── mcp_layer/   # FastMCP 对外入口
 └── main.py          # 单进程入口（capture + api + worker + tray）
 ```
 
@@ -162,10 +180,13 @@ src/timetrace/
 
 ## 项目文档
 
-- [infra/readme.md](infra/readme.md) — 架构 / 存储 / 隐私 / 路线图深度文档
-- [devlogs/](devlogs/) — 开发过程归档（按 backend / frontend / infra / research 分类）
+- [devlogs/PLAN.md](devlogs/PLAN.md) — **当前未完成项与下一步，先看这里**
+- [infra/readme.md](infra/readme.md) — 当前架构地图与深度文档索引
+- [devlogs/README.md](devlogs/README.md) — 按时间和主题索引开发/排障事实；具体 archive 是历史快照
 - [`.env.example`](.env.example) — VLM 启用模板
-- [CLAUDE.md](CLAUDE.md) — Claude Code 协作约定（也是给人读的快速地图）
+- [CLAUDE.md](CLAUDE.md) — AI agent 的项目约束、运行命令和不可破坏的不变量
+
+事实冲突时按「真实代码与测试 → `infra/` 活文档 → `devlogs/PLAN.md` → 最新 devlog → 旧 devlog」判断。这样可以保留排障历史，同时避免旧结论重新污染当前实现。
 
 ---
 

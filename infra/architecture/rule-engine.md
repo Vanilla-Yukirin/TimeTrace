@@ -137,22 +137,9 @@ rules:
 
 ---
 
-## **⚠️ 本节已过期：KNN 回灌目标已作废**
+## 反馈边界：当前只纠正单条，不自动学习
 
-KNN 库已不存在，下方"回灌 KNN 投票"这个设计目标本身已作废。现状：`feedback` 路由（[server/api/routes/feedback.py:21](../../src/timetrace/server/api/routes/feedback.py)）只做 **audit-trail**——把 `category_before` / `category_after` 写进 feedback 审计行，不回灌任何投票库。`SOURCE_WEIGHTS` 里 `user_edit` / `user_confirm` 权重保留在表中，但当前没有任何调用方往 `decide_category` 传它们（生产路径只用 rule + vlm 两源）。下方原设计保留作历史参考。
-
-```
-用户在 UI 修改类别
-      │
-      ▼
-feedback 记录 (record_id, old_cat, new_cat, source=user_edit, ts)
-      │
-      ├──► 更新该样本 category_final（来源记在 decision_trace，无独立 category_source 列）
-      │
-      └──► 作为高权重邻居（user_edit=5.0 / user_confirm=3.0）回灌 KNN 投票
-```
-
-**冷启动**：规则表兜底，用户每次修改都在为 KNN 库积累强样本，分类准确率随使用提升。权重表里 `user_edit` / `user_confirm` 远高于 `vlm` / `knn`，正是为了让人工背书一票压制模型/数据的弱信号。当前 `feedback` 路由（[server/api/routes/feedback.py](../../src/timetrace/server/api/routes/feedback.py)）已存在但闭环到 KNN 库的回灌尚未接线。
+KNN 库已删除。用户通过 UI/MCP 修改分类时，系统更新该记录的 `category_final` 并写 feedback 审计行；它不会成为近邻、规则或后续分类的训练样本。`SOURCE_WEIGHTS` 中保留的 `user_edit` / `user_confirm` 目前没有生产调用方，不能据此宣称“越用越准”。Classifier V2 如需复用人工纠错，必须重新设计污染隔离、失效与回滚，而不是恢复旧 KNN 投票。
 
 ---
 
@@ -160,7 +147,7 @@ feedback 记录 (record_id, old_cat, new_cat, source=user_edit, ts)
 
 | 项 | 状态 |
 |------|------|
-| Worker 调 `decide_category` | ✅ 已实装：`vlm_done` 前构造 `VlmPrediction` + `RuleSet` 调 `decide_category`，写 `category_final`（[server/worker/loop.py:223](../../src/timetrace/server/worker/loop.py)）。`decision_trace` 生成但运行时丢弃（不持久化），schema 也无 `category_source` 列 |
+| Worker 调 `decide_category` | ✅ 已实装：`vlm_done` 前构造 `VlmPrediction` + `RuleSet` 调 `decide_category`，写 `category_final`；`confidence`、`category_suggested`、`decision_trace` 与阶段时间戳已持久化，可在 `/audit` 查看 |
 | VLM 类别预测 | ✅ 已实装：VLM 输出含 `category` enum（`payload.get("category")`），填进 `VlmPrediction`（[server/worker/loop.py:227](../../src/timetrace/server/worker/loop.py)） |
 | 规则表构造 + 热加载 | ✅ 已实装：以 settings KV 的 per-app overrides 形态落地（非 YAML），`build_ruleset()` 构造 `RuleSet`，worker 每任务 `load_overrides` 热加载（[server/settings/overrides.py:107](../../src/timetrace/server/settings/overrides.py)） |
 | 独立 YAML / JSON 规则文件加载器 | 未实现（当前规则只来自 settings KV overrides） |
