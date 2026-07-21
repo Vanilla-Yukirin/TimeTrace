@@ -103,7 +103,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - **GitHub identity**：仓库是 `Vanilla-Yukirin/TimeTrace`。本地 git config 的 `Yuki` 只是临时本地标签，不要混
 - **部署目标**：家里 Ubuntu 小主机（NAT 后），CI 经云服务器 FRP 隧道 SSH 进；详见 [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
 - **公网入口**：xcy nginx VPS 托管 SPA 并反代受登录/bearer 保护的 API；后端仍跑在家里 box，通过 FRP 接入。敏感接口必须经过现有鉴权，MCP 不返回原始截图
-- **CI/CD 触发**：`push` 到 `deploy` 分支自动部署 + `workflow_dispatch` 手动兜底。手动部署任意目标必须同时指定 workflow ref 与 input：`gh workflow run deploy.yml --ref main -f ref=<branch|tag|sha>`；Fork 安全 = repo guard + secret 不被 fork 继承
+- **CI/CD 触发**：`push` 到 `deploy` 分支自动部署 + `workflow_dispatch` 手动兜底。手动部署用 `gh workflow run deploy.yml --ref <branch|tag>`；GitHub 在触发时把该 ref 固定为 `github.sha`，排队期间不会漂移。Fork 安全 = repo guard + secret 不被 fork 继承
 - **部署模型（唯一长期模型）**：`main` 是开发主干，`deploy` 是只接受 main fast-forward 的生产指针；发布命令是 `git push origin main:deploy`，deploy.yml 随后让 box 镜像 `origin/deploy`，并在 xcy 发布 SPA。`feature/refactor-split` 是重构期历史长分支，main 追平后停止继续开发并进入退役。部署机是 deployment mirror 不是 dev box，本地分支名不代表开发分支；判断真实状态看 `origin/*`
 - **部署一律走工作流，禁止手动 ssh 改部署机 git/重启**：不要 `ssh <box> 'git reset/pull/checkout'` 或手动 `systemctl restart` —— 那样没 CI 留痕、跳过 healthz 探针 / systemd unit 同步 / 沙箱目录预建。唯一例外是 deploy.sh **不管的** LM Studio 模型加载（`lms load/unload/ps`），这个本就在部署流程之外，可手动。
 - **systemd 用户**：`systemctl --user`（不 root）+ `loginctl enable-linger`，service 模板在 `deploy/timetrace-server.service`

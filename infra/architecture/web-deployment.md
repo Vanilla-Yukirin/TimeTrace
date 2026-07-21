@@ -105,11 +105,11 @@ nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给
 
 ## CI/CD 与 fork 安全
 
-- **触发方式**：push `deploy` 分支自动发布；`workflow_dispatch` 可手动部署指定 ref，默认 `main`
+- **触发方式**：push `deploy` 分支自动发布；`workflow_dispatch` 通过 Actions 的 ref 选择器或 `gh workflow run deploy.yml --ref <branch|tag>` 手动发布。GitHub 在触发时记录不可变 `github.sha`，不会因生产队列等待而漂移
 - **fork 安全双保险**：
   1. `if: github.repository == 'Vanilla-Yukirin/TimeTrace'` —— fork 跑不起来这个 job
   2. GH secret 不被 fork 继承 —— 即便 fork 改了 guard 也拿不到 SSH key
-- 后端 job **不 checkout、不 pipe 远端脚本**：它经 FRP SSH 到 box，由 box 自己 `git fetch origin <ref>` → 取该 ref 的 `deploy.sh` → `git reset --hard origin/<ref>` → `uv sync` → restart → healthz。
+- 后端 job **不 checkout、不 pipe 远端脚本**：它经 FRP SSH 到 box，由 box 自己 `git fetch origin <SHA>` → 取该 SHA 的 `deploy.sh` → `git reset --hard <SHA>` → `uv sync` → restart → healthz。
 - `publish-frontend` job 与后端并行：runner checkout 同一 ref、`npm ci && npm run build`，再用 xcy 专用低权 `ghdeploy` 用户先 rsync hash 资产、最后替换 `index.html`。两个 job 故障域独立。
 - CI（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)）：`main` push/PR 触发，plain `uv sync` → `ruff check` → `ruff format --check` → `pytest`。`uv sync` 不带 `--extra embserver`，所以 CI 不拉 torch/transformers。
 

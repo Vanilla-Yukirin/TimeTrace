@@ -71,11 +71,11 @@ uv sync --extra embserver
 
 ## 部署流程（CI/CD）
 
-- **触发**：push `deploy` 自动发布；手动兜底使用 `gh workflow run deploy.yml --ref main -f ref=<branch|tag|sha>`，input 默认 `main`
+- **触发**：push `deploy` 自动发布；手动兜底使用 `gh workflow run deploy.yml --ref <branch|tag>`（不传时默认分支为 `main`）。workflow 直接使用触发事件记录的 `github.sha`，因此即使排队，目标提交也不会随后续 push 漂移
 - **Fork 安全**：`if: github.repository == 'Vanilla-Yukirin/TimeTrace'` + secret 不被 fork 继承（双保险）
 - **路径**：后端 job 经 FRP SSH 进 box，让 box 自取 event SHA 对应的 `deploy.sh` 并镜像该 SHA；前端 job 在 runner checkout 同一 SHA 后发布到 xcy
 - **`deploy/deploy.sh` 做的事**：
-  1. `git fetch origin --prune` + `git reset --hard origin/$BRANCH`（镜像状态，**不是污染**——见 CLAUDE.md「动态部署模型」）
+  1. `git fetch origin --prune` + `git reset --hard <pinned SHA>`（镜像状态，**不是污染**——见 CLAUDE.md「动态部署模型」）
   2. `uv sync`（**plain，不含 embserver torch**）
   3. schema 无独立 migration（`SqliteDatabase` 启动自建）
   4. `systemctl --user daemon-reload` + `restart timetrace-server`（embserver 不在此列）

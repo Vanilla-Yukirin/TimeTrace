@@ -18,7 +18,7 @@
 # The cloud server is a tunnel endpoint only — nothing runs there.
 #
 # === Backend self-fetching deploy.sh (no backend checkout) ====================
-# A tiny resolver job first pins the requested ref to one commit SHA. The
+# A tiny resolver job exports the trigger's already-pinned commit SHA. The
 # backend deploy job itself does not clone the repo. It only:
 #   1) holds the SSH key,
 #   2) opens an ssh control channel to the home box,
@@ -39,10 +39,12 @@
 #      (fast-forwards the remote `deploy` branch to main's HEAD → fires this
 #      workflow → box resets to origin/deploy). Only push `deploy` when you mean
 #      to deploy; WIP stays on a short-lived topic branch or local worktree.
-#   2. workflow_dispatch (manual escape hatch): deploy ANY ref from the GH
-#      Actions UI (Actions → "deploy" → Run workflow) or locally:
-#          gh workflow run deploy.yml --ref main -f ref=<branch|tag|sha>
+#   2. workflow_dispatch (manual escape hatch): choose the branch/tag in the
+#      GH Actions "Use workflow from" selector, or locally with --ref:
+#          gh workflow run deploy.yml --ref <branch|tag>
 #          gh run watch
+#      GitHub records that ref's commit as github.sha when dispatching, before
+#      this run can wait in the production concurrency queue.
 #
 # === Fork safety ==============================================================
 # Two layers prevent forks from accidentally deploying to MY machine:
@@ -91,7 +93,7 @@
 # so restart + health check still have an Actions record:
 #
 #     scp -P 10089 .env vanilla@121.43.33.13:~/Github/TimeTrace/.env
-#     gh workflow run deploy.yml --ref main -f ref=main
+#     gh workflow run deploy.yml --ref main
 # =============================================================================
 
 name: deploy
@@ -109,11 +111,6 @@ on:
   push:
     branches: [deploy]
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Git ref to deploy (branch / tag / commit SHA). Default: main"
-        required: false
-        default: "main"
 
 jobs:
   resolve-ref:
@@ -123,10 +120,10 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      - name: Resolve requested ref to one immutable commit
+      - name: Checkout trigger's immutable commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'push' && github.sha || inputs.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: Export commit SHA
