@@ -1,6 +1,6 @@
 # =============================================================================
-# deploy.yml — Manual SSH deploy to the target machine (home small box via
-# single-hop FRP reverse tunnel). Companion docs:
+# deploy.yml — GitOps production deploy: backend over FRP SSH + SPA to xcy.
+# Companion docs:
 #
 #   devlogs/infra/archive-202605161000-deployment-architecture.md
 #   devlogs/infra/archive-202605161015-cicd-workflow.md
@@ -17,41 +17,31 @@
 # `ssh -p FRP_PORT vanilla@cloud_ip` lands you straight on the home box.
 # The cloud server is a tunnel endpoint only — nothing runs there.
 #
-# === Self-fetching deploy.sh (no runner-side checkout) ========================
-# Runner does NOT clone the repo. It only:
+# === Backend self-fetching deploy.sh (no backend checkout) ====================
+# A tiny resolver job first pins the requested ref to one commit SHA. The
+# backend deploy job itself does not clone the repo. It only:
 #   1) holds the SSH key,
 #   2) opens an ssh control channel to the home box,
 #   3) tells the home box to refresh deploy/deploy.sh from its OWN clone via
 #      git, then run it.
 #
-# Why git, not `curl raw`: this repo is PRIVATE → raw.githubusercontent.com
-# 404s for unauthenticated requests, and the box's curl has no GitHub auth, so
-# the old `curl raw | bash` never worked here. The box's git clone DOES have
-# stored credentials (its `git fetch` works), and `git fetch <ref>` is immune
-# to the slash-in-branch-name ambiguity that breaks raw URLs for refs like
-# `feature/refactor-split`. The big payloads (git fetch + uv sync) still happen
-# on the home box over its own broadband, never round-tripping the runner.
-# `ssh GTi13-Ultra 'cd ~/Github/TimeTrace && git fetch origin <ref> &&
-# git checkout FETCH_HEAD -- deploy/deploy.sh && bash deploy/deploy.sh'`
-# reproduces CI behavior for local debugging.
-#
-# Tradeoff: the repo must already be cloned on the box (true after first
-# manual clone — a private repo's first clone needs auth setup anyway). The
-# ref's version of deploy.sh is used (git checkout FETCH_HEAD), so pushing a
-# new deploy.sh + `gh workflow run --ref <branch>` runs THAT version.
+# The private repo must already be cloned and authenticated on the box. The
+# deploy job fetches the resolved SHA, checks out that SHA's deploy.sh, and
+# passes the same SHA into the script. The frontend job checks out that exact
+# SHA on the runner to build the SPA.
 #
 # === Trigger ==================================================================
 # Two ways in:
 #   1. Push-to-deploy (GitOps): pushing to the `deploy` branch auto-deploys
-#      origin/deploy. Normal work pushes to feature/refactor-split (NO deploy);
-#      when you actually want to ship, one command does it:
-#          git push origin feature/refactor-split:deploy
-#      (fast-forwards the remote `deploy` branch to feature's HEAD → fires this
+#      origin/deploy. Normal work lands on main (NO deploy); when you actually
+#      want to ship, one command does it:
+#          git push origin main:deploy
+#      (fast-forwards the remote `deploy` branch to main's HEAD → fires this
 #      workflow → box resets to origin/deploy). Only push `deploy` when you mean
-#      to deploy; WIP commits go to feature.
+#      to deploy; WIP stays on a short-lived topic branch or local worktree.
 #   2. workflow_dispatch (manual escape hatch): deploy ANY ref from the GH
 #      Actions UI (Actions → "deploy" → Run workflow) or locally:
-#          gh workflow run deploy.yml --ref <branch|tag|sha>
+#          gh workflow run deploy.yml --ref main -f ref=<branch|tag|sha>
 #          gh run watch
 #
 # === Fork safety ==============================================================
@@ -64,7 +54,6 @@
 #
 # A fork user adapting this for their own deploy needs to:
 #   - change the repo string in `if:` below
-#   - change the GitHub raw URL in the curl step to their fork's path
 #   - configure the 4 secrets in their own repo settings
 #
 # === Required secrets (4 backend + 3 frontend) ================================
@@ -98,32 +87,57 @@
 # Server config like VLM API keys lives in ~/Github/TimeTrace/.env on the target.
 # That file is in .gitignore and the deploy script does `git reset --hard`
 # which only touches tracked files — so .env persists forever across deploys.
-# Set it once after the first successful deploy:
+# Provision it once outside git; after changing it, trigger the normal workflow
+# so restart + health check still have an Actions record:
 #
 #     scp -P 10089 .env vanilla@121.43.33.13:~/Github/TimeTrace/.env
-#     ssh GTi13-Ultra-2v4G "systemctl --user restart timetrace-server"
+#     gh workflow run deploy.yml --ref main -f ref=main
 # =============================================================================
 
 name: deploy
 
+# Serialize production mutations. Do not cancel a run midway through an atomic
+# publish/deploy sequence; the queued run deploys its own immutable SHA next.
+concurrency:
+  group: timetrace-production
+  cancel-in-progress: false
+
 on:
-  # Push-to-deploy: a push to the `deploy` branch ships it. main stays frozen at
-  # legacy v1 (pywin32 has no platform marker there → Linux uv sync fails), so
-  # `deploy` tracks feature/refactor-split's HEAD, not main.
+  # Push-to-deploy: a push to the `deploy` branch ships it. main is the only
+  # long-lived development branch; deploy is a production pointer to a tested
+  # main commit and must not receive direct development work.
   push:
     branches: [deploy]
   workflow_dispatch:
     inputs:
       ref:
-        description: "Git ref to deploy (branch / tag / commit SHA). Default: feature/refactor-split (main is legacy v1, pywin32 dep blocks Linux uv sync)"
+        description: "Git ref to deploy (branch / tag / commit SHA). Default: main"
         required: false
-        default: "feature/refactor-split"
+        default: "main"
 
 jobs:
+  resolve-ref:
+    if: github.repository == 'Vanilla-Yukirin/TimeTrace'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve requested ref to one immutable commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.ref }}
+          fetch-depth: 1
+
+      - name: Export commit SHA
+        id: resolve
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   deploy:
     # Double guard: fork-safe (repo check) + only our two intended triggers
     # (manual dispatch or a push to `deploy`).
     if: github.repository == 'Vanilla-Yukirin/TimeTrace' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    needs: resolve-ref
     runs-on: ubuntu-latest
     # First deploy on a slow home upstream can take a while: pip wheels for
     # numpy / Pillow / fastapi etc. add up. 30 min is generous; reduce later.
@@ -151,19 +165,11 @@ jobs:
 
       # The one and only deploy step.
       #
-      # The target box bootstraps deploy.sh from its OWN already-cloned,
-      # git-authenticated repo (NOT from raw.githubusercontent.com): this repo
-      # is PRIVATE, and raw 404s for unauthenticated requests, so the old
-      # `curl raw | bash` could never have worked from the target. git over the
-      # box's stored credentials works, and `git fetch <ref>` is also immune to
-      # the slash-in-branch-name ambiguity that breaks raw URLs for
-      # `feature/refactor-split`.
+      # The target box bootstraps deploy.sh from its own authenticated clone.
       #
       # On the remote bash:
       #   1. set -o pipefail so a mid-pipe failure isn't masked.
-      #   2. cd into the existing clone (first-ever deploy still needs a manual
-      #      `git clone` once — a private repo's first clone needs auth setup
-      #      anyway; deploy.sh's own clone path is the public-repo fallback).
+      #   2. cd into the existing clone (first-ever provisioning is separate).
       #   3. git fetch the requested ref → checkout just deploy/deploy.sh from
       #      it (so we run the ref's version of the script, not a stale local).
       #   4. export TIMETRACE_BRANCH=<ref> + run deploy.sh (it does the real
@@ -175,10 +181,7 @@ jobs:
         env:
           TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
           TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
-          # workflow_dispatch → the chosen input ref; push → the pushed branch
-          # name (github.ref_name = "deploy"). inputs.ref is empty on push, so
-          # the || picks github.ref_name.
-          REF: ${{ github.event.inputs.ref || github.ref_name }}
+          REF: ${{ needs.resolve-ref.outputs.sha }}
         run: |
           set -euo pipefail
           echo "Target  : ${TARGET}:${TARGET_PORT}"
@@ -198,7 +201,7 @@ jobs:
             echo "## Deploy summary"
             echo "- Repo: ${{ github.repository }}"
             echo "- Trigger: ${{ github.event_name }}"
-            echo "- Ref: ${{ github.event.inputs.ref || github.ref_name }}"
+            echo "- Ref: ${{ needs.resolve-ref.outputs.sha }}"
             echo "- Outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -226,6 +229,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-frontend:
     if: github.repository == 'Vanilla-Yukirin/TimeTrace' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    needs: resolve-ref
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -236,7 +240,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref_name }}
+          ref: ${{ needs.resolve-ref.outputs.sha }}
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -279,6 +283,6 @@ jobs:
         run: |
           {
             echo "## Frontend publish summary"
-            echo "- Ref: ${{ github.event.inputs.ref || github.ref_name }}"
+            echo "- Ref: ${{ needs.resolve-ref.outputs.sha }}"
             echo "- Outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
