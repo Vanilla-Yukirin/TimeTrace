@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate, useLocation, Navigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
-import { useAuth } from '@/contexts/AuthContext'
+import { useAuth } from '@/contexts/auth'
 import { AuthCard, AuthField, AuthButton } from '@/components/auth/AuthCard'
 
 /** Where to bounce back after login — RequireAuth stashes the original

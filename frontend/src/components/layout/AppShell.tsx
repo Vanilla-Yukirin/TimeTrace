@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { Sidebar } from './Sidebar'
@@ -17,12 +17,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
  *  hamburger (in TopBar) and the drawer (Sidebar) must share it. */
 export function MainLayout({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile()
-  const [navOpen, setNavOpen] = useState(false)
 
-  // Leaving mobile (e.g. rotate / resize) must not leave a stuck-open drawer.
-  useEffect(() => {
-    if (!isMobile) setNavOpen(false)
-  }, [isMobile])
+  // Changing breakpoint remounts the stateful shell, so a mobile drawer cannot
+  // remain open after rotating to desktop and back.
+  return (
+    <MainLayoutContents key={isMobile ? 'mobile' : 'desktop'} isMobile={isMobile}>
+      {children}
+    </MainLayoutContents>
+  )
+}
+
+function MainLayoutContents({
+  children,
+  isMobile,
+}: {
+  children: React.ReactNode
+  isMobile: boolean
+}) {
+  const [navOpen, setNavOpen] = useState(false)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>

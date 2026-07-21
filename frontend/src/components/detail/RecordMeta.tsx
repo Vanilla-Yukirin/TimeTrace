@@ -1,16 +1,15 @@
 import type { ApiRecord } from '@/types/api'
 import { formatTime, formatDurationMs } from '@/lib/dateUtils'
+import { useNow } from '@/hooks/useNow'
 
 interface RecordMetaProps {
   record: ApiRecord
 }
 
 export function RecordMeta({ record }: RecordMetaProps) {
-  const duration = record.ts_end
-    ? record.ts_end - record.ts_start
-    : Date.now() - record.ts_start
-
   const isActive = !record.ts_end
+  const now = useNow(isActive)
+  const duration = (record.ts_end ?? now ?? record.ts_start) - record.ts_start
 
   return (
     <div style={{ fontSize: 13 }}>

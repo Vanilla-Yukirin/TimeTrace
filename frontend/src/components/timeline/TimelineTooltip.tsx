@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom'
 import type { ApiRecord } from '@/types/api'
 import { formatTime, formatDurationMs } from '@/lib/dateUtils'
 import { categoryColor } from '@/lib/categories'
+import { useNow } from '@/hooks/useNow'
 
 interface TimelineTooltipProps {
   record: ApiRecord
@@ -10,9 +11,8 @@ interface TimelineTooltipProps {
 }
 
 export function TimelineTooltip({ record, x, y }: TimelineTooltipProps) {
-  const duration = record.ts_end
-    ? record.ts_end - record.ts_start
-    : Date.now() - record.ts_start
+  const now = useNow(record.ts_end == null)
+  const duration = (record.ts_end ?? now ?? record.ts_start) - record.ts_start
   const startStr = formatTime(record.ts_start)
   const endStr = record.ts_end ? formatTime(record.ts_end) : '进行中'
   const durationStr = formatDurationMs(duration)

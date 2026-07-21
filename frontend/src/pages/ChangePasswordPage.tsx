@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
-import { useAuth } from '@/contexts/AuthContext'
+import { useAuth } from '@/contexts/auth'
 import { AuthCard, AuthField, AuthButton } from '@/components/auth/AuthCard'
 
 /** Mirrors the server's ``validate_new_password`` so we give immediate
