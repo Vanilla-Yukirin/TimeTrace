@@ -61,16 +61,26 @@ export function TimelinePage() {
   )
 
   // Day summary: count + total tracked time across the shown records.
-  const hasActiveRecord = shownRecords.some((record) => record.ts_end == null)
-  const now = useNow(hasActiveRecord)
-  const totalMs = useMemo(
+  const durationSummary = useMemo(
     () =>
       shownRecords.reduce(
-        (sum, record) => sum + ((record.ts_end ?? now ?? record.ts_start) - record.ts_start),
-        0,
+        (summary, record) => {
+          if (record.ts_end == null) {
+            summary.activeCount += 1
+            summary.activeStartTotal += record.ts_start
+          } else {
+            summary.closedTotal += record.ts_end - record.ts_start
+          }
+          return summary
+        },
+        { closedTotal: 0, activeCount: 0, activeStartTotal: 0 },
       ),
-    [shownRecords, now],
+    [shownRecords],
   )
+  const now = useNow(durationSummary.activeCount > 0)
+  const totalMs =
+    durationSummary.closedTotal +
+    (now == null ? 0 : durationSummary.activeCount * now - durationSummary.activeStartTotal)
 
   const handleDateChange = useCallback((date: Date) => {
     setSelectedDate(date)

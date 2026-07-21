@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Outlet } from 'react-router-dom'
-import { MOBILE_QUERY, useIsMobile } from '@/hooks/useIsMobile'
+import { getMobileMediaQuery, useIsMobile } from '@/hooks/useIsMobile'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 
@@ -23,7 +23,8 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
   // happens in the media-query event callback, so route children stay mounted
   // and unsaved page state survives rotation/resizing.
   useEffect(() => {
-    const query = window.matchMedia(MOBILE_QUERY)
+    const query = getMobileMediaQuery()
+    if (!query) return undefined
     const handleBreakpointChange = (event: MediaQueryListEvent) => {
       if (!event.matches) setNavOpen(false)
     }
