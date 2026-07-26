@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { useTheme } from '@/contexts/ThemeContext'
+import { useTheme } from '@/contexts/theme'
 
 // Markdown renderer for the agent chat. Uses react-markdown + remark-gfm so we
 // get full GFM — tables, task lists, strikethrough, nested blocks — which the

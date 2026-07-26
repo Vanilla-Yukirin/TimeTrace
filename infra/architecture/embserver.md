@@ -168,7 +168,7 @@ uv run timetrace-embserver selftest --threshold 0.999
 
 `deploy/timetrace-embserver.service`（`systemctl --user`）：`ExecStart=%h/.local/bin/timetrace-embserver`，环境里写好 MODEL / DTYPE=bfloat16 / TTL=900，建议 pin `API_KEY`（或用 EnvironmentFile），`Restart=on-failure`，`ReadWritePaths=%h/TimeTraceData`。service 注释明确：前置步骤（torch 装、`uv sync --extra embserver`、下模型、`loginctl enable-linger`）**deploy.sh 不管**——embserver 是 opt-in，故意排除在 plain `uv sync` 部署路径之外；且需要机器有 CUDA GPU。靠 JIT + TTL，service 长驻也不会一直占满显存。
 
-embserver **不经 nginx 暴露公网**（绑 127.0.0.1:8766），与项目"本地优先 / Web UI 永不公网"一致；远程访问走 SSH 隧道。
+embserver **不经 nginx 暴露公网**（绑 127.0.0.1:8766）。公网 Web/API 入口在 xcy nginx + FRP 链路上，但 8766 始终只供 box 本机调用；远程运维需要 SSH 隧道。
 
 ## 与主 server EmbeddingClient 的关系
 

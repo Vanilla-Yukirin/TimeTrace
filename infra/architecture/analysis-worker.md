@@ -15,7 +15,7 @@
 
 ## **⚠️ 「不含 embedding 生成」已过期：Worker 现已承担文本向量化**
 
-下面这句原文已不成立。Worker 现已生成文本 embedding：`_handle_one` 末尾会 best-effort 调 `_embed_and_save`（[server/worker/loop.py:245-273](../../src/timetrace/server/worker/loop.py)）写入 `analysis_results.text_embedding` / `text_embedding_model` 列，失败不阻塞 `vlm_done`；另有一次性回填 sweep `_backfill_embeddings` 补漏。`EmbeddingClient`（[server/embedding/client.py](../../src/timetrace/server/embedding/client.py)）是真实现非桩。注意：embedding 已生成入库，但向量检索路由尚未接线（`vector_search` 未挂进搜索路由，属未做项）。FTS5 BM25 也已实装（见下文订正）。
+下面这句原文已不成立。Worker 现已生成文本 embedding：`_handle_one` 末尾会 best-effort 调 `_embed_and_save` 写入 `analysis_results.text_embedding` / `text_embedding_model`，失败不阻塞 `vlm_done`；另有回填 sweep `_backfill_embeddings` 补漏。`EmbeddingClient` 是真实实现，读侧也已接入 `GET /v1/search/text`，与关键词结果做 RRF；独立 Qwen3-VL 图像 embserver 仍未接主 worker/检索。FTS5 BM25 也已实装（见下文订正）。
 
 > **不含 embedding 生成**：文本语义检索走 VLM 描述 + （未来）FTS5 BM25（见 [相似检索层](../storage/vector-search.md)），视觉相似检索由采集侧的 pHash 给出，Worker 不承担向量化工作。
 

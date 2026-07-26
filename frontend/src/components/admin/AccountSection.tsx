@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { KeyRound, LogOut } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, broadcastKick } from '@/lib/api'
-import { useAuth } from '@/contexts/AuthContext'
+import { useAuth } from '@/contexts/auth'
 
 /** Settings → Account: who am I, change password, log out. */
 export function AccountSection() {

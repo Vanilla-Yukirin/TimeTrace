@@ -2,7 +2,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { Clock, LogOut, Menu, Search, Settings, MessageCircle, LayoutDashboard } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, broadcastKick } from '@/lib/api'
-import { useAuth } from '@/contexts/AuthContext'
+import { useAuth } from '@/contexts/auth'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
 
 /** Per-route title shown on the left of the bar. */

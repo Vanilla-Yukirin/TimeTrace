@@ -45,13 +45,9 @@ set -euo pipefail
 : "${TIMETRACE_USER:=$(id -un)}"
 : "${TIMETRACE_HOME:=${HOME}}"
 : "${TIMETRACE_REPO_URL:=https://github.com/Vanilla-Yukirin/TimeTrace.git}"
-# Default branch is `feature/refactor-split` while the client/server-split
-# refactor is in flight. main is still the legacy v1 single-process code,
-# where pywin32 is an un-marked hard dependency → `uv sync` fails on Linux
-# with "pywin32 has no wheel for current platform" (markers landed in
-# 44d61b5 but only on feature/refactor-split). When feature merges to main,
-# flip this default back to "main".
-: "${TIMETRACE_BRANCH:=feature/refactor-split}"
+# main is the only development trunk. CI normally passes an immutable commit
+# SHA; a deliberate manual invocation without an override deploys main.
+: "${TIMETRACE_BRANCH:=main}"
 : "${TIMETRACE_REPO_DIR:=${TIMETRACE_HOME}/Github/TimeTrace}"
 : "${TIMETRACE_DATA_DIR:=${TIMETRACE_HOME}/TimeTraceData}"
 : "${TIMETRACE_SERVICE:=timetrace-server.service}"

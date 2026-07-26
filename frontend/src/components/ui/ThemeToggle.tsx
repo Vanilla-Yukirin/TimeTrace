@@ -1,5 +1,5 @@
 import { Moon, Sun } from 'lucide-react'
-import { useTheme } from '@/contexts/ThemeContext'
+import { useTheme } from '@/contexts/theme'
 
 /** Compact sun/moon button that flips the active theme. */
 export function ThemeToggle() {

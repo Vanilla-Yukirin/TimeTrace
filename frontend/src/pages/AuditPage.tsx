@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { useAuditRecords } from '@/hooks/useAuditRecords'
-import { AuditRowItem, AUDIT_COLS, AUDIT_HEADERS } from '@/components/audit/AuditRow'
+import { AuditRowItem } from '@/components/audit/AuditRow'
+import { AUDIT_COLS, AUDIT_HEADERS } from '@/components/audit/auditLayout'
 import { CatMascot } from '@/components/brand/CatMascot'
 
 const SIZES = [50, 100, 200]

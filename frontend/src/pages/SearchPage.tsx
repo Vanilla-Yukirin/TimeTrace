@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Search as SearchIcon } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { CatMascot } from '@/components/brand/CatMascot'
@@ -50,12 +50,6 @@ export function SearchPage() {
     if (!open) setLightboxIndex(-1)
   }, [])
 
-  // Close lightbox when a new search is submitted — old indices may collide
-  // with the new result set, and the user's frame of reference has shifted.
-  useEffect(() => {
-    setLightboxIndex(-1)
-  }, [submitted])
-
   const hasAnyInput = useMemo(
     () =>
       q.trim().length > 0 ||
@@ -69,6 +63,8 @@ export function SearchPage() {
 
   const submit = () => {
     if (!hasAnyInput) return
+    // Old indices may collide with the next result set.
+    setLightboxIndex(-1)
     const dayMs = 86_400_000
     const start = startDate ? fromDateParam(startDate).getTime() : null
     const end = endDate ? fromDateParam(endDate).getTime() + dayMs - 1 : null

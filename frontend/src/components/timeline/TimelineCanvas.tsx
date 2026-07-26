@@ -1,7 +1,7 @@
-import { useRef, useEffect, useState, useCallback } from 'react'
+import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react'
 import type { ApiRecord } from '@/types/api'
 import { useTimelineState } from '@/hooks/useTimelineState'
-import { useTheme } from '@/contexts/ThemeContext'
+import { useTheme } from '@/contexts/theme'
 import { formatTime } from '@/lib/dateUtils'
 import { renderTimeline, hitTest, CANVAS_H, TIMELINE_PALETTES } from './useCanvasRenderer'
 import { useCanvasEvents } from './useCanvasEvents'
@@ -31,9 +31,12 @@ export function TimelineCanvas({
   // viewport are read via refs so tap-hit-testing always sees current values.
   const touchRef = useRef({ mode: 'none' as 'none' | 'pan' | 'pinch', lastX: 0, lastDist: 0, startX: 0, startY: 0, moved: false })
   const recordsRef = useRef(records)
-  recordsRef.current = records
   const viewportRef = useRef(viewport)
-  viewportRef.current = viewport
+
+  useLayoutEffect(() => {
+    recordsRef.current = records
+    viewportRef.current = viewport
+  }, [records, viewport])
 
   // Track whether the canvas has been initialized at least once
   const initializedRef = useRef(false)

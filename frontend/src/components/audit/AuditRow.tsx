@@ -6,12 +6,7 @@ import { useRecord } from '@/hooks/useRecord'
 import { CategoryBadge } from '@/components/detail/CategoryBadge'
 import { ThumbnailView } from '@/components/detail/ThumbnailView'
 import { StatusChip } from './StatusChip'
-
-/** Shared grid template so every row + the column header line up like a table.
- *  Columns: chevron | status | time | app·title | category | upload-delay | flags */
-export const AUDIT_COLS = '22px 92px 84px minmax(0, 1fr) 136px 88px 104px'
-
-export const AUDIT_HEADERS = ['', '状态', '时间', '应用 / 标题', '分类', '上传延迟', '旗标'] as const
+import { AUDIT_COLS } from './auditLayout'
 
 /** Format a latency in ms → short human string; null/undefined → em dash, and a
  *  (skew-induced) negative delay shows as ≈0 rather than a confusing "-3s". */

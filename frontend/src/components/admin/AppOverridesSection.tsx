@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -42,14 +42,27 @@ const inputStyle: React.CSSProperties = {
  *  attaches a free-text note injected into the AI's prompts as background. */
 export function AppOverridesSection() {
   const queryClient = useQueryClient()
-  const [rows, setRows] = useState<Row[]>([])
+  // null means the user has not edited yet, so the latest server snapshot can
+  // be shown directly. The first edit materializes an independent local draft.
+  const [rows, setRows] = useState<Row[] | null>(null)
   const nextRid = useRef(0)
-  const inited = useRef(false)
 
   const query = useQuery({
     queryKey: queryKeys.appOverrides(),
     queryFn: api.getAppOverrides,
   })
+
+  const serverRows = useMemo<Row[]>(
+    () =>
+      Object.entries(query.data?.apps ?? {}).map(([app, v], index) => ({
+        rid: -(index + 1),
+        app,
+        category: v.category ?? '',
+        note: v.note ?? '',
+      })),
+    [query.data],
+  )
+  const visibleRows = rows ?? serverRows
 
   const toRows = (d: AppOverrides): Row[] =>
     Object.entries(d.apps).map(([app, v]) => ({
@@ -58,16 +71,6 @@ export function AppOverridesSection() {
       category: v.category ?? '',
       note: v.note ?? '',
     }))
-
-  // Seed the editable rows once the first load lands; later refetches (e.g.
-  // after a save invalidate) don't clobber in-progress edits.
-  useEffect(() => {
-    if (query.data && !inited.current) {
-      setRows(toRows(query.data))
-      inited.current = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query.data])
 
   const saveMut = useMutation({
     mutationFn: (body: AppOverrides) => api.putAppOverrides(body),
@@ -80,14 +83,18 @@ export function AppOverridesSection() {
   })
 
   const update = (rid: number, patch: Partial<Row>) =>
-    setRows((rs) => rs.map((r) => (r.rid === rid ? { ...r, ...patch } : r)))
-  const remove = (rid: number) => setRows((rs) => rs.filter((r) => r.rid !== rid))
+    setRows((rs) => (rs ?? serverRows).map((r) => (r.rid === rid ? { ...r, ...patch } : r)))
+  const remove = (rid: number) =>
+    setRows((rs) => (rs ?? serverRows).filter((r) => r.rid !== rid))
   const add = () =>
-    setRows((rs) => [...rs, { rid: nextRid.current++, app: '', category: '', note: '' }])
+    setRows((rs) => [
+      ...(rs ?? serverRows),
+      { rid: nextRid.current++, app: '', category: '', note: '' },
+    ])
 
   const save = () => {
     const apps: AppOverrides['apps'] = {}
-    for (const r of rows) {
+    for (const r of visibleRows) {
       const key = r.app.trim()
       if (!key) continue
       apps[key] = { category: r.category || null, note: r.note.trim() }
@@ -118,12 +125,12 @@ export function AppOverridesSection() {
       {!query.isLoading && !query.error && (
         <>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {rows.length === 0 && (
+            {visibleRows.length === 0 && (
               <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                 还没有规则，点下面「添加」新增一条。
               </div>
             )}
-            {rows.map((r) => (
+            {visibleRows.map((r) => (
               <div key={r.rid} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input
                   value={r.app}

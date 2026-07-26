@@ -1,6 +1,6 @@
 import type { ApiRecord } from '@/types/api'
 import type { TimelineViewport } from '@/hooks/useTimelineState'
-import type { Theme } from '@/contexts/ThemeContext'
+import type { Theme } from '@/contexts/theme'
 import { getAppColor } from '@/lib/colorMap'
 import { formatTime, formatHM } from '@/lib/dateUtils'
 

@@ -17,9 +17,9 @@
 
 | 命令 | 指向 | 说明 |
 |------|------|------|
-| `timetrace` | `timetrace.main:main` | 单进程默认（pystray 主线程 + asyncio `TaskGroup` 跑 capture / worker / api / quit_watcher / reclaim 5 任务） |
+| `timetrace` | `timetrace.main:main` | 单进程默认；pystray 主线程 + asyncio 管理 capture、server 主任务、report scheduler 及受开关控制的 rollup/narrate，不依赖固定任务数 |
 | `timetrace-client` | `timetrace.client.cli:main` | 客户端守护；子命令 `init`（交互 / `--non-interactive`）、`print-config` |
-| `timetrace-server` | `timetrace.server.cli:main` | 服务端守护；子命令 `info`、`tokens list/add/revoke`。与 `main.py` 共享 `server/bootstrap.py`（`build_server_components` + `serve(extra_tasks=...)`），不会再次漂移 |
+| `timetrace-server` | `timetrace.server.cli:main` | 服务端守护；子命令 `info`、`tokens list/add/revoke`、`backfill`、`narrate`。与 `main.py` 共享 `server/bootstrap.py` |
 | `timetrace-embserver` | `timetrace.embserver.cli:main` | embedding 服务；子命令 `serve / info / status / load / unload / ttl / selftest`（控制类走 daemon `/admin/` HTTP，仿 `lms`） |
 
 运行模式（单进程 vs 双进程）的语义见 CLAUDE.md「运行模式」表。
@@ -38,7 +38,7 @@
 | `headless` | `psutil`（P6 无 GUI TUI client） | 🚧 TBD（条目注释占位） |
 | `all-extras` | 一次装全部适配器 | 空桶，待上面有真条目再聚合 |
 
-**为什么 embserver 单独成桶**：torch 链体积巨大（GB 级），而部署主体（采集 + API + DB + VLM 转发）完全不需要本地推理——VLM 默认转发给 LM Studio，embedding 经 `/v1/embeddings` 转发给 embserver 进程。把重依赖隔离到 extra，让 plain `uv sync` 轻量、deploy.sh 默认不拉。
+**为什么 embserver 单独成桶**：torch 链体积巨大（GB 级），而部署主体只需要 HTTP 客户端。当前生产文本 embedding 走配置的 OpenAI-compatible 端点（LM Studio/nomic）；Qwen3-VL embserver 是未接入主 worker/检索的可选能力储备。把重依赖隔离到 extra，让 plain `uv sync` 与主部署保持轻量。
 
 **torch 不在 extra 里（重要）**：`embserver` extra 只含 `transformers / qwen-vl-utils / accelerate`。`torch` / `torchvision` 须**先**从正确的 PyTorch index 单独装，否则一次走错的 `--extra-index` 会静默拉到 `+cpu` build：
 
@@ -71,18 +71,18 @@ uv sync --extra embserver
 
 ## 部署流程（CI/CD）
 
-- **触发**：仅 `workflow_dispatch`（`.github/workflows/deploy.yml`）。GH Web 按钮或 `gh workflow run deploy.yml --ref <ref>`，默认 ref `feature/refactor-split`
+- **触发**：push `deploy` 自动发布；手动兜底使用 `gh workflow run deploy.yml --ref <branch|tag>`（不传时默认分支为 `main`）。workflow 直接使用触发事件记录的 `github.sha`，因此即使排队，目标提交也不会随后续 push 漂移
 - **Fork 安全**：`if: github.repository == 'Vanilla-Yukirin/TimeTrace'` + secret 不被 fork 继承（双保险）
-- **路径**：CI runner 经 FRP 隧道 SSH 进家里小主机 → `git fetch && git reset --hard origin/<ref>` → `bash deploy/deploy.sh <ref>`
+- **路径**：后端 job 经 FRP SSH 进 box，让 box 自取 event SHA 对应的 `deploy.sh` 并镜像该 SHA；前端 job 在 runner checkout 同一 SHA 后发布到 xcy
 - **`deploy/deploy.sh` 做的事**：
-  1. `git fetch origin --prune` + `git reset --hard origin/$BRANCH`（镜像状态，**不是污染**——见 CLAUDE.md「动态部署模型」）
+  1. `git fetch origin --prune` + `git reset --hard <pinned SHA>`（镜像状态，**不是污染**——见 CLAUDE.md「动态部署模型」）
   2. `uv sync`（**plain，不含 embserver torch**）
   3. schema 无独立 migration（`SqliteDatabase` 启动自建）
   4. `systemctl --user daemon-reload` + `restart timetrace-server`（embserver 不在此列）
   5. `curl /healthz`（8765）健康探针，失败则 `exit 1`
-- **CI 收尾**：runner 再经隧道打一次 `/healthz` smoke test
+- **健康检查**：`deploy.sh` 在 box 内完成 `/healthz` 探针；workflow 当前没有第二次 runner-side healthz
 
-**deploy.sh 不管的唯一例外**：embserver 的模型加载（`lms load/unload/ps`）在部署流程之外，可手动。**禁止手动 ssh 改部署机 git / 重启 systemd**——无 CI 留痕、跳过探针。
+**手工运维边界**：主 server 的代码部署与重启只走 workflow；LM Studio 模型可用 `lms load/unload/ps` 手工管理；可选 `timetrace-embserver` 当前不在主部署流程内，若启用则用它自己的 CLI/systemd 管理。禁止手工 SSH 修改主仓库 git 或重启 `timetrace-server`。
 
 ## 公网拓扑
 
@@ -96,7 +96,7 @@ Cloudflare ── 云 VPS nginx 反代 (deploy/nginx-timetrace.yukirin.me.conf)
               frp 隧道 ──► 家里小主机 :8765 (timetrace-server)
                                          │ 本地调
                                          ▼
-                                   embserver :8766 (本机回环)
+                                   embserver :8766（可选；当前生产未接线）
 ```
 
 - MCP（streamable HTTP）的 nginx location 需长连接友好配置（`proxy_http_version 1.1` + 关 buffering + 长 timeout）
@@ -110,9 +110,9 @@ Cloudflare ── 云 VPS nginx 反代 (deploy/nginx-timetrace.yukirin.me.conf)
 - 数据：`%USERPROFILE%/TimeTraceData/`（Windows）/ `$HOME/TimeTraceData`（Linux 部署机），**不在仓库内**
 - server token：`~/.config/timetrace-server/tokens.json`
 
-## ⚠️ 扩展 v1 不可直接 Linux 部署
+## 当前分支与 Linux 部署
 
-`origin/main` 在重构全部完工前保持 **v1 legacy 不动**：pywin32 无平台 marker，Linux `uv sync` 会失败。当前部署一律走 `feature/refactor-split` 分支（其 pyproject 已给 pywin32 加 `sys_platform == 'win32'` marker）。feature 完工合并后，deploy 默认 ref 才翻回 main。
+`pywin32` 已带 `sys_platform == 'win32'` marker，Linux 可以 plain `uv sync`。长期分支模型为 `main`（唯一开发主干）+ `deploy`（生产指针）；发布使用 `git push origin main:deploy`，历史 `feature/refactor-split` 不再作为默认部署源。部署脚本仍只安装默认依赖，不会拉 `embserver` 的 torch/transformers optional extra。
 
 ---
 

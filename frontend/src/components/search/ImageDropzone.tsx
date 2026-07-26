@@ -15,6 +15,9 @@ export function ImageDropzone({ images, onChange }: ImageDropzoneProps) {
 
   useEffect(() => {
     const urls = images.map((f) => URL.createObjectURL(f))
+    // Blob URLs are external resources: create/revoke them in one effect and
+    // publish the resulting handles together to avoid leaking old previews.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPreviews(urls)
     return () => urls.forEach((u) => URL.revokeObjectURL(u))
   }, [images])

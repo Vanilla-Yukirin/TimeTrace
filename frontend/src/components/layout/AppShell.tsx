@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Outlet } from 'react-router-dom'
-import { useIsMobile } from '@/hooks/useIsMobile'
+import { getMobileMediaQuery, useIsMobile } from '@/hooks/useIsMobile'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 
@@ -19,10 +19,18 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile()
   const [navOpen, setNavOpen] = useState(false)
 
-  // Leaving mobile (e.g. rotate / resize) must not leave a stuck-open drawer.
+  // Close only the mobile drawer when crossing into desktop. The state update
+  // happens in the media-query event callback, so route children stay mounted
+  // and unsaved page state survives rotation/resizing.
   useEffect(() => {
-    if (!isMobile) setNavOpen(false)
-  }, [isMobile])
+    const query = getMobileMediaQuery()
+    if (!query) return undefined
+    const handleBreakpointChange = (event: MediaQueryListEvent) => {
+      if (!event.matches) setNavOpen(false)
+    }
+    query.addEventListener('change', handleBreakpointChange)
+    return () => query.removeEventListener('change', handleBreakpointChange)
+  }, [])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>

@@ -1,36 +1,14 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   type ReactNode,
 } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, UnauthorizedError } from '@/lib/api'
+import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
 import type { AuthMe } from '@/types/api'
-
-interface AuthContextValue {
-  /** The current logged-in user, or null if not authed. */
-  user: AuthMe | null
-  /** True only during the very first /v1/auth/me probe (no data + no error yet). */
-  loading: boolean
-  /**
-   * Re-run /v1/auth/me and RESOLVE only after it settles. Callers (login /
-   * change-password) MUST await this before navigating, otherwise the route
-   * guard reads stale auth state and bounces. Returns the fresh user (or null).
-   */
-  refetch: () => Promise<AuthMe | null>
-  /**
-   * Optimistically set the cached auth state without a network round-trip.
-   * Used by logout (→ null) and the cross-tab kick (→ null). Login/change-pw
-   * use refetch() instead because the server is the source of truth there.
-   */
-  setUser: (me: AuthMe | null) => void
-}
-
-const AuthContext = createContext<AuthContextValue | undefined>(undefined)
+import { AuthContext, type AuthContextValue } from './auth'
 
 /** Wraps the app, polls /v1/auth/me, and listens for cross-tab 401 kicks. */
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -90,15 +68,3 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
-
-/** Read auth state in a route or component. Throws if used outside AuthProvider. */
-export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext)
-  if (ctx === undefined) {
-    throw new Error('useAuth must be used inside <AuthProvider>')
-  }
-  return ctx
-}
-
-// Re-export for callers that want to type-narrow on the kick error.
-export { UnauthorizedError }

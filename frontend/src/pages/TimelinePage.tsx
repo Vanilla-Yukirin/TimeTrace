@@ -4,6 +4,7 @@ import { format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useRecords } from '@/hooks/useRecords'
+import { useNow } from '@/hooks/useNow'
 import { TimelineCanvas } from '@/components/timeline/TimelineCanvas'
 import { CategoryFilter, UNCATEGORIZED } from '@/components/timeline/CategoryFilter'
 import { RecordDetailPanel } from '@/components/detail/RecordDetailPanel'
@@ -60,10 +61,26 @@ export function TimelinePage() {
   )
 
   // Day summary: count + total tracked time across the shown records.
-  const totalMs = useMemo(
-    () => shownRecords.reduce((s, r) => s + ((r.ts_end ?? Date.now()) - r.ts_start), 0),
+  const durationSummary = useMemo(
+    () =>
+      shownRecords.reduce(
+        (summary, record) => {
+          if (record.ts_end == null) {
+            summary.activeCount += 1
+            summary.activeStartTotal += record.ts_start
+          } else {
+            summary.closedTotal += record.ts_end - record.ts_start
+          }
+          return summary
+        },
+        { closedTotal: 0, activeCount: 0, activeStartTotal: 0 },
+      ),
     [shownRecords],
   )
+  const now = useNow(durationSummary.activeCount > 0)
+  const totalMs =
+    durationSummary.closedTotal +
+    (now == null ? 0 : durationSummary.activeCount * now - durationSummary.activeStartTotal)
 
   const handleDateChange = useCallback((date: Date) => {
     setSelectedDate(date)

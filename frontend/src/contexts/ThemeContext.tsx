@@ -1,24 +1,13 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from 'react'
-
-export type Theme = 'dark' | 'light'
+import { ThemeContext, type Theme, type ThemeContextValue } from './theme'
 
 const STORAGE_KEY = 'tt_theme'
-
-interface ThemeContextValue {
-  theme: Theme
-  toggleTheme: () => void
-  setTheme: (t: Theme) => void
-}
-
-const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)
 
 /** Read the theme the inline bootstrap script (index.html) already applied to
  *  <html>, so React's first render matches the painted DOM (no flash). Falls
@@ -74,13 +63,4 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
-}
-
-/** Read/toggle the active theme. Throws if used outside <ThemeProvider>. */
-export function useTheme(): ThemeContextValue {
-  const ctx = useContext(ThemeContext)
-  if (ctx === undefined) {
-    throw new Error('useTheme must be used inside <ThemeProvider>')
-  }
-  return ctx
 }
