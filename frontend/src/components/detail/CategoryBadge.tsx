@@ -1,4 +1,5 @@
 import { categoryColor } from '@/lib/categories'
+import { Chip } from '@/components/ui/Chip'
 
 interface CategoryBadgeProps {
   category: string | null | undefined
@@ -27,23 +28,11 @@ export function CategoryBadge({ category, confidence }: CategoryBadgeProps) {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <span style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: '3px 11px',
-        borderRadius: 'var(--radius-pill)',
-        fontSize: 11.5,
-        background: `color-mix(in srgb, ${color} 16%, transparent)`,
-        // Label uses readable text color (the category hue is carried by the
-        // dot + border); saturated hues as text fail AA on the light surface.
-        color: 'var(--text-primary)',
-        border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
-        fontWeight: 600,
-      }}>
-        <span style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
+      {/* Label uses readable text color (the category hue is carried by the
+          dot + border); saturated hues as text fail AA on the light surface. */}
+      <Chip color={color} dot style={{ color: 'var(--text-primary)' }}>
         {category}
-      </span>
+      </Chip>
       {pct != null && (
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{pct}%</span>
       )}

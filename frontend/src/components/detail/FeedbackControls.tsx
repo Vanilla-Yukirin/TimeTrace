@@ -60,7 +60,7 @@ export function FeedbackControls({ record, feedback }: FeedbackControlsProps) {
                     : 'var(--bg-raised)',
                 color:
                   record.category_final === cat.id
-                    ? '#fff'
+                    ? 'var(--accent-contrast)'
                     : 'var(--text-secondary)',
                 cursor: feedback.isPending ? 'not-allowed' : 'pointer',
                 opacity: feedback.isPending ? 0.6 : 1,

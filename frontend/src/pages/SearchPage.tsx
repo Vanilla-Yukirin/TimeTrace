@@ -6,6 +6,9 @@ import { ImageDropzone } from '@/components/search/ImageDropzone'
 import { FilterPanel } from '@/components/search/FilterPanel'
 import { ResultRow } from '@/components/search/ResultRow'
 import { ImageLightbox, type LightboxItem } from '@/components/lightbox/ImageLightbox'
+import { Button } from '@/components/ui/Button'
+import { ErrorBanner } from '@/components/ui/Feedback'
+import { SkeletonRows } from '@/components/ui/Skeleton'
 import { useSearchQuery, type SearchParams } from '@/hooks/useSearchQuery'
 import { fromDateParam } from '@/lib/dateUtils'
 
@@ -145,24 +148,15 @@ export function SearchPage() {
               }}
             />
           </div>
-          <button
+          <Button
             type="submit"
-            disabled={!hasAnyInput || isFetching}
-            style={{
-              padding: '0 20px',
-              height: 44,
-              background: hasAnyInput ? 'var(--grad-accent)' : 'var(--bg-raised)',
-              color: hasAnyInput ? '#fff' : 'var(--text-muted)',
-              border: 'none',
-              borderRadius: 'var(--radius-lg)',
-              cursor: hasAnyInput ? 'pointer' : 'not-allowed',
-              fontSize: 14,
-              fontWeight: 600,
-              boxShadow: hasAnyInput ? 'var(--shadow-glow)' : 'none',
-            }}
+            variant="primary"
+            disabled={!hasAnyInput}
+            loading={isFetching}
+            style={{ padding: '0 20px', height: 44, borderRadius: 'var(--radius-lg)', fontSize: 14 }}
           >
             {isFetching ? '搜索中…' : '搜索'}
-          </button>
+          </Button>
         </form>
 
         {/* Image dropzone */}
@@ -235,16 +229,31 @@ export function SearchPage() {
             </div>
           )}
           {error && (
-            <EmptyState text={`搜索失败：${(error as Error).message}`} error />
+            <ErrorBanner
+              style={{ marginTop: 20 }}
+              title="搜索失败"
+              message={(error as Error).message}
+            />
+          )}
+          {submitted && !error && isFetching && !data && (
+            <SkeletonRows rows={3} height={78} gap={8} style={{ marginTop: 12 }} />
           )}
           {submitted && !error && data && data.items.length === 0 && !isFetching && (
-            <EmptyState
-              text={
-                q.trim().length === 1
-                  ? '关键词太短（仅 1 字符）。试试 2-3 字以上的具体词。'
-                  : '未找到符合条件的活动。中文搜索建议 ≥3 字（走 FTS5），或换个应用名/进程名/URL 关键词试试。'
-              }
-            />
+            <div
+              style={{
+                padding: 32,
+                textAlign: 'center',
+                color: 'var(--text-muted)',
+                fontSize: 13,
+                border: '1px dashed var(--bg-border)',
+                borderRadius: 'var(--radius-lg)',
+                marginTop: 20,
+              }}
+            >
+              {q.trim().length === 1
+                ? '关键词太短（仅 1 字符）。试试 2-3 字以上的具体词。'
+                : '未找到符合条件的活动。中文搜索建议 ≥3 字（走 FTS5），或换个应用名/进程名/URL 关键词试试。'}
+            </div>
           )}
           {data && data.items.length > 0 && (
             <>
@@ -290,12 +299,12 @@ function ModeCheckbox({
   warning?: string
 }) {
   return (
-    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 6, cursor: 'pointer' }}>
+    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        style={{ marginTop: 3 }}
+        style={{ marginTop: 2, width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
       />
       <div>
         <div style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 500 }}>{label}</div>
@@ -305,24 +314,6 @@ function ModeCheckbox({
         )}
       </div>
     </label>
-  )
-}
-
-function EmptyState({ text, error = false }: { text: string; error?: boolean }) {
-  return (
-    <div
-      style={{
-        padding: 32,
-        textAlign: 'center',
-        color: error ? 'var(--error)' : 'var(--text-muted)',
-        fontSize: 13,
-        border: '1px dashed var(--bg-border)',
-        borderRadius: 'var(--radius-lg)',
-        marginTop: 20,
-      }}
-    >
-      {text}
-    </div>
   )
 }
 

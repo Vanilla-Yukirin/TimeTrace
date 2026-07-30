@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { RefreshCw, Wrench } from 'lucide-react'
+import { RefreshCw, Wrench, Hourglass } from 'lucide-react'
 import { reportsApi, parseReportData, type Report, type ReportEvent } from '@/lib/agentApi'
 import { ReportView } from '@/components/dashboard/ReportView'
-import { CatMascot } from '@/components/brand/CatMascot'
+import { Button } from '@/components/ui/Button'
+import { EmptyState, ErrorBanner } from '@/components/ui/Feedback'
+import { Skeleton } from '@/components/ui/Skeleton'
 
 const SCOPES = [
   { key: 'recent_3h', label: '最近 3 小时' },
@@ -38,6 +40,9 @@ export function DashboardPage() {
   // Generation (streaming) state — persisted across renders so the button stays
   // disabled until the run finishes, and the live progress survives re-renders.
   const [generating, setGenerating] = useState(false)
+  // True while the SSE stream was cut and we're recovering via the
+  // non-streaming fallback / polling — the panel tells the user so.
+  const [recovering, setRecovering] = useState(false)
   const [steps, setSteps] = useState<ToolStep[]>([])
   const [liveText, setLiveText] = useState('')
   const genScopeRef = useRef<string | null>(null)
@@ -83,6 +88,7 @@ export function DashboardPage() {
       // latest() to recover the report that landed server-side after we were cut.
       setSteps([])
       setLiveText('')
+      setRecovering(true)
       const sc = genScopeRef.current ?? scope
       try {
         setReport(await reportsApi.generate(sc))
@@ -102,6 +108,7 @@ export function DashboardPage() {
       }
     } finally {
       setGenerating(false)
+      setRecovering(false)
       setLiveText('')
       setSteps([])
       genScopeRef.current = null
@@ -147,53 +154,33 @@ export function DashboardPage() {
           <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 440, lineHeight: 1.6 }}>
             AI 自动分析你的真实活动，抓特点、给洞察。系统每 30 分钟自动刷新一份。
           </div>
-          <button
+          <Button
+            variant="primary"
             onClick={regenerate}
             disabled={generating}
             title={generating ? '正在生成，请稍候…' : '让 AI 现在重新分析一份'}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 7,
-              padding: '8px 16px',
-              borderRadius: 'var(--radius-md)',
-              border: 'none',
-              background: generating ? 'var(--bg-raised)' : 'var(--grad-accent)',
-              color: generating ? 'var(--text-muted)' : '#fff',
-              fontWeight: 600,
-              fontSize: 13,
-              cursor: generating ? 'not-allowed' : 'pointer',
-              boxShadow: generating ? 'none' : 'var(--shadow-glow)',
-              flexShrink: 0,
-            }}
+            style={{ flexShrink: 0 }}
           >
             <RefreshCw size={14} className={generating ? 'tt-spin' : undefined} />
             {generating ? '生成中…' : '重新生成'}
-          </button>
+          </Button>
         </div>
 
         {/* Cost/time hint — set expectations before they click. */}
-        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 18, opacity: 0.85 }}>
-          ⏳ 生成由本地大模型实时分析，耗时约 10–60 秒、消耗算力，期间按钮不可点；请耐心等待。
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 18, opacity: 0.85 }}>
+          <Hourglass size={12} aria-hidden="true" />
+          生成由本地大模型实时分析，耗时约 10–60 秒、消耗算力，期间按钮不可点；请耐心等待。
         </div>
 
         <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
           {SCOPES.map((s) => (
             <button
               key={s.key}
+              className="tt-chip"
+              data-active={scope === s.key || undefined}
               onClick={() => setScope(s.key)}
               disabled={generating}
-              style={{
-                padding: '6px 14px',
-                borderRadius: 'var(--radius-pill)',
-                border: '1px solid var(--bg-border)',
-                background: scope === s.key ? 'var(--accent-subtle)' : 'transparent',
-                color: scope === s.key ? 'var(--accent)' : 'var(--text-secondary)',
-                fontWeight: scope === s.key ? 600 : 500,
-                fontSize: 13,
-                cursor: generating ? 'not-allowed' : 'pointer',
-                opacity: generating && scope !== s.key ? 0.5 : 1,
-              }}
+              style={{ fontSize: 13, padding: '6px 14px', opacity: generating && scope !== s.key ? 0.5 : 1 }}
             >
               {s.label}
             </button>
@@ -201,19 +188,7 @@ export function DashboardPage() {
         </div>
 
         {error && (
-          <div
-            style={{
-              padding: '12px 16px',
-              borderRadius: 'var(--radius-md)',
-              background: 'var(--error-bg)',
-              border: '1px solid var(--error)',
-              color: 'var(--error)',
-              fontSize: 13,
-              marginBottom: 16,
-            }}
-          >
-            {error}
-          </div>
+          <ErrorBanner style={{ marginBottom: 16 }} title="生成失败" message={error} />
         )}
 
         {/* Live generation panel: tool steps + streaming raw output. */}
@@ -228,7 +203,7 @@ export function DashboardPage() {
             }}
           >
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 10 }}>
-              ✨ AI 正在分析你的活动…
+              {recovering ? '连接中断，正在取回已生成的结果…' : '✨ AI 正在分析你的活动…'}
             </div>
             {steps.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
@@ -271,34 +246,32 @@ export function DashboardPage() {
               </div>
             )}
             {steps.length === 0 && !liveText && (
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>正在连接本地大模型…</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {recovering ? '报告在服务器上继续生成，稍等片刻即可取回。' : '正在连接本地大模型…'}
+              </div>
             )}
           </div>
         )}
 
         {loading ? (
-          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-            加载中…
+          // Mirrors the ReportView shape (title bar + stat cards + card grid)
+          // so the wait reads as structure, not a spinner.
+          <div aria-hidden="true" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Skeleton style={{ height: 30, width: '55%' }} />
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <Skeleton style={{ height: 64, flex: '1 1 150px' }} />
+              <Skeleton style={{ height: 64, flex: '1 1 150px' }} />
+              <Skeleton style={{ height: 64, flex: '1 1 150px' }} />
+            </div>
+            <Skeleton style={{ height: 120 }} />
+            <Skeleton style={{ height: 90 }} />
           </div>
         ) : !report && !generating ? (
-          <div
-            style={{
-              padding: 32,
-              textAlign: 'center',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
-            <CatMascot size={84} float />
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginTop: 6 }}>
-              还没有这个时段的看板
-            </div>
-            <div style={{ fontSize: 12.5, color: 'var(--text-muted)', maxWidth: 340, lineHeight: 1.6 }}>
-              点右上角「重新生成」让 AI 现在分析一份；之后系统会每 30 分钟自动刷新。
-            </div>
-          </div>
+          <EmptyState
+            mascot
+            title="还没有这个时段的看板"
+            desc="点右上角「重新生成」让 AI 现在分析一份；之后系统会每 30 分钟自动刷新。"
+          />
         ) : report ? (
           <>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>

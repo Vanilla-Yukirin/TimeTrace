@@ -20,18 +20,6 @@ interface RecordDetailPanelProps {
   isMobile?: boolean
 }
 
-const srOnly: React.CSSProperties = {
-  position: 'absolute',
-  width: 1,
-  height: 1,
-  padding: 0,
-  margin: -1,
-  overflow: 'hidden',
-  clip: 'rect(0, 0, 0, 0)',
-  whiteSpace: 'nowrap',
-  border: 0,
-}
-
 /** Outer shell shared by every panel state. Desktop = fixed side column; mobile
  *  = a Radix Dialog full-screen sheet (focus trap/restore, background inert,
  *  Escape, body scroll-lock for free — same primitive as ImageLightbox) so it
@@ -51,7 +39,7 @@ function Shell({
         <Dialog.Portal>
           <Dialog.Overlay
             className="tt-overlay"
-            style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.5)', zIndex: 49 }}
+            style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 49 }}
           />
           <Dialog.Content
             className="tt-sheet-content"
@@ -67,7 +55,7 @@ function Shell({
               outline: 'none',
             }}
           >
-            <Dialog.Title style={srOnly}>活动详情</Dialog.Title>
+            <Dialog.Title className="sr-only">活动详情</Dialog.Title>
             {children}
           </Dialog.Content>
         </Dialog.Portal>

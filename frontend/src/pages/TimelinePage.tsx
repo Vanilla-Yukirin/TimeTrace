@@ -10,6 +10,10 @@ import { CategoryFilter, UNCATEGORIZED } from '@/components/timeline/CategoryFil
 import { RecordDetailPanel } from '@/components/detail/RecordDetailPanel'
 import { DatePicker } from '@/components/calendar/DatePicker'
 import { ImageLightbox, type LightboxItem } from '@/components/lightbox/ImageLightbox'
+import { Button } from '@/components/ui/Button'
+import { Divider } from '@/components/ui/PageShell'
+import { ErrorBanner } from '@/components/ui/Feedback'
+import { Skeleton } from '@/components/ui/Skeleton'
 import { toDateParam, fromDateParam, formatDurationMs } from '@/lib/dateUtils'
 
 export function TimelinePage() {
@@ -31,7 +35,7 @@ export function TimelinePage() {
   // Mobile only: the calendar + quick-filters live in a collapsible panel.
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
 
-  const { data: records } = useRecords(selectedDate)
+  const { data: records, isLoading, isError, error, refetch, isRefetching } = useRecords(selectedDate)
   const allRecords = useMemo(() => records ?? [], [records])
 
   const shownRecords = useMemo(() => {
@@ -136,7 +140,7 @@ export function TimelinePage() {
   const filtersPanel = (
     <>
       <DatePicker value={selectedDate} onChange={handleDateChange} />
-      <div style={{ height: 1, background: 'var(--bg-border)' }} />
+      <Divider />
       <CategoryFilter records={allRecords} selected={categoryFilter} onSelect={setCategoryFilter} />
     </>
   )
@@ -157,6 +161,26 @@ export function TimelinePage() {
       onIndexChange={handleLightboxIndexChange}
       open={lightboxIndex >= 0 && lightboxItems.length > 0}
       onOpenChange={handleLightboxOpenChange}
+    />
+  )
+
+  // Loading and failure must look different from "an empty day" — previously
+  // all three rendered as a blank canvas.
+  const canvasArea = isError ? (
+    <ErrorBanner
+      title="时间轴加载失败"
+      message={String((error as Error)?.message ?? error)}
+      onRetry={() => refetch()}
+      retrying={isRefetching}
+    />
+  ) : isLoading ? (
+    <Skeleton style={{ height: 340, borderRadius: 'var(--radius-lg)' }} />
+  ) : (
+    <TimelineCanvas
+      records={shownRecords}
+      date={selectedDate}
+      selectedRecordId={selectedRecordId}
+      onSelectRecord={handleSelectRecord}
     />
   )
 
@@ -199,14 +223,7 @@ export function TimelinePage() {
             {filtersPanel}
           </div>
         )}
-        <div style={{ marginTop: 16 }}>
-          <TimelineCanvas
-            records={shownRecords}
-            date={selectedDate}
-            selectedRecordId={selectedRecordId}
-            onSelectRecord={handleSelectRecord}
-          />
-        </div>
+        <div style={{ marginTop: 16 }}>{canvasArea}</div>
         {detail}
         {lightbox}
       </div>
@@ -250,14 +267,7 @@ export function TimelinePage() {
           totalMs={totalMs}
           onToday={handleGoToday}
         />
-        <div style={{ marginTop: 18 }}>
-          <TimelineCanvas
-            records={shownRecords}
-            date={selectedDate}
-            selectedRecordId={selectedRecordId}
-            onSelectRecord={handleSelectRecord}
-          />
-        </div>
+        <div style={{ marginTop: 18 }}>{canvasArea}</div>
       </div>
 
       {/* Right: detail panel */}
@@ -319,52 +329,25 @@ function TimelineHeader({
 
       <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
         {isMobile && onToggleFilters && (
-          <button
+          <Button
             onClick={onToggleFilters}
+            active={filtersOpen}
             aria-expanded={filtersOpen}
             aria-label="日期与筛选"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
-              minWidth: 44,
-              height: 38,
-              padding: '0 12px',
-              borderRadius: 'var(--radius-md)',
-              background: filtersOpen ? 'var(--accent-subtle)' : 'var(--bg-surface)',
-              border: '1px solid var(--bg-border)',
-              color: filtersOpen ? 'var(--accent)' : 'var(--text-secondary)',
-              fontSize: 13,
-              fontWeight: 500,
-              cursor: 'pointer',
-            }}
+            style={{ minWidth: 44, height: 38, padding: '0 12px' }}
           >
             <SlidersHorizontal size={15} aria-hidden="true" />
             日期
-          </button>
+          </Button>
         )}
         {!isToday && (
-          <button
+          <Button
             onClick={onToday}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              minHeight: isMobile ? 38 : undefined,
-              padding: '7px 13px',
-              borderRadius: 'var(--radius-md)',
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--bg-border)',
-              color: 'var(--text-secondary)',
-              fontSize: 13,
-              fontWeight: 500,
-              cursor: 'pointer',
-            }}
+            style={{ minHeight: isMobile ? 38 : undefined }}
           >
             <CalendarDays size={14} aria-hidden="true" />
             {isMobile ? '今天' : '回到今天'}
-          </button>
+          </Button>
         )}
       </div>
     </div>

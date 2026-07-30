@@ -65,7 +65,8 @@ export function DatePicker({ value, onChange }: DatePickerProps) {
               aria-label={format(day, 'M月d日 EEEE', { locale: zhCN })}
               aria-pressed={selected}
               aria-current={today ? 'date' : undefined}
-              className="text-center transition-colors"
+              className="tt-nav-row text-center"
+              data-active={selected || undefined}
               style={{
                 aspectRatio: '1 / 1',
                 display: 'flex',
@@ -74,7 +75,7 @@ export function DatePicker({ value, onChange }: DatePickerProps) {
                 fontSize: 12.5,
                 borderRadius: 'var(--radius-md)',
                 background: selected ? 'var(--grad-accent)' : 'transparent',
-                color: selected ? '#fff' : today ? 'var(--accent)' : 'var(--text-secondary)',
+                color: selected ? 'var(--accent-contrast)' : today ? 'var(--accent)' : 'var(--text-secondary)',
                 border: today && !selected ? '1px solid var(--accent-border)' : '1px solid transparent',
                 cursor: 'pointer',
                 fontWeight: selected || today ? 700 : 400,

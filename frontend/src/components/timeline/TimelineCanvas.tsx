@@ -212,16 +212,16 @@ export function TimelineCanvas({
           boxShadow: 'var(--shadow-sm)',
         }}
       >
-        <button aria-label="缩小" title="缩小" onClick={() => zoom(1.5, viewport.canvasWidth / 2)} style={iconBtn}>−</button>
-        <button onClick={() => goToday(viewport.canvasWidth)} style={textBtn}>整天</button>
-        <button aria-label="放大" title="放大" onClick={() => zoom(0.67, viewport.canvasWidth / 2)} style={iconBtn}>+</button>
+        <button aria-label="缩小" title="缩小" onClick={() => zoom(1.5, viewport.canvasWidth / 2)} className="tt-nav-row" style={iconBtn}>−</button>
+        <button onClick={() => goToday(viewport.canvasWidth)} className="tt-nav-row" style={textBtn}>整天</button>
+        <button aria-label="放大" title="放大" onClick={() => zoom(0.67, viewport.canvasWidth / 2)} className="tt-nav-row" style={iconBtn}>+</button>
       </div>
 
       {/* Keyboard / screen-reader path into the canvas: the <canvas> itself is
           mouse-only, so mirror each activity as a focusable button that drives
           the same selection (→ populates the detail panel). Visually hidden but
           in the tab order (WCAG 2.1.1). */}
-      <ul style={srOnly}>
+      <ul className="sr-only">
         {records.map((rec) => (
           <li key={rec.id}>
             <button
@@ -239,19 +239,6 @@ export function TimelineCanvas({
       )}
     </div>
   )
-}
-
-/** Visually hidden but still focusable/announced — standard sr-only pattern. */
-const srOnly: React.CSSProperties = {
-  position: 'absolute',
-  width: 1,
-  height: 1,
-  padding: 0,
-  margin: -1,
-  overflow: 'hidden',
-  clip: 'rect(0, 0, 0, 0)',
-  whiteSpace: 'nowrap',
-  border: 0,
 }
 
 const iconBtn: React.CSSProperties = {
