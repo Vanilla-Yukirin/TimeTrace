@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import { Copy, Check } from 'lucide-react'
 import type { TokenCreated } from '@/types/api'
 import { Button } from '@/components/ui/Button'
@@ -16,20 +17,6 @@ interface Props {
  *  so this dialog is the single chance to copy it — and we hand the user a
  *  ready-to-paste .mcp.json so they don't have to remember the wiring. */
 export function TokenCreatedDialog({ token, origin, onClose }: Props) {
-  const dialogRef = useRef<HTMLDivElement>(null)
-
-  // Move focus into the dialog on open and let Escape dismiss it — this is the
-  // one-time secret reveal, so it must behave like a real modal for keyboard
-  // users (not a plain overlay).
-  useEffect(() => {
-    dialogRef.current?.focus()
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
   const base = (origin ?? window.location.origin).replace(/\/$/, '')
   const mcpJson = JSON.stringify(
     {
@@ -46,52 +33,50 @@ export function TokenCreatedDialog({ token, origin, onClose }: Props) {
   )
 
   return (
-    <div
-      className="tt-overlay"
-      data-state="open"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'var(--scrim)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 50,
-        padding: 24,
-      }}
-      // Deliberately NO click-to-dismiss on the scrim: the token value is shown
-      // exactly once, so an accidental outside click would lose it forever.
-      // Only the「我已保存」button (or Escape) closes this dialog.
-    >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="token-created-title"
-        tabIndex={-1}
-        className="tt-sheet-content"
-        data-state="open"
-        style={{
-          width: '100%',
-          maxWidth: 560,
-          maxHeight: '90vh',
-          overflow: 'auto',
-          padding: 24,
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--bg-border)',
-          borderRadius: 'var(--radius-xl)',
-          boxShadow: 'var(--shadow-lg)',
-          outline: 'none',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-        }}
+    <Dialog.Root open>
+      <Dialog.Portal>
+        <Dialog.Overlay
+          className="tt-overlay"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'var(--scrim)',
+            zIndex: 50,
+          }}
+        />
+        <Dialog.Content
+          className="tt-modal-content"
+          aria-describedby="token-created-warning"
+          // This secret is shown exactly once. Outside clicks and Escape must
+          // not discard it; only the explicit acknowledgement closes it.
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          style={{
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 51,
+            width: 'calc(100% - 48px)',
+            maxWidth: 560,
+            maxHeight: '90vh',
+            overflow: 'auto',
+            padding: 24,
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--bg-border)',
+            borderRadius: 'var(--radius-xl)',
+            boxShadow: 'var(--shadow-lg)',
+            outline: 'none',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 16,
+          }}
       >
         <div>
-          <h2 id="token-created-title" style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+          <Dialog.Title style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
             Token 已创建：{token.label}
-          </h2>
-          <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 6 }}>
+          </Dialog.Title>
+          <div id="token-created-warning" style={{ fontSize: 12, color: 'var(--warning)', marginTop: 6 }}>
             ⚠ 此 token 仅显示这一次，请立即复制保存。关闭后无法再次查看。
           </div>
         </div>
@@ -111,8 +96,9 @@ export function TokenCreatedDialog({ token, origin, onClose }: Props) {
         <Button variant="primary" onClick={onClose} style={{ alignSelf: 'flex-end', padding: '9px 18px', fontSize: 14 }}>
           我已保存
         </Button>
-      </div>
-    </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }
 
@@ -148,6 +134,7 @@ function CopyBlock({ label, text, mono, multiline }: CopyBlockProps) {
       >
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</span>
         <button
+          type="button"
           onClick={copy}
           className="tt-btn-ghost"
           style={{

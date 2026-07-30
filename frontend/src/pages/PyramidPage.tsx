@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import * as Dialog from '@radix-ui/react-dialog'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
@@ -140,30 +141,33 @@ export function PyramidPage() {
 
         {/* Detail panel: desktop side column / mobile bottom sheet */}
         {isMobile ? (
-          sel && (
-            <>
-              <div
-                className="tt-fade"
-                onClick={() => setSel(null)}
+          <Dialog.Root open={sel !== null} onOpenChange={(open) => { if (!open) setSel(null) }}>
+            <Dialog.Portal>
+              <Dialog.Overlay
+                className="tt-overlay"
                 style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 40 }}
               />
-              <div
-                className="tt-sheet-content"
-                data-state="open"
-                style={{
-                  position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 41,
-                  maxHeight: '72vh',
-                  background: 'var(--bg-surface)',
-                  borderTop: '1px solid var(--bg-border)',
-                  borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
-                  boxShadow: 'var(--shadow-lg)',
-                  overflow: 'hidden',
-                }}
-              >
-                <DetailPanel win={sel} onClose={() => setSel(null)} bare />
-              </div>
-            </>
-          )
+              {sel && (
+                <Dialog.Content
+                  className="tt-sheet-content"
+                  aria-describedby={undefined}
+                  style={{
+                    position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 41,
+                    height: 'min(72vh, 640px)',
+                    background: 'var(--bg-surface)',
+                    borderTop: '1px solid var(--bg-border)',
+                    borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
+                    boxShadow: 'var(--shadow-lg)',
+                    overflow: 'hidden',
+                    outline: 'none',
+                  }}
+                >
+                  <Dialog.Title className="sr-only">金字塔时间窗详情</Dialog.Title>
+                  <DetailPanel win={sel} onClose={() => setSel(null)} bare />
+                </Dialog.Content>
+              )}
+            </Dialog.Portal>
+          </Dialog.Root>
         ) : (
           <DetailPanel win={sel} onClose={() => setSel(null)} />
         )}
@@ -238,7 +242,7 @@ function DetailPanel({ win, onClose, bare = false }: { win: SummaryWindow | null
   // bare: rendered inside the mobile bottom sheet (the sheet provides the
   // frame), otherwise the desktop side column provides it.
   const wrap: React.CSSProperties = bare
-    ? { overflow: 'hidden' }
+    ? { height: '100%', overflow: 'hidden' }
     : { width: 360, flexShrink: 0, borderLeft: '1px solid var(--bg-border)', background: 'var(--bg-surface)', overflow: 'hidden' }
   if (!win) {
     return (

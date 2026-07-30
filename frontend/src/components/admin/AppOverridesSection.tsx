@@ -8,7 +8,6 @@ import type { AppOverrides } from '@/types/api'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { Section } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { IconButton } from '@/components/ui/IconButton'
 import { EmptyState, ErrorBanner } from '@/components/ui/Feedback'
 import { Skeleton } from '@/components/ui/Skeleton'
 
@@ -61,18 +60,13 @@ export function AppOverridesSection() {
   )
   const visibleRows = rows ?? serverRows
 
-  const toRows = (d: AppOverrides): Row[] =>
-    Object.entries(d.apps).map(([app, v]) => ({
-      rid: nextRid.current++,
-      app,
-      category: v.category ?? '',
-      note: v.note ?? '',
-    }))
-
   const saveMut = useMutation({
     mutationFn: (body: AppOverrides) => api.putAppOverrides(body),
     onSuccess: (saved) => {
-      setRows(toRows(saved)) // resync to the validated/cleaned server copy
+      // Publish the validated server copy synchronously, then leave draft mode
+      // so the "未保存" marker reflects reality after a successful save.
+      queryClient.setQueryData(queryKeys.appOverrides(), saved)
+      setRows(null)
       toast.success('已保存应用分类规则')
       void queryClient.invalidateQueries({ queryKey: queryKeys.appOverrides() })
     },
@@ -195,15 +189,15 @@ export function AppOverridesSection() {
                     className="tt-input"
                     style={{ flex: 1, minWidth: 0 }}
                   />
-                  <IconButton
+                  <Button
+                    variant="danger"
                     onClick={() => remove(r.rid)}
                     title="删除这条规则"
                     aria-label="删除"
-                    className="tt-btn-danger"
                     style={{ width: 'auto', height: 'auto', padding: '8px 10px', flex: '0 0 auto' }}
                   >
                     <Trash2 size={13} />
-                  </IconButton>
+                  </Button>
                 </div>
               </div>
             ))}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trash2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
@@ -7,7 +7,7 @@ import { queryKeys } from '@/lib/queryKeys'
 import type { TokenCreated } from '@/types/api'
 import { Section } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { EmptyState } from '@/components/ui/Feedback'
+import { EmptyState, ErrorBanner } from '@/components/ui/Feedback'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { TokenCreatedDialog } from './TokenCreatedDialog'
 
@@ -19,6 +19,11 @@ export function TokenManager() {
   const [created, setCreated] = useState<TokenCreated | null>(null)
   // Two-step revoke: first click arms the row's button, second click revokes.
   const [armedLabel, setArmedLabel] = useState<string | null>(null)
+  useEffect(() => {
+    if (armedLabel == null) return undefined
+    const id = setTimeout(() => setArmedLabel(null), 3000)
+    return () => clearTimeout(id)
+  }, [armedLabel])
 
   const tokensQuery = useQuery({
     queryKey: queryKeys.adminTokens(),
@@ -90,7 +95,16 @@ export function TokenManager() {
             <Skeleton style={{ height: 34 }} />
           </div>
         )}
-        {!tokensQuery.isLoading && tokens.length === 0 && (
+        {tokensQuery.isError && (
+          <ErrorBanner
+            title="Token 列表加载失败"
+            message={(tokensQuery.error as Error).message}
+            onRetry={() => tokensQuery.refetch()}
+            retrying={tokensQuery.isRefetching}
+            style={{ margin: 12 }}
+          />
+        )}
+        {!tokensQuery.isLoading && !tokensQuery.isError && tokens.length === 0 && (
           <EmptyState title="还没有 token" style={{ padding: '22px 16px' }} />
         )}
         {tokens.map((t, i) => {

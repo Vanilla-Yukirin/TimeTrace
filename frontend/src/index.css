@@ -499,6 +499,7 @@ button.tt-chip[data-active='true'] {
 .lightbox-overlay[data-state='closed'] { animation: lightbox-overlay-out 140ms ease-in; }
 .lightbox-content[data-state='open']  { animation: lightbox-content-in  200ms cubic-bezier(0.16, 1, 0.3, 1); }
 .lightbox-content[data-state='closed'] { animation: lightbox-content-out 140ms ease-in; }
+.tt-modal-content[data-state='open']  { animation: lightbox-content-in  200ms cubic-bezier(0.16, 1, 0.3, 1); }
 .lightbox-image-fade { animation: lightbox-fade 180ms ease-out; }
 
 /* Soft entrance for cards / panels */
