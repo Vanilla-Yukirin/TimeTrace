@@ -291,6 +291,23 @@ function FlagChips({ row }: { row: AuditRowT }) {
           {c.label}
         </span>
       ))}
+      {chips.length > 2 && (
+        <span
+          title={chips.slice(2).map((c) => c.label).join('、')}
+          style={{
+            padding: '1px 7px',
+            fontSize: 10.5,
+            fontWeight: 600,
+            borderRadius: 'var(--radius-pill)',
+            color: 'var(--text-muted)',
+            background: 'var(--bg-raised)',
+            border: '1px solid var(--bg-border)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          +{chips.length - 2}
+        </span>
+      )}
     </span>
   )
 }

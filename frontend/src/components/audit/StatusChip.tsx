@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { Chip } from '@/components/ui/Chip'
 
 /** Maps a derived audit status → a Chinese label + a semantic theme color.
  *  The color drives a soft pill (color-mix bg/border + dot), mirroring
@@ -16,25 +16,9 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
 
 export function StatusChip({ status }: { status: string }) {
   const meta = STATUS_META[status] ?? { label: status, color: 'var(--text-muted)' }
-  const style: CSSProperties = {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 5,
-    padding: '2px 9px',
-    borderRadius: 'var(--radius-pill)',
-    fontSize: 11.5,
-    fontWeight: 600,
-    whiteSpace: 'nowrap',
-    color: 'var(--text-primary)',
-    background: `color-mix(in srgb, ${meta.color} 15%, transparent)`,
-    border: `1px solid color-mix(in srgb, ${meta.color} 42%, transparent)`,
-  }
   return (
-    <span style={style}>
-      <span
-        style={{ width: 6, height: 6, borderRadius: '50%', background: meta.color, flexShrink: 0 }}
-      />
+    <Chip color={meta.color} dot style={{ color: 'var(--text-primary)' }}>
       {meta.label}
-    </span>
+    </Chip>
   )
 }

@@ -1,8 +1,14 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
+import { categoryColor } from '@/lib/categories'
+import { useIsMobile } from '@/hooks/useIsMobile'
+import { IconButton } from '@/components/ui/IconButton'
+import { Button } from '@/components/ui/Button'
+import { ErrorBanner } from '@/components/ui/Feedback'
+import { SkeletonRows } from '@/components/ui/Skeleton'
 import type { SummaryWindow } from '@/types/api'
 
 // Columns coarse→fine; each is a vertical lane on a SHARED time axis, so a
@@ -18,15 +24,6 @@ const PX_PER_HOUR = 92
 const DAY_MS = 24 * 3600 * 1000
 const TOTAL_H = (DAY_MS / 3600_000) * PX_PER_HOUR // 24h tall
 
-const CAT_COLORS: Record<string, string> = {
-  work: '#3b82f6',
-  study: '#a855f7',
-  social: '#10b981',
-  entertainment: '#f59e0b',
-  system: '#6b7280',
-  uncategorized: '#9ca3af',
-  _unclassified: '#cbd5e1',
-}
 const CAT_LABELS: Record<string, string> = {
   work: '工作', study: '学习', social: '沟通', entertainment: '娱乐',
   system: '系统', uncategorized: '未分类', _unclassified: '待分类',
@@ -49,6 +46,7 @@ function shiftDay(day: string, delta: number): string {
 export function PyramidPage() {
   const [day, setDay] = useState(todayLocalLogicalDay())
   const [sel, setSel] = useState<SummaryWindow | null>(null)
+  const isMobile = useIsMobile()
   const q = useQuery({
     queryKey: queryKeys.summariesDay(day),
     queryFn: () => api.getSummariesForDay(day),
@@ -65,7 +63,7 @@ export function PyramidPage() {
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', width: '100%' }}>
       {/* Header / day nav */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '16px 22px 10px', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: isMobile ? '14px 14px 8px' : '16px 22px 10px', flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>记忆金字塔</div>
           <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 3, maxWidth: 600, lineHeight: 1.6 }}>
@@ -73,33 +71,55 @@ export function PyramidPage() {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <button onClick={() => { setDay(shiftDay(day, -1)); setSel(null) }} style={navBtn}><ChevronLeft size={16} /></button>
+          <IconButton aria-label="前一天" onClick={() => { setDay(shiftDay(day, -1)); setSel(null) }} style={{ width: 30, height: 30 }}>
+            <ChevronLeft size={16} />
+          </IconButton>
           <div style={{ minWidth: 116, textAlign: 'center', fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>{day}</div>
-          <button onClick={() => { setDay(shiftDay(day, 1)); setSel(null) }} style={navBtn}><ChevronRight size={16} /></button>
-          <button onClick={() => { setDay(todayLocalLogicalDay()); setSel(null) }} style={{ ...navBtn, width: 'auto', padding: '0 12px', fontSize: 12.5 }}>今天</button>
+          <IconButton aria-label="后一天" onClick={() => { setDay(shiftDay(day, 1)); setSel(null) }} style={{ width: 30, height: 30 }}>
+            <ChevronRight size={16} />
+          </IconButton>
+          <Button onClick={() => { setDay(todayLocalLogicalDay()); setSel(null) }} style={{ padding: '5px 12px', fontSize: 12.5 }}>今天</Button>
         </div>
       </div>
       {/* Legend */}
-      <div style={{ display: 'flex', gap: 12, padding: '0 22px 8px', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
+      <div style={{ display: 'flex', gap: 12, padding: isMobile ? '0 14px 8px' : '0 22px 8px', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
         {Object.entries(CAT_LABELS).filter(([k]) => k !== '_unclassified').map(([k, label]) => (
           <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ width: 9, height: 9, borderRadius: 2, background: CAT_COLORS[k] }} />{label}
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: categoryColor(k) }} />{label}
           </span>
         ))}
         <span style={{ marginLeft: 'auto' }}>共 {total} 个窗 · 每 15 秒刷新</span>
       </div>
 
-      <div style={{ flex: 1, display: 'flex', minHeight: 0, gap: 0 }}>
+      {q.isError && (
+        <div style={{ padding: isMobile ? '4px 14px 8px' : '4px 22px 8px' }}>
+          <ErrorBanner title="加载失败" message="金字塔数据拉取失败，请稍后重试。" onRetry={() => q.refetch()} retrying={q.isRefetching} />
+        </div>
+      )}
+
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, gap: 0, position: 'relative' }}>
         {/* Chart: time axis + columns (scrolls vertically) */}
         <div style={{ flex: 1, overflowY: 'auto', overflowX: 'auto', padding: '4px 0 24px 0' }}>
           {q.isLoading ? (
-            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>加载中…</div>
+            <SkeletonRows rows={10} height={52} style={{ padding: '24px 22px' }} />
           ) : (
             <div style={{ display: 'flex', minWidth: 'min-content', paddingLeft: 8 }}>
               <TimeAxis />
               {/* Column header band + lanes */}
               <div>
-                <div style={{ display: 'flex', position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-base)', paddingBottom: 4 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 2,
+                    // Translucent + blur (same trick as the TopBar) so the sticky
+                    // band doesn't paint a solid patch over the page glow.
+                    background: 'color-mix(in srgb, var(--bg-base) 86%, transparent)',
+                    backdropFilter: 'blur(8px)',
+                    paddingBottom: 4,
+                  }}
+                >
                   {COLUMNS.map((c) => (
                     <div key={c.grain} style={{ width: c.width, textAlign: 'center', fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.04em' }}>{c.label}</div>
                   ))}
@@ -118,8 +138,35 @@ export function PyramidPage() {
           )}
         </div>
 
-        {/* Detail panel */}
-        <DetailPanel win={sel} onClose={() => setSel(null)} />
+        {/* Detail panel: desktop side column / mobile bottom sheet */}
+        {isMobile ? (
+          sel && (
+            <>
+              <div
+                className="tt-fade"
+                onClick={() => setSel(null)}
+                style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 40 }}
+              />
+              <div
+                className="tt-sheet-content"
+                data-state="open"
+                style={{
+                  position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 41,
+                  maxHeight: '72vh',
+                  background: 'var(--bg-surface)',
+                  borderTop: '1px solid var(--bg-border)',
+                  borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
+                  boxShadow: 'var(--shadow-lg)',
+                  overflow: 'hidden',
+                }}
+              >
+                <DetailPanel win={sel} onClose={() => setSel(null)} bare />
+              </div>
+            </>
+          )
+        ) : (
+          <DetailPanel win={sel} onClose={() => setSel(null)} />
+        )}
       </div>
     </div>
   )
@@ -154,7 +201,7 @@ function Lane({ width, windows, dayStart, selKey, onSelect }: {
         const top = (a / DAY_MS) * TOTAL_H
         const height = Math.max(6, ((b - a) / DAY_MS) * TOTAL_H - 1.5)
         const cat = w.top_categories[0]?.category
-        const color = (cat && CAT_COLORS[cat]) || 'var(--text-muted)'
+        const color = cat ? categoryColor(cat) : 'var(--text-muted)'
         const selected = w.scope_key === selKey
         const narrated = w.status === 'narrated' && !w.metrics_only && !!w.description
         const tall = height >= 22
@@ -172,11 +219,11 @@ function Lane({ width, windows, dayStart, selKey, onSelect }: {
               opacity: narrated ? (selected ? 1 : 0.82) : 0.5,
               outline: selected ? '2px solid var(--accent)' : 'none',
               outlineOffset: 1,
-              color: '#fff',
+              color: 'var(--accent-contrast)',
             }}
           >
             {tall && (
-              <span style={{ fontSize: 10, fontWeight: 600, color: narrated ? '#fff' : 'var(--text-secondary)', whiteSpace: 'nowrap', textShadow: narrated ? '0 1px 2px rgba(0,0,0,0.3)' : 'none' }}>
+              <span style={{ fontSize: 10, fontWeight: 600, color: narrated ? 'var(--accent-contrast)' : 'var(--text-secondary)', whiteSpace: 'nowrap', textShadow: narrated ? '0 1px 2px rgba(0,0,0,0.3)' : 'none' }}>
                 {fmtHM(w.window_start)}{cat ? ` ${CAT_LABELS[cat] ?? cat}` : ''}
               </span>
             )}
@@ -187,10 +234,15 @@ function Lane({ width, windows, dayStart, selKey, onSelect }: {
   )
 }
 
-function DetailPanel({ win, onClose }: { win: SummaryWindow | null; onClose: () => void }) {
+function DetailPanel({ win, onClose, bare = false }: { win: SummaryWindow | null; onClose: () => void; bare?: boolean }) {
+  // bare: rendered inside the mobile bottom sheet (the sheet provides the
+  // frame), otherwise the desktop side column provides it.
+  const wrap: React.CSSProperties = bare
+    ? { overflow: 'hidden' }
+    : { width: 360, flexShrink: 0, borderLeft: '1px solid var(--bg-border)', background: 'var(--bg-surface)', overflow: 'hidden' }
   if (!win) {
     return (
-      <div style={detailWrap}>
+      <div style={wrap}>
         <div style={{ padding: 24, color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', marginTop: 40 }}>
           点左边任意方块，看那段时间的流水账、重点与评价。
         </div>
@@ -199,11 +251,13 @@ function DetailPanel({ win, onClose }: { win: SummaryWindow | null; onClose: () 
   }
   const grainLabel: Record<string, string> = { '5min': '5 分钟', '1h': '1 小时', '6h': '6 小时段', day: '一天', week: '一周' }
   return (
-    <div style={detailWrap}>
+    <div style={wrap}>
       <div style={{ padding: '14px 16px', overflowY: 'auto', height: '100%' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)' }}>{grainLabel[win.grain] ?? win.grain}</span>
-          <button onClick={onClose} style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}>×</button>
+          <IconButton aria-label="关闭详情" onClick={onClose} style={{ width: 28, height: 28, border: 'none', background: 'transparent' }}>
+            <X size={15} />
+          </IconButton>
         </div>
         <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>
           {fmtHM(win.window_start)} – {fmtHM(win.window_end)}
@@ -213,7 +267,7 @@ function DetailPanel({ win, onClose }: { win: SummaryWindow | null; onClose: () 
           <span>活跃 {Math.round(win.active_seconds / 60)} 分</span>
           {win.top_categories.slice(0, 3).map((c) => (
             <span key={c.category} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-              <span style={{ width: 8, height: 8, borderRadius: 2, background: CAT_COLORS[c.category] ?? 'var(--text-muted)' }} />
+              <span style={{ width: 8, height: 8, borderRadius: 2, background: categoryColor(c.category) }} />
               {CAT_LABELS[c.category] ?? c.category} {Math.round(c.seconds / 60)}分
             </span>
           ))}
@@ -258,13 +312,4 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       {children}
     </div>
   )
-}
-
-const navBtn: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30,
-  borderRadius: 'var(--radius-md)', border: '1px solid var(--bg-border)', background: 'var(--bg-surface)',
-  color: 'var(--text-secondary)', cursor: 'pointer',
-}
-const detailWrap: React.CSSProperties = {
-  width: 360, flexShrink: 0, borderLeft: '1px solid var(--bg-border)', background: 'var(--bg-surface)', overflow: 'hidden',
 }
