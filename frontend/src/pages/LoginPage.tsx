@@ -83,7 +83,7 @@ export function LoginPage() {
           autoComplete="current-password"
         />
 
-        {error && <div style={{ fontSize: 12, color: 'var(--error)' }}>{error}</div>}
+        {error && <div role="alert" style={{ fontSize: 12, color: 'var(--error)' }}>{error}</div>}
 
         <AuthButton disabled={submitting || !username || !password} busy={submitting}>
           {submitting ? '登录中…' : '登录'}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Menu, Send, Square } from 'lucide-react'
 import { streamAgentChat, type AgentEvent, type ChatMessage } from '@/lib/agentApi'
@@ -16,6 +16,8 @@ import { useIsMobile } from '@/hooks/useIsMobile'
 import { CatMascot } from '@/components/brand/CatMascot'
 import { AgentSidebar } from '@/components/agent/AgentSidebar'
 import { TurnView } from '@/components/agent/TurnView'
+import { Button } from '@/components/ui/Button'
+import { IconButton } from '@/components/ui/IconButton'
 
 const SUGGESTIONS = [
   '我今天主要在用哪些应用？各花了多久？',
@@ -205,7 +207,8 @@ export function AgentPage() {
   }
 
   function onDelete(id: string) {
-    if (!window.confirm('删除这个对话？')) return
+    // The confirmation step lives in the sidebar's delete button (two-step:
+    // first click arms, second click deletes) — no native confirm() dialog.
     const remaining = sessions.filter((s) => s.id !== id)
     const next = remaining.length > 0 ? remaining : [newSession()]
     setSessions(next)
@@ -232,6 +235,7 @@ export function AgentPage() {
                 <button
                   key={s}
                   onClick={() => send(s)}
+                  className="tt-nav-row"
                   style={{
                     textAlign: 'left',
                     padding: '12px 16px',
@@ -270,25 +274,28 @@ export function AgentPage() {
           placeholder="问问你最近在干嘛…"
           disabled={busy}
           aria-label="输入问题"
+          className="tt-input"
           style={{
             flex: 1,
             padding: '12px 16px',
-            borderRadius: 'var(--radius-md)',
-            border: '1px solid var(--bg-border)',
             background: 'var(--bg-base)',
-            color: 'var(--text-primary)',
             fontSize: 14,
-            outline: 'none',
           }}
         />
         {busy ? (
-          <button type="button" onClick={stop} aria-label="停止" style={{ padding: '0 18px', borderRadius: 'var(--radius-md)', border: '1px solid var(--bg-border)', background: 'var(--bg-raised)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+          <IconButton aria-label="停止" onClick={stop} style={{ width: 'auto', height: 'auto', padding: '0 18px' }}>
             <Square size={16} />
-          </button>
+          </IconButton>
         ) : (
-          <button type="submit" aria-label="发送" style={{ padding: '0 20px', borderRadius: 'var(--radius-md)', border: 'none', background: 'var(--grad-accent)', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
+          <Button
+            type="submit"
+            variant="primary"
+            aria-label="发送"
+            disabled={!input.trim()}
+            style={{ padding: '0 20px' }}
+          >
             <Send size={16} />
-          </button>
+          </Button>
         )}
       </form>
     </div>
@@ -302,7 +309,7 @@ export function AgentPage() {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--bg-border)', background: 'var(--bg-surface)' }}>
-          <button onClick={() => setDrawerOpen(true)} aria-label="对话列表" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 38, height: 38, borderRadius: 'var(--radius-md)', background: 'var(--bg-raised)', border: '1px solid var(--bg-border)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+          <button onClick={() => setDrawerOpen(true)} aria-label="对话列表" className="tt-nav-row" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 38, height: 38, borderRadius: 'var(--radius-md)', background: 'var(--bg-raised)', border: '1px solid var(--bg-border)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
             <Menu size={18} />
           </button>
           <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -312,13 +319,13 @@ export function AgentPage() {
         {chatArea}
         <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
           <Dialog.Portal>
-            <Dialog.Overlay className="tt-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 49 }} />
+            <Dialog.Overlay className="tt-overlay" style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 49 }} />
             <Dialog.Content
               className="tt-drawer-content"
               aria-label="对话列表"
               style={{ position: 'fixed', top: 0, bottom: 0, left: 0, width: 'min(82vw, 320px)', zIndex: 50, background: 'var(--bg-surface)', borderRight: '1px solid var(--bg-border)', outline: 'none' }}
             >
-              <Dialog.Title style={srOnly}>对话列表</Dialog.Title>
+              <Dialog.Title className="sr-only">对话列表</Dialog.Title>
               {sidebar}
             </Dialog.Content>
           </Dialog.Portal>
@@ -335,16 +342,4 @@ export function AgentPage() {
       {chatArea}
     </div>
   )
-}
-
-const srOnly: CSSProperties = {
-  position: 'absolute',
-  width: 1,
-  height: 1,
-  padding: 0,
-  margin: -1,
-  overflow: 'hidden',
-  clip: 'rect(0, 0, 0, 0)',
-  whiteSpace: 'nowrap',
-  border: 0,
 }

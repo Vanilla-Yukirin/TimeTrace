@@ -8,6 +8,9 @@ import {
   runEmbSelftest,
   type SelftestResult,
 } from '@/api/embedding'
+import { Card, Section } from '@/components/ui/Card'
+import { Button } from '@/components/ui/Button'
+import { Chip } from '@/components/ui/Chip'
 
 const DTYPES = ['bfloat16', 'float16', 'int8', 'int4'] as const
 
@@ -53,21 +56,13 @@ export function EmbeddingDiagnostics() {
         : null
 
   return (
-    <div>
-      <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 12 }}>
-        嵌入模型自检
-      </h3>
-      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
-        对本地 Qwen3-VL 嵌入服务（端口 8766）跑官方标准输入，与满精度金标准比对，
-        显示各向量余弦相似度与量化漂移。切换精度前可用于部署校验。
-      </p>
-
-      <div
+    <Section
+      title="嵌入模型自检"
+      desc="对本地 Qwen3-VL 嵌入服务（端口 8766）跑官方标准输入，与满精度金标准比对，显示各向量余弦相似度与量化漂移。切换精度前可用于部署校验。"
+    >
+      <Card
         style={{
           padding: 16,
-          background: 'var(--bg-surface)',
-          borderRadius: 'var(--radius-lg)',
-          border: '1px solid var(--bg-border)',
           display: 'flex',
           flexDirection: 'column',
           gap: 12,
@@ -79,7 +74,7 @@ export function EmbeddingDiagnostics() {
           value={key}
           onChange={(e) => saveKey(e.target.value)}
           placeholder="嵌入服务 API Key（tt_emb_…，本机保存）"
-          style={inputStyle}
+          className="tt-input"
         />
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -90,7 +85,8 @@ export function EmbeddingDiagnostics() {
             value={dtype}
             onChange={(e) => setDtype(e.target.value)}
             disabled={detect.isPending}
-            style={{ ...inputStyle, flex: '0 0 auto', width: 'auto', cursor: 'pointer' }}
+            className="tt-input"
+            style={{ flex: '0 0 auto', width: 'auto', cursor: 'pointer' }}
           >
             {DTYPES.map((d) => (
               <option key={d} value={d}>
@@ -98,16 +94,17 @@ export function EmbeddingDiagnostics() {
               </option>
             ))}
           </select>
-          <button
+          <Button
+            variant="primary"
             onClick={() => {
               setResult(null)
               detect.mutate()
             }}
-            disabled={detect.isPending}
-            style={{ ...primaryButton, opacity: detect.isPending ? 0.6 : 1 }}
+            loading={detect.isPending}
           >
-            <Activity size={14} /> {detect.isPending ? '检测中…' : '检测'}
-          </button>
+            {!detect.isPending && <Activity size={14} />}
+            {detect.isPending ? '检测中…' : '检测'}
+          </Button>
           <span
             role="status"
             aria-live="polite"
@@ -121,18 +118,9 @@ export function EmbeddingDiagnostics() {
         {result && (
           <div role="status" aria-live="polite" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span
-                style={{
-                  padding: '2px 10px',
-                  borderRadius: 'var(--radius-pill)',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: 'var(--accent-contrast)',
-                  background: result.verdict === 'PASS' ? 'var(--success)' : 'var(--error)',
-                }}
-              >
+              <Chip solid color={result.verdict === 'PASS' ? 'var(--success)' : 'var(--error)'}>
                 {result.verdict}
-              </span>
+              </Chip>
               <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                 {result.model} · {result.dtype} · dim {result.dim}
               </span>
@@ -170,31 +158,7 @@ export function EmbeddingDiagnostics() {
             </div>
           </div>
         )}
-      </div>
-    </div>
+      </Card>
+    </Section>
   )
-}
-
-const inputStyle: React.CSSProperties = {
-  flex: 1,
-  padding: '8px 12px',
-  background: 'var(--bg-raised)',
-  border: '1px solid var(--bg-border)',
-  borderRadius: 'var(--radius-md)',
-  color: 'var(--text-primary)',
-  fontSize: 13,
-  outline: 'none',
-}
-
-const primaryButton: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 6,
-  padding: '8px 14px',
-  background: 'var(--grad-accent)',
-  color: 'var(--accent-contrast)',
-  border: 'none',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 13,
-  cursor: 'pointer',
 }

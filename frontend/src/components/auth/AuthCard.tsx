@@ -1,5 +1,6 @@
 import { CatMascot } from '@/components/brand/CatMascot'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
+import { Button } from '@/components/ui/Button'
 
 /** Shared chrome for the login / change-password screens: full-bleed
  *  atmospheric background (body --app-glow), a corner theme toggle, and a
@@ -99,15 +100,8 @@ export function AuthField({
         onChange={(e) => onChange(e.target.value)}
         autoComplete={autoComplete}
         autoFocus={autoFocus}
-        style={{
-          padding: '10px 12px',
-          background: 'var(--bg-raised)',
-          border: '1px solid var(--bg-border)',
-          borderRadius: 'var(--radius-md)',
-          color: 'var(--text-primary)',
-          fontSize: 14,
-          outline: 'none',
-        }}
+        className="tt-input"
+        style={{ padding: '10px 12px', fontSize: 14 }}
       />
     </label>
   )
@@ -123,23 +117,13 @@ export function AuthButton({
   busy?: boolean
 }) {
   return (
-    <button
+    <Button
       type="submit"
+      variant="primary"
       disabled={disabled}
-      style={{
-        padding: '11px 16px',
-        background: disabled ? 'var(--bg-raised)' : 'var(--grad-accent)',
-        color: disabled ? 'var(--text-muted)' : '#fff',
-        border: 'none',
-        borderRadius: 'var(--radius-md)',
-        fontSize: 14,
-        fontWeight: 600,
-        cursor: disabled ? (busy ? 'wait' : 'not-allowed') : 'pointer',
-        boxShadow: disabled ? 'none' : 'var(--shadow-glow)',
-        marginTop: 2,
-      }}
+      style={{ padding: '11px 16px', fontSize: 14, marginTop: 2, cursor: disabled && busy ? 'wait' : undefined }}
     >
       {children}
-    </button>
+    </Button>
   )
 }

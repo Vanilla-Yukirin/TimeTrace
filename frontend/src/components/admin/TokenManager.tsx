@@ -5,6 +5,10 @@ import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
 import type { TokenCreated } from '@/types/api'
+import { Section } from '@/components/ui/Card'
+import { Button } from '@/components/ui/Button'
+import { EmptyState } from '@/components/ui/Feedback'
+import { Skeleton } from '@/components/ui/Skeleton'
 import { TokenCreatedDialog } from './TokenCreatedDialog'
 
 /** Settings → API Tokens section: list / create / revoke bearer tokens for
@@ -13,6 +17,8 @@ export function TokenManager() {
   const queryClient = useQueryClient()
   const [newLabel, setNewLabel] = useState('')
   const [created, setCreated] = useState<TokenCreated | null>(null)
+  // Two-step revoke: first click arms the row's button, second click revokes.
+  const [armedLabel, setArmedLabel] = useState<string | null>(null)
 
   const tokensQuery = useQuery({
     queryKey: queryKeys.adminTokens(),
@@ -41,14 +47,10 @@ export function TokenManager() {
   const tokens = tokensQuery.data ?? []
 
   return (
-    <div>
-      <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>
-        API Tokens
-      </h3>
-      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
-        给 MCP 客户端（Claude Code）与采集端用的 Bearer token。浏览器登录不需要。
-      </div>
-
+    <Section
+      title="API Tokens"
+      desc="给 MCP 客户端（Claude Code）与采集端用的 Bearer token。浏览器登录不需要。"
+    >
       {/* Create */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <input
@@ -58,46 +60,20 @@ export function TokenManager() {
           name="tt-token-label"
           autoComplete="off"
           placeholder="标签，如 claude-code"
-          style={{
-            flex: 1,
-            padding: '9px 12px',
-            background: 'var(--bg-raised)',
-            border: '1px solid var(--bg-border)',
-            borderRadius: 'var(--radius-md)',
-            color: 'var(--text-primary)',
-            fontSize: 13,
-            outline: 'none',
-          }}
+          className="tt-input"
+          style={{ flex: 1 }}
         />
-        <button
+        <Button
+          variant="primary"
           onClick={() => newLabel && createMut.mutate(newLabel)}
-          disabled={!newLabel || createMut.isPending}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '9px 16px',
-            background: newLabel ? 'var(--grad-accent)' : 'var(--bg-raised)',
-            color: newLabel ? '#fff' : 'var(--text-muted)',
-            border: 'none',
-            borderRadius: 'var(--radius-md)',
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: newLabel ? 'pointer' : 'default',
-            opacity: createMut.isPending ? 0.6 : 1,
-            whiteSpace: 'nowrap',
-          }}
+          disabled={!newLabel}
+          loading={createMut.isPending}
+          style={{ whiteSpace: 'nowrap' }}
         >
-          <Plus size={14} />
+          {!createMut.isPending && <Plus size={14} />}
           新建
-        </button>
+        </Button>
       </div>
-
-      {createMut.isError && (
-        <div style={{ fontSize: 12, color: 'var(--error)', marginBottom: 12 }}>
-          {(createMut.error as Error).message}
-        </div>
-      )}
 
       {/* List */}
       <div
@@ -109,62 +85,61 @@ export function TokenManager() {
         }}
       >
         {tokensQuery.isLoading && (
-          <div style={{ padding: 16, fontSize: 13, color: 'var(--text-muted)' }}>加载中...</div>
+          <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Skeleton style={{ height: 34 }} />
+            <Skeleton style={{ height: 34 }} />
+          </div>
         )}
         {!tokensQuery.isLoading && tokens.length === 0 && (
-          <div style={{ padding: 16, fontSize: 13, color: 'var(--text-muted)' }}>
-            还没有 token
-          </div>
+          <EmptyState title="还没有 token" style={{ padding: '22px 16px' }} />
         )}
-        {tokens.map((t, i) => (
-          <div
-            key={t.label}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '10px 14px',
-              borderTop: i > 0 ? '1px solid var(--bg-border)' : 'none',
-            }}
-          >
-            <div>
-              <div style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 500 }}>
-                {t.label}
-              </div>
-              {t.created_at && (
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {new Date(t.created_at).toLocaleString()}
-                </div>
-              )}
-            </div>
-            <button
-              onClick={() => {
-                if (confirm(`撤销 token「${t.label}」？使用它的客户端会立即失效。`)) {
-                  revokeMut.mutate(t.label)
-                }
-              }}
-              title="撤销"
+        {tokens.map((t, i) => {
+          const armed = armedLabel === t.label
+          return (
+            <div
+              key={t.label}
               style={{
-                display: 'inline-flex',
+                display: 'flex',
                 alignItems: 'center',
-                gap: 4,
-                padding: '5px 10px',
-                background: 'transparent',
-                color: 'var(--error)',
-                border: '1px solid var(--bg-border)',
-                borderRadius: 'var(--radius-md)',
-                fontSize: 12,
-                cursor: 'pointer',
+                justifyContent: 'space-between',
+                padding: '10px 14px',
+                borderTop: i > 0 ? '1px solid var(--bg-border)' : 'none',
               }}
             >
-              <Trash2 size={12} />
-              撤销
-            </button>
-          </div>
-        ))}
+              <div>
+                <div style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 500 }}>
+                  {t.label}
+                </div>
+                {t.created_at && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                    {new Date(t.created_at).toLocaleString()}
+                  </div>
+                )}
+              </div>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  if (armed) {
+                    setArmedLabel(null)
+                    revokeMut.mutate(t.label)
+                  } else {
+                    setArmedLabel(t.label)
+                  }
+                }}
+                onBlur={() => setArmedLabel(null)}
+                loading={revokeMut.isPending && revokeMut.variables === t.label}
+                title={armed ? '再点一次确认撤销' : '撤销'}
+                style={{ padding: '5px 10px', fontSize: 12 }}
+              >
+                <Trash2 size={12} />
+                {armed ? '确认撤销' : '撤销'}
+              </Button>
+            </div>
+          )
+        })}
       </div>
 
       {created && <TokenCreatedDialog token={created} onClose={() => setCreated(null)} />}
-    </div>
+    </Section>
   )
 }

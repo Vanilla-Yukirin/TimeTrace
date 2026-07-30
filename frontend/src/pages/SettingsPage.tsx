@@ -6,10 +6,13 @@ import { AccountSection } from '@/components/admin/AccountSection'
 import { TokenManager } from '@/components/admin/TokenManager'
 import { EmbeddingDiagnostics } from '@/components/admin/EmbeddingDiagnostics'
 import { AppOverridesSection } from '@/components/admin/AppOverridesSection'
+import { Card, Section } from '@/components/ui/Card'
+import { ErrorBanner } from '@/components/ui/Feedback'
+import { Skeleton } from '@/components/ui/Skeleton'
 
 export function SettingsPage() {
   const isMobile = useIsMobile()
-  const { data: info, isLoading, error } = useQuery({
+  const { data: info, isLoading, error, refetch, isRefetching } = useQuery({
     queryKey: queryKeys.runtimeInfo(),
     queryFn: () => api.getRuntimeInfo(),
   })
@@ -27,16 +30,21 @@ export function SettingsPage() {
 
       <AppOverridesSection />
 
-      <div>
-        <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 16 }}>
-          后端状态
-        </h3>
-
-        {isLoading && <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>加载中…</div>}
-        {error && (
-          <div style={{ fontSize: 13, color: 'var(--error)' }}>
-            加载失败：{(error as Error).message}
+      <Section title="后端状态">
+        {isLoading && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Skeleton style={{ height: 62 }} />
+            <Skeleton style={{ height: 62 }} />
+            <Skeleton style={{ height: 62 }} />
           </div>
+        )}
+        {error && (
+          <ErrorBanner
+            title="加载失败"
+            message={(error as Error).message}
+            onRetry={() => refetch()}
+            retrying={isRefetching}
+          />
         )}
         {info && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -45,7 +53,7 @@ export function SettingsPage() {
             <InfoRow label="API 地址" value={`${info.api_host}:${info.api_port}`} />
           </div>
         )}
-      </div>
+      </Section>
     </div>
   )
 }
@@ -63,26 +71,19 @@ function InfoRow({
   strong?: boolean
 }) {
   return (
-    <div
-      style={{
-        padding: 16,
-        background: 'var(--bg-surface)',
-        borderRadius: 'var(--radius-lg)',
-        border: '1px solid var(--bg-border)',
-      }}
-    >
+    <Card style={{ padding: 16 }}>
       <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>{label}</div>
       <div
+        className={mono ? 'font-mono' : undefined}
         style={{
           fontSize: strong ? 14 : 13,
           fontWeight: strong ? 600 : 400,
           color: strong ? 'var(--text-primary)' : 'var(--text-secondary)',
           wordBreak: mono ? 'break-all' : undefined,
-          fontFamily: mono ? 'JetBrains Mono, monospace' : undefined,
         }}
       >
         {value}
       </div>
-    </div>
+    </Card>
   )
 }

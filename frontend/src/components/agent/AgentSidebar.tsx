@@ -1,6 +1,8 @@
-import type { CSSProperties } from 'react'
-import { BarChart3, MessageSquarePlus, Trash2 } from 'lucide-react'
+import { useEffect, useState, type CSSProperties } from 'react'
+import { BarChart3, Check, MessageSquarePlus, Trash2 } from 'lucide-react'
 import type { AgentSession, TokenStats } from '@/lib/agentSessions'
+import { Button } from '@/components/ui/Button'
+import { EmptyState } from '@/components/ui/Feedback'
 
 const fmt = (n: number) => n.toLocaleString('en-US')
 
@@ -11,22 +13,6 @@ function whenLabel(ms: number): string {
   return d.toDateString() === now.toDateString()
     ? `${p(d.getHours())}:${p(d.getMinutes())}`
     : `${d.getMonth() + 1}/${d.getDate()}`
-}
-
-const newBtn: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 7,
-  margin: '12px 12px 8px',
-  padding: '9px 14px',
-  borderRadius: 'var(--radius-md)',
-  border: 'none',
-  background: 'var(--grad-accent)',
-  color: '#fff',
-  fontSize: 13.5,
-  fontWeight: 600,
-  cursor: 'pointer',
 }
 
 const rowStyle: CSSProperties = {
@@ -113,63 +99,85 @@ export function AgentSidebar({
   stats: TokenStats
 }) {
   const ordered = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+  // Two-step delete: first click arms the button (turns into a confirm tick),
+  // second click actually deletes. Arms auto-release after a few seconds.
+  const [armedId, setArmedId] = useState<string | null>(null)
+  useEffect(() => {
+    if (armedId == null) return undefined
+    const id = setTimeout(() => setArmedId(null), 3000)
+    return () => clearTimeout(id)
+  }, [armedId])
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <button onClick={onNew} style={newBtn}>
+      <Button variant="primary" onClick={onNew} style={{ margin: '12px 12px 8px', padding: '9px 14px' }}>
         <MessageSquarePlus size={16} aria-hidden="true" /> 新对话
-      </button>
+      </Button>
       <div style={{ flex: 1, overflowY: 'auto', padding: '2px 0', minHeight: 0 }}>
-        {ordered.map((s) => {
-          const active = s.id === activeId
-          const questions = s.turns.filter((t) => t.role === 'user').length
-          return (
-            <div
-              key={s.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => onSelect(s.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  onSelect(s.id)
-                }
-              }}
-              aria-current={active ? 'true' : undefined}
-              style={{ ...rowStyle, background: active ? 'var(--accent-subtle)' : 'transparent' }}
-            >
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div
-                  style={{
-                    fontSize: 13,
-                    color: active ? 'var(--accent)' : 'var(--text-primary)',
-                    fontWeight: active ? 600 : 500,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {s.title || '新对话'}
+        {ordered.length === 0 ? (
+          <EmptyState title="还没有对话" desc="点上方「新对话」开始。" style={{ padding: '28px 12px' }} />
+        ) : (
+          ordered.map((s) => {
+            const active = s.id === activeId
+            const armed = s.id === armedId
+            const questions = s.turns.filter((t) => t.role === 'user').length
+            return (
+              <div
+                key={s.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => onSelect(s.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelect(s.id)
+                  }
+                }}
+                aria-current={active ? 'true' : undefined}
+                className="tt-nav-row"
+                data-active={active || undefined}
+                style={{ ...rowStyle, background: active ? 'var(--accent-subtle)' : 'transparent' }}
+              >
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: active ? 'var(--accent)' : 'var(--text-primary)',
+                      fontWeight: active ? 600 : 500,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {s.title || '新对话'}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {questions > 0 ? `${whenLabel(s.updatedAt)} · ${questions} 问` : '空对话'}
+                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                  {questions > 0 ? `${whenLabel(s.updatedAt)} · ${questions} 问` : '空对话'}
-                </div>
-              </div>
-              {questions > 0 && (
+                {/* Always rendered — previously empty sessions had no delete
+                    button and could never be removed. */}
                 <button
-                  aria-label="删除对话"
-                  title="删除对话"
+                  aria-label={armed ? '确认删除对话' : '删除对话'}
+                  title={armed ? '再点一次确认删除' : '删除对话'}
                   onClick={(e) => {
                     e.stopPropagation()
-                    onDelete(s.id)
+                    if (armed) {
+                      setArmedId(null)
+                      onDelete(s.id)
+                    } else {
+                      setArmedId(s.id)
+                    }
                   }}
-                  style={delBtn}
+                  className="tt-nav-row"
+                  style={{ ...delBtn, color: armed ? 'var(--error)' : 'var(--text-muted)' }}
                 >
-                  <Trash2 size={13} aria-hidden="true" />
+                  {armed ? <Check size={13} aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}
                 </button>
-              )}
-            </div>
-          )
-        })}
+              </div>
+            )
+          })
+        )}
       </div>
       <TokenPanel stats={stats} />
     </div>

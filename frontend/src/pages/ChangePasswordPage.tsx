@@ -25,7 +25,12 @@ export function ChangePasswordPage() {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
-  const localErr = newPassword || confirm ? localValidate(newPassword, confirm) : null
+  // Only flag a mismatch once the user has started typing the confirmation —
+  // complaining while the confirm box is still empty is premature noise.
+  const localErr =
+    confirm.length > 0 ? localValidate(newPassword, confirm)
+    : newPassword.length > 0 ? localValidate(newPassword, newPassword)
+    : null
   const canSubmit = !!oldPassword && !!newPassword && !!confirm && !localErr
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -91,7 +96,7 @@ export function ChangePasswordPage() {
         />
 
         {(localErr || error) && (
-          <div style={{ fontSize: 12, color: 'var(--error)' }}>{localErr ?? error}</div>
+          <div role="alert" style={{ fontSize: 12, color: 'var(--error)' }}>{localErr ?? error}</div>
         )}
 
         <AuthButton disabled={!canSubmit || submitting} busy={submitting}>

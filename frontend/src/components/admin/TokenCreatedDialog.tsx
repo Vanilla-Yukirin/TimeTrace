@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Copy, Check } from 'lucide-react'
 import type { TokenCreated } from '@/types/api'
+import { Button } from '@/components/ui/Button'
 
 interface Props {
   token: TokenCreated
@@ -46,17 +47,21 @@ export function TokenCreatedDialog({ token, origin, onClose }: Props) {
 
   return (
     <div
+      className="tt-overlay"
+      data-state="open"
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0,0,0,0.5)',
+        background: 'var(--scrim)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         zIndex: 50,
         padding: 24,
       }}
-      onClick={onClose}
+      // Deliberately NO click-to-dismiss on the scrim: the token value is shown
+      // exactly once, so an accidental outside click would lose it forever.
+      // Only the「我已保存」button (or Escape) closes this dialog.
     >
       <div
         ref={dialogRef}
@@ -64,7 +69,8 @@ export function TokenCreatedDialog({ token, origin, onClose }: Props) {
         aria-modal="true"
         aria-labelledby="token-created-title"
         tabIndex={-1}
-        onClick={(e) => e.stopPropagation()}
+        className="tt-sheet-content"
+        data-state="open"
         style={{
           width: '100%',
           maxWidth: 560,
@@ -102,23 +108,9 @@ export function TokenCreatedDialog({ token, origin, onClose }: Props) {
           </div>
         </div>
 
-        <button
-          onClick={onClose}
-          style={{
-            alignSelf: 'flex-end',
-            padding: '9px 18px',
-            background: 'var(--grad-accent)',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 'var(--radius-md)',
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: 'pointer',
-            boxShadow: 'var(--shadow-glow)',
-          }}
-        >
+        <Button variant="primary" onClick={onClose} style={{ alignSelf: 'flex-end', padding: '9px 18px', fontSize: 14 }}>
           我已保存
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -157,17 +149,12 @@ function CopyBlock({ label, text, mono, multiline }: CopyBlockProps) {
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</span>
         <button
           onClick={copy}
+          className="tt-btn-ghost"
           style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 4,
             padding: '3px 9px',
             background: 'transparent',
             color: copied ? 'var(--success)' : 'var(--text-secondary)',
-            border: '1px solid var(--bg-border)',
-            borderRadius: 'var(--radius-md)',
             fontSize: 11,
-            cursor: 'pointer',
           }}
         >
           {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
@@ -175,6 +162,7 @@ function CopyBlock({ label, text, mono, multiline }: CopyBlockProps) {
         </button>
       </div>
       <pre
+        className={mono ? 'font-mono' : undefined}
         style={{
           margin: 0,
           padding: 12,
@@ -182,7 +170,6 @@ function CopyBlock({ label, text, mono, multiline }: CopyBlockProps) {
           border: '1px solid var(--bg-border)',
           borderRadius: 'var(--radius-md)',
           fontSize: mono ? 12 : 13,
-          fontFamily: mono ? 'JetBrains Mono, monospace' : 'inherit',
           color: 'var(--text-primary)',
           whiteSpace: multiline ? 'pre' : 'pre-wrap',
           wordBreak: multiline ? 'normal' : 'break-all',

@@ -134,7 +134,7 @@ export const TurnView = memo(function TurnView({ turn }: { turn: ChatTurn }) {
             padding: '10px 14px',
             borderRadius: 'var(--radius-lg)',
             background: 'var(--grad-accent)',
-            color: '#fff',
+            color: 'var(--accent-contrast)',
             fontSize: 14,
             lineHeight: 1.5,
             whiteSpace: 'pre-wrap',
@@ -185,11 +185,12 @@ export const TurnView = memo(function TurnView({ turn }: { turn: ChatTurn }) {
 
       {turn.error && (
         <div
+          role="alert"
           style={{
             padding: '10px 14px',
             borderRadius: 'var(--radius-lg)',
             background: 'var(--error-bg)',
-            border: '1px solid var(--error)',
+            border: '1px solid color-mix(in srgb, var(--error) 35%, transparent)',
             color: 'var(--error)',
             fontSize: 14,
           }}

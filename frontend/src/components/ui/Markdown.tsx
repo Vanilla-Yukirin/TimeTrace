@@ -11,7 +11,7 @@ import { useTheme } from '@/contexts/theme'
 // mermaid (kept out of the main bundle); anything else degrades gracefully
 // while streaming (a half-arrived table/fence just shows as text until closed).
 
-const mono = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+const mono = 'var(--font-mono)'
 
 const inlineCode: CSSProperties = {
   fontFamily: mono,
