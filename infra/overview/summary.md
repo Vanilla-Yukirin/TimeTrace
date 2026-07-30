@@ -37,10 +37,10 @@ TimeTrace 是一个 **Windows Only、本地优先**的桌面活动记忆层。�
 - **多模态检索**：关键词（FTS5 trigram + BM25）+ 以图搜图（pHash BK-tree）+ 语义（VLM 描述），三路经 RRF 融合（`server/retrieval.py:reciprocal_rank_fusion`）。
 - **VLM 已实装**（非桩）：后台 worker 调 LM Studio（Qwen3-VL）为截图生成结构化描述，写回 `analysis_results.vlm_desc` + `category_final`。**VLM 产出的描述既进 FTS5 关键词索引、又是文本 embedding 的输入**，已是检索的核心语义通道之一。
 - **文本 embedding 已接生产搜索**：worker best-effort 写 `analysis_results.text_embedding`；`GET /v1/search/text` 调 `db.vector_search`（numpy cosine）并与关键词结果做 RRF，embedding 不可用时降级 keyword-only。
-- **登录 + 公网**：bcrypt 用户 + HttpOnly cookie session + bearer token 双通道鉴权（`server/auth.py`，`require_principal`）；已通过家里小主机 + 云 VPS + nginx + frp + Cloudflare 部署到 `timetrace.yukirin.me`（鉴权后才开公网）。
+- **登录 + 公网**：bcrypt 用户 + HttpOnly cookie session + bearer token 双通道鉴权（`server/auth.py`，`require_principal`）；Cloudflare Tunnel 出站接入家里小主机的 loopback nginx，由 nginx 统一托管 SPA 并反代 API 到 `127.0.0.1:8765`。
 - **分层记忆**：`5min→1h→6h→day→week` 指标与 LLM 叙述自底向上级联，`search_summaries` 可先读 day/week 再按时间窗下钻。
 - **Agent 友好**：MCP 提供检索、统计、分层叙述、标签修改和高层问答；`apply_label` 是唯一写工具。实时清单以 `server/mcp_layer/server.py` 为准。
-- **可观测与发布**：分析审计、LLM 请求账本、金字塔/LLM 页面已上线；`deploy` push 并行发布 box 后端与 xcy SPA。
+- **可观测与发布**：分析审计、LLM 请求账本、金字塔/LLM 页面已上线；`deploy` push 经同一条 FRP SSH 先部署 box 后端，再原子发布同 SHA 的本机 SPA release。
 
 ---
 
@@ -71,7 +71,7 @@ TimeTrace 是一个 **Windows Only、本地优先**的桌面活动记忆层。�
 | **隐私** | 黑名单、暂停记录、隐私模式、不存图策略、外部接口不返原图 |
 | **鉴权** | bcrypt 登录 + cookie session（admin/admin 首启强制改密 + 登录限速）+ bearer token；token CRUD 经 CLI / 前端 Settings |
 | **MCP/API** | MCP 检索/统计/摘要/问答、REST API、bearer 鉴权；MCP 不返回原始截图 |
-| **前端** | 时间轴、搜索、设置、Agent、报告、审计、金字塔、LLM 请求日志；Vite 构建后由 xcy nginx 托管 |
+| **前端** | 时间轴、搜索、设置、Agent、报告、审计、金字塔、LLM 请求日志；Vite 构建后由 `yukirin-server` 的 nginx 从 `/srv/timetrace/web/current` 托管 |
 
 ---
 

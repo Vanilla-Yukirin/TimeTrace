@@ -1,7 +1,7 @@
 # TimeTrace 滚动 TODO / Plan
 
-**最后更新：** 2026-07-21
-**验证基线：** 工作树基于 `9060941`；本轮本地全量测试 542 passed（49 个测试文件）
+**最后更新：** 2026-07-31
+**验证基线：** `main` 为 `c6e498d`；main CI 537 passed / 5 skipped，前端 lint/build 通过
 
 > 本文是项目唯一的「现在做到哪、下一步做什么」入口，只保留未完成项、运行约束和近期顺序。
 > 已完成过程移到 [`devlogs/README.md`](./README.md)；架构入口看 [`infra/readme.md`](../infra/readme.md)。
@@ -14,7 +14,7 @@
 
 TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证：Windows 客户端采集活跃窗口与关键帧，服务端在本地完成存储、VLM 描述与分类、混合检索、分层摘要，并通过 Web、REST 和 MCP 对 AI 暴露上下文。
 
-> **当前运行态（2026-07-21 只读核验）：** 家中小主机实际已连续运行约 21 天，SSH/`vanilla` 登录可用，`timetrace-server.service` 为 active，机内 `127.0.0.1:8765/healthz` 返回 200，根分区约剩 173GB；三个 `frpc` 进程存在，但公网 `https://timetrace.yukirin.me/healthz` 返回 502，需继续定位 FRP/VPS 反代链路。本机采集客户端据 owner 口述已较长时间未运行，尚未核验其 outbox。恢复公网链路和完成发布前检查前，禁止把 `deploy` 分支向前推进。
+> **当前运行态（2026-07-31 只读核验）：** 家中 `timetrace-server.service` active，`127.0.0.1:8765/healthz` 为 200；公网已由 Cloudflare Tunnel 直达该 FastAPI，因此 `/healthz` 为 200、根路径仍是 JSON 404。loopback nginx 已在 `127.0.0.1:8080` 就绪，API 反代正常，静态根采用 `/srv/timetrace/web/current → releases/bootstrap`，但当前仅有测试页。当前生产指针 `origin/deploy` 中的 Actions 仍把真实 SPA 发布到 xcy，Tunnel 仍指向 8765；在本机 SPA release 自动发布、验证和回滚链路完成前，不切 Tunnel、不推进 `deploy`。
 
 | 子系统 | 当前状态 | 代码/运行事实 |
 |---|---|---|
@@ -26,7 +26,7 @@ TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证�
 | 记忆金字塔 | ✅ 上线 | `5min→1h→6h→day→week` 指标级联、source_hash 重发、LLM summary-of-summaries |
 | AI 上下文 | ✅ 上线 | Web Agent、报告、MCP 7 工具；`search_summaries` 支持粗→细下钻，`apply_label` 是唯一写工具 |
 | 可观测性 | 🟡 主链上线 | `/audit`、`/pyramid`、`/llm-log`；账本覆盖 worker/narrative/ask_agent，尚缺 report 与 Web Agent streaming |
-| 生产发布 | 🟡 后端活着、公网链路异常 | `deploy` push 触发 box 后端部署与 xcy SPA 发布两个独立 job；当前机内健康检查 200、公网 502 |
+| 生产发布 | 🟡 网关就绪、发布迁移待上线 | 目标模型：`deploy` push 先部署 box 后端，再经同一 FRP SSH 发布本机不可变 SPA release；Cloudflare Tunnel 最后从 8765 切到 nginx 8080 |
 | 多设备 | ⚠️ 传输可用、身份缺失 | 两个客户端可向同一后端上传且各有 outbox；`X-Device-Id` 当前只写日志，未持久化、不可筛选，聚合统计也没有设备维度 |
 | 用户界面 | 🟡 Web 已有、原生客户端 GUI 缺失 | 服务端已经是 FastAPI；已有 React/Vite SPA（时间轴、搜索、设置、Agent、报告、审计等），但没有设备管理页，双进程客户端也没有完整桌面配置/诊断界面 |
 | Classifier V2 | ⚠️ 未实现 | 225 帧校准支持保守 KNN 加速器方向；正式设计、代码和生产验证均未开始 |
@@ -56,13 +56,13 @@ Windows PC B（独立 device_id / token / outbox）──┘
 
 只要小主机能稳定在线，它继续做 canonical server；若它无法常开，可以把服务端整体迁到另一台常开电脑，但任一时刻仍只保留一个可写事实源。当前没有双服务端复制、冲突解决或离线合库能力。若第二台电脑不是 Windows，现有采集客户端不能直接使用，它只能承担服务端/浏览器角色。
 
-#### A. 先做只读恢复审计，不部署
+#### A. 收口本机 Web gateway 与自动发布
 
-- **已核验**：小主机 SSH 开放；旧 `GTi13-Ultra` alias 固定为无权登录的 `yuki`，部署用户 `vanilla` 可登录。`timetrace-server` active、机内 healthz 200、三个 frpc 进程存在、公网 healthz 502、磁盘剩余约 173GB；运行仓库为 `9060941`，工作树只有一个未跟踪的 `.env.bak.*` 文件。本轮未 fetch/pull/restart/写远端文件。
-- **Next**：先修正文档/本机 SSH alias 的用户名，再只读定位“frpc 进程存在但公网 502”的断点；继续盘点数据库/截图体积、最后一条记录时间，以及两台电脑各自 outbox 的条数、最老记录与字节数。
-- **Done when**：明确 canonical server 放在哪台机器；已有数据完成可恢复备份；健康检查通过；知道停机期间是否存在 backlog、当前存储余量和模型可用状态。
-- **Evidence**：把命令、关键输出、时间戳和选定拓扑写入新的 `devlogs/infra/archive-*.md`；不把密钥、截图内容或公网凭据写进日志。
-- **Rollback**：本阶段不改数据库、不拉代码、不重启部署；发现磁盘、时间或数据异常就停止恢复动作。
+- **已核验**：canonical server 继续放在 `yukirin-server`；后端只听 8765 loopback，nginx 只听 8080 loopback；Cloudflare Tunnel 是正式 Web 运行入口，2v4G FRP SSH 是部署入口，Puck/xcy 均退出目标拓扑。运行仓库为生产镜像 `9060941`，未跟踪 `.env.bak.*` 不阻塞 reset，但后续应移出仓库目录妥善保管。
+- **Next**：在开发仓库迁移 `deploy.yml`：同一不可变 SHA 先部署后端，再发布 SPA 到 `/srv/timetrace/web/releases/<sha>` 并原子切换 `current`；本机 8080 冒烟通过后，才把 Tunnel 从 8765 切到 8080。随后继续盘点数据库/截图体积、最后一条记录时间，以及两台电脑各自 outbox。
+- **Done when**：Actions 不再引用 `XCY_*`；真实 SPA 与 API 经本机 nginx 全链路通过；公网首页、登录、MCP/流式接口通过；回滚 release 与 Tunnel 入口均有明确步骤。
+- **Evidence**：Actions run、release SHA/current 链接、本机与公网探针写入新的 `devlogs/infra/archive-*.md`；不记录密钥、Tunnel token、截图内容或公网凭据。
+- **Rollback**：`current` 指回上一 release；Cloudflare Tunnel 指回 `http://localhost:8765`。不手工修改生产 Git 镜像或跳过工作流重启服务。
 
 #### B. 第二台电脑接入前，先让设备身份成为数据
 
@@ -212,7 +212,7 @@ Windows PC B（独立 device_id / token / outbox）──┘
 2. 等待**该 SHA** 的 main CI 全绿，不能 push main 后立即推进 deploy。
 3. 运行主机 readiness gate：确认小主机在线、FRP/SSH 可达、磁盘/备份/模型状态正常；任一不满足就停止，保持 `deploy` 不动。
 4. 确认 `origin/deploy` 是该 main SHA 的祖先，只做 fast-forward：`git push origin main:deploy`。
-5. deploy workflow 让后端与 `publish-frontend` 使用同一个不可变 SHA 独立执行；两个 job 必须都成功，不能用前端成功掩盖后端失败。
+5. deploy workflow 使用同一个不可变 SHA：后端部署与 healthz 先成功，`publish-frontend` 才上传不可变 release 并原子切换 `current`；任一步失败都保持上一套完整 SPA 可用。
 6. 验证 `/healthz`、公网首页和至少一个受鉴权 API，再宣布发布完成。
 
 部署机只是 `origin/deploy` 的镜像，不在部署机上手工 `pull/reset/restart`。生产发布统一走 `.github/workflows/deploy.yml`；LM Studio 模型装载是工作流之外的唯一运维例外。

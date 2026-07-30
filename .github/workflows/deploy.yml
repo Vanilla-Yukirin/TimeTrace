@@ -1,5 +1,5 @@
 # =============================================================================
-# deploy.yml — GitOps production deploy: backend over FRP SSH + SPA to xcy.
+# deploy.yml — GitOps production deploy: backend + SPA over the same FRP SSH.
 # Companion docs:
 #
 #   devlogs/infra/archive-202605161000-deployment-architecture.md
@@ -17,6 +17,12 @@
 # `ssh -p FRP_PORT vanilla@cloud_ip` lands you straight on the home box.
 # The cloud server is a tunnel endpoint only — nothing runs there.
 #
+# Runtime web traffic is a separate outbound-only path:
+#
+#   browser ─► Cloudflare Edge ─► Cloudflare Tunnel ─► home nginx :8080
+#                                                        ├─ SPA release
+#                                                        └─ API :8765
+#
 # === Backend self-fetching deploy.sh (no backend checkout) ====================
 # A tiny resolver job exports the trigger's already-pinned commit SHA. The
 # backend deploy job itself does not clone the repo. It only:
@@ -27,8 +33,9 @@
 #
 # The private repo must already be cloned and authenticated on the box. The
 # deploy job fetches the resolved SHA, checks out that SHA's deploy.sh, and
-# passes the same SHA into the script. The frontend job checks out that exact
-# SHA on the runner to build the SPA.
+# passes the same SHA into the script. After the backend health check passes,
+# the frontend job checks out that exact SHA, builds the SPA, uploads it to an
+# immutable release directory, and atomically flips nginx's `current` symlink.
 #
 # === Trigger ==================================================================
 # Two ways in:
@@ -58,7 +65,7 @@
 #   - change the repo string in `if:` below
 #   - configure the 4 secrets in their own repo settings
 #
-# === Required secrets (4 backend + 3 frontend) ================================
+# === Required secrets (shared by backend + frontend) ==========================
 # Configure under repo Settings → Secrets and variables → Actions:
 #
 #   DEPLOY_SSH_KEY            ed25519 private key (no passphrase) whose .pub
@@ -74,16 +81,9 @@
 #                             reverse-tunneled to the home box's sshd:22
 #                             (e.g. 10089). This is what `-p` uses.
 #
-# publish-frontend job (SPA → xcy reverse-proxy VPS docroot):
-#
-#   XCY_SSH_KEY               ed25519 private key for the DEDICATED low-priv
-#                             `ghdeploy` user on xcy (owns ONLY the frontend
-#                             docroot, no sudo). Deliberately NOT root: a leaked
-#                             key swaps static files, it does not take the
-#                             reverse-proxy box.
-#   XCY_KNOWN_HOSTS           `ssh-keyscan -p 22000 -t ed25519 <xcy-ip>` line.
-#   XCY_TARGET                "ghdeploy@<xcy-ip>" (user@host; port is the
-#                             XCY_PORT env below).
+# The frontend job deliberately reuses these four secrets: it reaches the same
+# home deployment account and writes only below /srv/timetrace/web, which that
+# account owns. Build commands finish BEFORE the SSH key is loaded.
 #
 # === Env vars on target (NOT touched by this workflow) =======================
 # Server config like VLM API keys lives in ~/Github/TimeTrace/.env on the target.
@@ -203,35 +203,34 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # publish-frontend — build the SPA on the runner and push it to the xcy
-  # reverse-proxy VPS docroot (which is what timetrace.yukirin.me serves).
+  # publish-frontend — build the SPA on the runner and publish an immutable
+  # release to the home nginx webroot.
   #
   # Exists because this used to be a MANUAL `npm run build && scp` step that
   # nobody remembered to run — the public frontend once sat 3 weeks stale while
   # the backend deployed on every push. Workflow-izing it turns "must remember"
   # into "can't forget" (same discipline the backend job already follows).
   #
-  # Runs PARALLEL to the backend job, independent failure domains: a broken
-  # frontend build doesn't block the backend rollout, and vice versa. No path
-  # filter on purpose — build+rsync is minute-scale and idempotent; publishing
-  # every deploy beats guessing whether the diff touched frontend/.
+  # Runs AFTER the backend health check. A failed backend rollout therefore
+  # leaves the previous SPA release active instead of exposing a new UI against
+  # an old API. No path filter on purpose — build+rsync is minute-scale and
+  # idempotent; publishing every deploy beats guessing whether the diff touched
+  # frontend/.
   #
-  # Update order matters: hashed assets first, index.html LAST — a visitor
-  # mid-publish gets either the old page (old assets still present; rsync
-  # doesn't delete) or the new page (new assets already there), never a page
-  # pointing at missing chunks. nginx serves index.html with
-  # Cache-Control: no-cache so browsers pick up the new pointer on reload.
+  # Each SHA gets /srv/timetrace/web/releases/<sha>. nginx serves only the
+  # `current` symlink. Upload + validation happen off-path; `mv -T` flips the
+  # symlink atomically, so visitors see either the complete old release or the
+  # complete new one. Old releases remain available for manual rollback.
   #
   # Emergency manual fallback (CI down): deploy/publish-frontend.sh.
   # ---------------------------------------------------------------------------
   publish-frontend:
     if: github.repository == 'Vanilla-Yukirin/TimeTrace' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
-    needs: resolve-ref
+    needs: [resolve-ref, deploy]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      XCY_PORT: "22000"
-      DOCROOT: /var/www/timetrace.yukirin.me
+      WEB_ROOT: /srv/timetrace/web
 
     steps:
       - name: Checkout
@@ -254,25 +253,70 @@ jobs:
       - name: Set up SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.XCY_SSH_KEY }}
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-      - name: Trust xcy host key
+      - name: Trust target host key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.XCY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Publish to xcy docroot (assets first, index.html last)
+      - name: Publish immutable SPA release to home nginx
         env:
-          TARGET: ${{ secrets.XCY_TARGET }}
+          TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
+          TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
+          REF: ${{ needs.resolve-ref.outputs.sha }}
         run: |
           set -euo pipefail
-          RSH="ssh -p ${XCY_PORT} -o StrictHostKeyChecking=yes"
-          # 1) everything except the entry point (hashed assets are new names —
-          #    old ones stay behind for tabs still holding the previous page)
-          rsync -rtz -e "$RSH" --exclude index.html frontend-dist/ "${TARGET}:${DOCROOT}/"
-          # 2) flip the pointer
-          rsync -tz -e "$RSH" frontend-dist/index.html "${TARGET}:${DOCROOT}/index.html"
+          RELEASE="${WEB_ROOT}/releases/${REF}"
+          RSH="ssh -p ${TARGET_PORT} -o StrictHostKeyChecking=yes"
+
+          # WEB_ROOT/releases is provisioned with nginx-readable ownership.
+          # New release dirs are 755 beneath that protected parent so nginx's
+          # www-data worker can traverse them without granting CI sudo.
+          ssh \
+            -p "${TARGET_PORT}" \
+            -o StrictHostKeyChecking=yes \
+            "${TARGET}" \
+            "set -e; test -d '${WEB_ROOT}/releases'; install -d -m 755 '${RELEASE}'"
+
+          rsync -rtz -e "$RSH" frontend-dist/ "${TARGET}:${RELEASE}/"
+
+          # Validate the uploaded release, then atomically replace `current`.
+          # If the nginx smoke test fails after the flip, restore the previous
+          # symlink before returning non-zero.
+          ssh \
+            -p "${TARGET_PORT}" \
+            -o StrictHostKeyChecking=yes \
+            "${TARGET}" \
+            bash -s -- "${WEB_ROOT}" "${REF}" <<'REMOTE'
+          set -euo pipefail
+          web_root=$1
+          ref=$2
+          release="${web_root}/releases/${ref}"
+          next_link="${web_root}/.current-${ref}"
+          previous=$(readlink "${web_root}/current")
+
+          test -s "${release}/index.html"
+          grep -F 'id="root"' "${release}/index.html" >/dev/null
+          test -n "$(find "${release}/assets" -type f -print -quit)"
+
+          ln -sfn "releases/${ref}" "${next_link}"
+          mv -Tf "${next_link}" "${web_root}/current"
+
+          if ! {
+            curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' \
+              'http://127.0.0.1:8080/healthz' >/dev/null &&
+            curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' \
+              'http://127.0.0.1:8080/' | grep -F 'id="root"' >/dev/null
+          }; then
+            echo "nginx smoke test failed; restoring ${previous}" >&2
+            ln -sfn "${previous}" "${next_link}"
+            mv -Tf "${next_link}" "${web_root}/current"
+            exit 1
+          fi
+          REMOTE
+
           echo "Published bundle: $(grep -oE 'index-[A-Za-z0-9_-]+\.js' frontend-dist/index.html | head -1)"
 
       - name: Summary
@@ -281,5 +325,6 @@ jobs:
           {
             echo "## Frontend publish summary"
             echo "- Ref: ${{ needs.resolve-ref.outputs.sha }}"
+            echo "- Target: \`${WEB_ROOT}/releases/${{ needs.resolve-ref.outputs.sha }}\`"
             echo "- Outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"

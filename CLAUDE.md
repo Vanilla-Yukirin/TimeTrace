@@ -72,7 +72,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 
 **前后端契约**：
 
-- 前端**不被** Python 后端托管。`/thumbs/{path}` 与 `/blob/{path}` 是受 `require_principal` 保护的 `FileResponse` 路由，不是裸 `StaticFiles`；前端开发时由 Vite 代理 API，生产静态文件由 xcy nginx 托管
+- 前端**不被** Python 后端托管。`/thumbs/{path}` 与 `/blob/{path}` 是受 `require_principal` 保护的 `FileResponse` 路由，不是裸 `StaticFiles`；前端开发时由 Vite 代理 API，生产静态文件由 `yukirin-server` 的 loopback-only nginx 托管
 - 缩略图 URL 模式：`/thumbs/{path.replace(/\\/g, '/')}`（windows 反斜杠转正斜杠）
 - 列表项已包含 `vlm_desc / category_final / app_name / window_title / url`，详情切换无需再请求
 
@@ -102,9 +102,9 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 
 - **GitHub identity**：仓库是 `Vanilla-Yukirin/TimeTrace`。本地 git config 的 `Yuki` 只是临时本地标签，不要混
 - **部署目标**：家里 Ubuntu 小主机（NAT 后），CI 经云服务器 FRP 隧道 SSH 进；详见 [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
-- **公网入口**：xcy nginx VPS 托管 SPA 并反代受登录/bearer 保护的 API；后端仍跑在家里 box，通过 FRP 接入。敏感接口必须经过现有鉴权，MCP 不返回原始截图
+- **公网入口**：Cloudflare Edge → outbound Cloudflare Tunnel → `yukirin-server` 的 `127.0.0.1:8080` nginx；nginx 从 `/srv/timetrace/web/current` 托管 SPA，并把 `/v1`、`/mcp`、`/healthz`、`/thumbs`、`/blob` 等路径反代到 `127.0.0.1:8765`。Puck/xcy 均不在 TimeTrace 正式运行链路中；敏感接口仍必须经过现有鉴权，MCP 不返回原始截图
 - **CI/CD 触发**：`push` 到 `deploy` 分支自动部署 + `workflow_dispatch` 手动兜底。手动部署用 `gh workflow run deploy.yml --ref <branch|tag>`；GitHub 在触发时把该 ref 固定为 `github.sha`，排队期间不会漂移。Fork 安全 = repo guard + secret 不被 fork 继承
-- **部署模型（唯一长期模型）**：`main` 是开发主干，`deploy` 是只接受 main fast-forward 的生产指针；发布命令是 `git push origin main:deploy`，deploy.yml 随后让 box 镜像 `origin/deploy`，并在 xcy 发布 SPA。`feature/refactor-split` 是重构期历史长分支，main 追平后停止继续开发并进入退役。部署机是 deployment mirror 不是 dev box，本地分支名不代表开发分支；判断真实状态看 `origin/*`
+- **部署模型（唯一长期模型）**：`main` 是开发主干，`deploy` 是只接受 main fast-forward 的生产指针；发布命令是 `git push origin main:deploy`。deploy.yml 经 2v4G FRP SSH 先让 box 镜像同一不可变 SHA 并通过后端 healthz，再把该 SHA 的 SPA 发布到 `/srv/timetrace/web/releases/<sha>`，验证后原子切换 `current`。`feature/refactor-split` 是重构期历史长分支，main 追平后停止继续开发并进入退役。部署机是 deployment mirror 不是 dev box，本地分支名不代表开发分支；判断真实状态看 `origin/*`
 - **部署一律走工作流，禁止手动 ssh 改部署机 git/重启**：不要 `ssh <box> 'git reset/pull/checkout'` 或手动 `systemctl restart` —— 那样没 CI 留痕、跳过 healthz 探针 / systemd unit 同步 / 沙箱目录预建。唯一例外是 deploy.sh **不管的** LM Studio 模型加载（`lms load/unload/ps`），这个本就在部署流程之外，可手动。
 - **systemd 用户**：`systemctl --user`（不 root）+ `loginctl enable-linger`，service 模板在 `deploy/timetrace-server.service`
 

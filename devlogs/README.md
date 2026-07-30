@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-07-21
+**最后更新：** 2026-07-31
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -108,6 +108,8 @@ devlogs/
 | [archive-202606021757-agent-arch-review-phase0-gate.md](infra/archive-202606021757-agent-arch-review-phase0-gate.md) | **评审隔壁 agent 4 篇架构书**（金字塔 L0–L4 + 瘦路由 agent）：14-agent workflow(~890K token，4 篇逐篇 reviewer + 完备性 critic + 2 设计带对抗校验 + 综合)判**四篇一致 sound-with-gaps**——优点真(write-time amortization 是 token 墙正解、代码引用逐条复核为真)，但 4 个线上真问题里 3 个住金字塔之下不修、第 4 个(时长膨胀)被主动继承且**提议的 SUM-invariant 会把膨胀认证成"正确"**；四篇通病=时长封顶被继承/NULL≠uncategorized 没区分会冻进 digest/3063 遗留无 L1 回填路径/报告臆造 persona 没碰；codebase 不符抽样=MCP 实 7 工具(含 ask_agent)非文档说的"6 闭包"；过度设计=L4 周月 digest/deep_scan map-reduce/双 token-budget SSE。critic 判**建但 gate 在 Phase 0 数据卫生之后**(跑 cap/回填 NULL/种 RuleSet/重写 persona——正好是让报告准确的最小集，主 agent 当晚已全做)；用户拍板金字塔+给 4 文档补修正**周三 2026-06-03 演示后再开始**，演示前冻结 |
 | [archive-202606030458-mcp-public-deploy-firewall.md](infra/archive-202606030458-mcp-public-deploy-firewall.md) | **公网 MCP 接入打通 + 部署链路真因排查**：核实 MCP 是真实现(`mcp_layer/server.py` FastMCP 6 工具挂 `/mcp/`，`mcp_layer/tools.py` 旧 stub 是死代码、CLAUDE.md 那条已过期)；公网首发 `421 Invalid Host header` 定位=FastMCP 默认绑 127.0.0.1 时静默开 DNS-rebinding 防护只放 localhost Host→公网域名被拒(token 已穿过 bearer 故是 421 非 401)，修法 `build_mcp_server` 显式传 `TransportSecuritySettings` allowlist `timetrace.yukirin.me`+localhost(`c2d94d8`)；工作流 deploy 连败 `Connection closed by 121.43.33.13:10089`→用户授权内网 SSH(`GTi13-Ultra`=192.168.2.105，API 绑 127.0.0.1 故内网直打 :8765 不通)手跑 `deploy.sh` 落 d9baf54；真实 mcp SDK 客户端端到端验证公网 initialize+6 工具+`get_recent_activity` 真数据全通；**含一次误判复盘**：我归因部署恢复=frpc@2v4G 重启+竞态(frpc 日志 `start proxy success` 全程健康)，**用户撞防火墙发现真因=2v4G 中继阿里云安全组没放行 10089**(疑似临时规则到期=用户问的"定时规则")；附 PowerShell `\` 非续行符致 `claude mcp add` 漏 `--header` 的修法(remove+单行重加) |
 | [archive-202607200155-frontend-publish-workflow.md](infra/archive-202607200155-frontend-publish-workflow.md) | LLM 统一账本(llm_log.py `timed_chat_completion`+进程级 sink，实测思考税 ~2500 tokens/次)+金字塔日视图两面板上线(38a6f9a/729fecc)；**根治安网前端三周 stale**：纯手动 scp 没人记得跑→deploy.yml 加 `publish-frontend` 并行 job(xcy 专用低权 ghdeploy 无 sudo、root 钥匙不进 secrets、hash 资产先传 index.html 最后、nginx index.html no-cache)，run 28813718613 双 job 绿、CI 自证首发布；附 argparse `-` 开头随机 token flaky 修 + box 改名 yukirin-server |
+| [archive-202607302346-main-ci-topology.md](infra/archive-202607302346-main-ci-topology.md) | 审查前端改动并修复 5 类行为风险，分段 commit 后 fast-forward 合入 `main`；CI 537 passed，同时确认 SPA 发布到 xcy 但公网 Tunnel 直达家中 FastAPI 的拓扑错位 |
+| [archive-202607310055-home-web-gateway-deploy-workflow.md](infra/archive-202607310055-home-web-gateway-deploy-workflow.md) | 将 SPA 自动发布从 xcy 迁回家庭 nginx：复用 `DEPLOY_*` FRP SSH、后端健康后发布同 SHA 不可变 release、原子切换 `current` 且探针失败自动回滚；同步 loopback nginx 模板、前端 CI 与活文档，尚未切 Tunnel/推进 deploy |
 
 ---
 
