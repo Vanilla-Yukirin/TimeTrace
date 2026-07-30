@@ -86,7 +86,9 @@
   --cat-red: #f87171;
   --cat-slate: #94a3b8;
 
-  /* timeline canvas (read by the renderer via getComputedStyle) */
+  /* timeline canvas — mirrored by TIMELINE_PALETTES in
+     components/timeline/useCanvasRenderer.ts (canvas can't read CSS vars);
+     change both or they drift */
   --timeline-bg: #10131d;
   --timeline-grid: rgba(255, 255, 255, 0.055);
   --timeline-axis: #5d6781;
@@ -102,6 +104,12 @@
     radial-gradient(960px 520px at -10% 112%, rgba(139, 92, 246, 0.10), transparent 55%);
   /* sakura petal tint (decorative SakuraPetals layer) */
   --sakura: #f7a8cf;
+
+  /* modal / drawer scrim */
+  --scrim: rgba(4, 6, 12, 0.6);
+
+  /* mono stack — single source for .font-mono + all var(--font-mono) readers */
+  --font-mono: 'JetBrains Mono', 'Consolas', 'Fira Code', ui-monospace, monospace;
 
   --sonner-theme: dark;
 }
@@ -170,6 +178,8 @@
     radial-gradient(920px 520px at -8% 110%, rgba(244, 114, 182, 0.14), transparent 55%);
   --sakura: #ec77aa;
 
+  --scrim: rgba(30, 35, 60, 0.35);
+
   --sonner-theme: light;
 }
 
@@ -203,7 +213,245 @@ body {
 }
 
 .font-mono {
-  font-family: 'JetBrains Mono', 'Consolas', 'Fira Code', monospace;
+  font-family: var(--font-mono);
+}
+
+/* Visually hidden but screen-reader reachable (replaces per-file srOnly objects) */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ============================================================================
+ * .tt-* component classes
+ * ----------------------------------------------------------------------------
+ * Inline style can't express :hover/:focus-visible/:disabled, so the
+ * interactive primitives live here as real CSS. All colors read design
+ * tokens, so both themes work without any per-component overrides.
+ * Components in components/ui/ are thin wrappers around these classes.
+ * ==========================================================================*/
+
+.tt-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 16px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--grad-accent);
+  color: var(--accent-contrast);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: var(--shadow-glow);
+  transition: filter 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+.tt-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.tt-btn-primary:active:not(:disabled) {
+  filter: brightness(0.95);
+}
+.tt-btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.tt-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid var(--bg-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.tt-btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tt-btn-ghost:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.tt-btn-ghost[data-active='true'] {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* danger variant of the ghost button — same shape, error-tinted */
+.tt-btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid var(--bg-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--error);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.tt-btn-danger:hover:not(:disabled) {
+  background: var(--error-bg);
+  border-color: color-mix(in srgb, var(--error) 35%, transparent);
+}
+.tt-btn-danger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Square icon-only button sharing the ghost language */
+.tt-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--bg-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.tt-btn-icon:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tt-btn-icon:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tt-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--bg-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-size: 13.5px;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.tt-input::placeholder {
+  color: var(--text-muted);
+}
+.tt-input:hover:not(:disabled):not(:focus) {
+  border-color: var(--bg-border-strong);
+}
+.tt-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.tt-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Soft color-mixed pill. The tint color comes from --chip-color (set inline
+   by the Chip component / callers); falls back to the accent. */
+.tt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--chip-color, var(--accent)) 30%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--chip-color, var(--accent)) 13%, transparent);
+  color: color-mix(in srgb, var(--chip-color, var(--accent)) 78%, var(--text-primary));
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.tt-chip-solid {
+  background: var(--chip-color, var(--accent));
+  border-color: transparent;
+  color: var(--accent-contrast);
+}
+/* clickable chip variant (filters / pagination) */
+button.tt-chip {
+  cursor: pointer;
+  background: var(--bg-surface);
+  border-color: var(--bg-border);
+  color: var(--text-secondary);
+  font-family: inherit;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+button.tt-chip:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+button.tt-chip[data-active='true'] {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.tt-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Sidebar / list navigation row (Link or button) */
+.tt-nav-row {
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.tt-nav-row:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tt-nav-row[data-active='true']:hover {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+/* Loading placeholder shimmer */
+.tt-skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--bg-raised) 25%,
+    var(--bg-hover) 50%,
+    var(--bg-raised) 75%
+  );
+  background-size: 200% 100%;
+  animation: tt-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes tt-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tt-skeleton { animation: none; }
 }
 
 /* Brand gradient text — logo / section titles */
