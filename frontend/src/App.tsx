@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { Toaster } from 'sonner'
@@ -7,18 +8,33 @@ import { AuthProvider } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { useTheme } from './contexts/theme'
 import { SakuraPetals } from './components/brand/SakuraPetals'
+import { Skeleton } from './components/ui/Skeleton'
 import { UnauthorizedError } from './lib/api'
 import { queryKeys } from './lib/queryKeys'
 import { ChangePasswordPage } from './pages/ChangePasswordPage'
 import { LoginPage } from './pages/LoginPage'
 import { TimelinePage } from './pages/TimelinePage'
-import { AgentPage } from './pages/AgentPage'
-import { DashboardPage } from './pages/DashboardPage'
-import { AuditPage } from './pages/AuditPage'
-import { LlmLogPage } from './pages/LlmLogPage'
-import { PyramidPage } from './pages/PyramidPage'
-import { SearchPage } from './pages/SearchPage'
-import { SettingsPage } from './pages/SettingsPage'
+
+// Route-level code splitting: the timeline is the landing page and stays in
+// the main bundle; everything else (Dashboard pulls react-markdown, AgentPage
+// pulls the mermaid-capable Markdown renderer, …) loads on first visit.
+const AgentPage = lazy(() => import('./pages/AgentPage').then((m) => ({ default: m.AgentPage })))
+const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })))
+const AuditPage = lazy(() => import('./pages/AuditPage').then((m) => ({ default: m.AuditPage })))
+const LlmLogPage = lazy(() => import('./pages/LlmLogPage').then((m) => ({ default: m.LlmLogPage })))
+const PyramidPage = lazy(() => import('./pages/PyramidPage').then((m) => ({ default: m.PyramidPage })))
+const SearchPage = lazy(() => import('./pages/SearchPage').then((m) => ({ default: m.SearchPage })))
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+
+function PageFallback() {
+  return (
+    <div style={{ flex: 1, padding: '24px 22px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <Skeleton style={{ height: 28, width: '40%' }} />
+      <Skeleton style={{ height: 200 }} />
+      <Skeleton style={{ height: 120 }} />
+    </div>
+  )
+}
 
 const queryClient = new QueryClient({
   // Global 401 recovery for the CURRENT tab: a 'storage' event never fires in
@@ -74,16 +90,18 @@ export function App() {
               element={
                 <RequireAuth>
                   <MainLayout>
-                    <Routes>
-                      <Route path="/" element={<TimelinePage />} />
-                      <Route path="/agent" element={<AgentPage />} />
-                      <Route path="/dashboard" element={<DashboardPage />} />
-                      <Route path="/audit" element={<AuditPage />} />
-                      <Route path="/pyramid" element={<PyramidPage />} />
-                      <Route path="/llm-log" element={<LlmLogPage />} />
-                      <Route path="/search" element={<SearchPage />} />
-                      <Route path="/settings" element={<SettingsPage />} />
-                    </Routes>
+                    <Suspense fallback={<PageFallback />}>
+                      <Routes>
+                        <Route path="/" element={<TimelinePage />} />
+                        <Route path="/agent" element={<AgentPage />} />
+                        <Route path="/dashboard" element={<DashboardPage />} />
+                        <Route path="/audit" element={<AuditPage />} />
+                        <Route path="/pyramid" element={<PyramidPage />} />
+                        <Route path="/llm-log" element={<LlmLogPage />} />
+                        <Route path="/search" element={<SearchPage />} />
+                        <Route path="/settings" element={<SettingsPage />} />
+                      </Routes>
+                    </Suspense>
                   </MainLayout>
                 </RequireAuth>
               }
