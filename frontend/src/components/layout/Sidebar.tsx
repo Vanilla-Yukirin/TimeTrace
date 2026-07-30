@@ -1,36 +1,14 @@
 import * as Dialog from '@radix-ui/react-dialog'
 import { Link, useLocation } from 'react-router-dom'
-import { Clock, Search, Settings, Sparkles, MessageCircle, LayoutDashboard, ScrollText, Layers, Cpu } from 'lucide-react'
+import { Sparkles } from 'lucide-react'
 import { Logo } from '@/components/brand/Logo'
 import { CatMascot } from '@/components/brand/CatMascot'
-
-const NAV = [
-  { to: '/', icon: Clock, label: '时间轴' },
-  { to: '/agent', icon: MessageCircle, label: '问问' },
-  { to: '/dashboard', icon: LayoutDashboard, label: '看板' },
-  { to: '/pyramid', icon: Layers, label: '金字塔' },
-  { to: '/audit', icon: ScrollText, label: '日志' },
-  { to: '/llm-log', icon: Cpu, label: 'LLM' },
-  { to: '/search', icon: Search, label: '搜索' },
-  { to: '/settings', icon: Settings, label: '设置' },
-]
+import { NAV_ITEMS } from './nav'
 
 interface SidebarProps {
   isMobile?: boolean
   open?: boolean
   onClose?: () => void
-}
-
-const srOnly: React.CSSProperties = {
-  position: 'absolute',
-  width: 1,
-  height: 1,
-  padding: 0,
-  margin: -1,
-  overflow: 'hidden',
-  clip: 'rect(0, 0, 0, 0)',
-  whiteSpace: 'nowrap',
-  border: 0,
 }
 
 export function Sidebar({ isMobile = false, open = false, onClose }: SidebarProps) {
@@ -43,7 +21,7 @@ export function Sidebar({ isMobile = false, open = false, onClose }: SidebarProp
       </div>
 
       <nav aria-label="主导航" style={{ padding: '4px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-        {NAV.map(({ to, icon: Icon, label }) => {
+        {NAV_ITEMS.map(({ to, icon: Icon, label }) => {
           const active = pathname === to
           return (
             <Link
@@ -51,7 +29,8 @@ export function Sidebar({ isMobile = false, open = false, onClose }: SidebarProp
               to={to}
               aria-current={active ? 'page' : undefined}
               onClick={isMobile ? onClose : undefined}
-              className="relative flex items-center gap-2.5 transition-colors"
+              className="tt-nav-row relative flex items-center gap-2.5"
+              data-active={active || undefined}
               style={{
                 padding: '11px 12px',
                 borderRadius: 'var(--radius-md)',
@@ -131,7 +110,7 @@ export function Sidebar({ isMobile = false, open = false, onClose }: SidebarProp
       <Dialog.Portal>
         <Dialog.Overlay
           className="tt-overlay"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.5)', zIndex: 40 }}
+          style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 40 }}
         />
         <Dialog.Content
           className="tt-drawer-content flex flex-col"
@@ -151,7 +130,7 @@ export function Sidebar({ isMobile = false, open = false, onClose }: SidebarProp
             outline: 'none',
           }}
         >
-          <Dialog.Title style={srOnly}>导航菜单</Dialog.Title>
+          <Dialog.Title className="sr-only">导航菜单</Dialog.Title>
           {content}
         </Dialog.Content>
       </Dialog.Portal>

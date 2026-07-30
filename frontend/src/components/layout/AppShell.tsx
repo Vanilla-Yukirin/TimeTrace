@@ -4,14 +4,6 @@ import { getMobileMediaQuery, useIsMobile } from '@/hooks/useIsMobile'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 
-export function AppShell({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {children}
-    </div>
-  )
-}
-
 /** The authed app shell: top bar + (desktop) static sidebar / (mobile) slide-in
  *  drawer + main content. The mobile drawer open-state lives here because the
  *  hamburger (in TopBar) and the drawer (Sidebar) must share it. */

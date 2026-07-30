@@ -1,24 +1,18 @@
 import { useNavigate, useLocation, Link } from 'react-router-dom'
-import { Clock, LogOut, Menu, Search, Settings, MessageCircle, LayoutDashboard } from 'lucide-react'
+import { LogOut, Menu, Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, broadcastKick } from '@/lib/api'
 import { useAuth } from '@/contexts/auth'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
-
-/** Per-route title shown on the left of the bar. */
-const TITLES: Record<string, { icon: typeof Clock; label: string }> = {
-  '/': { icon: Clock, label: '时间轴' },
-  '/agent': { icon: MessageCircle, label: '问问' },
-  '/dashboard': { icon: LayoutDashboard, label: '看板' },
-  '/search': { icon: Search, label: '搜索' },
-  '/settings': { icon: Settings, label: '设置' },
-}
+import { IconButton } from '@/components/ui/IconButton'
+import { Divider } from '@/components/ui/PageShell'
+import { navTitleFor } from './nav'
 
 export function TopBar({ isMobile = false, onMenu }: { isMobile?: boolean; onMenu?: () => void }) {
   const { user, setUser } = useAuth()
   const navigate = useNavigate()
   const { pathname } = useLocation()
-  const title = TITLES[pathname] ?? TITLES['/']
+  const title = navTitleFor(pathname)
   const TitleIcon = title.icon
 
   async function onLogout() {
@@ -60,6 +54,7 @@ export function TopBar({ isMobile = false, onMenu }: { isMobile?: boolean; onMen
           <button
             onClick={onMenu}
             aria-label="打开菜单"
+            className="tt-nav-row"
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -104,6 +99,7 @@ export function TopBar({ isMobile = false, onMenu }: { isMobile?: boolean; onMen
             to="/search"
             title="搜索活动"
             aria-label="搜索活动"
+            className="tt-nav-row"
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -126,14 +122,7 @@ export function TopBar({ isMobile = false, onMenu }: { isMobile?: boolean; onMen
 
           <ThemeToggle />
 
-          <div
-            style={{
-              width: 1,
-              height: 22,
-              background: 'var(--bg-border)',
-              margin: '0 2px',
-            }}
-          />
+          <Divider vertical style={{ height: 22, margin: '0 2px' }} />
 
           {/* user chip */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -146,7 +135,7 @@ export function TopBar({ isMobile = false, onMenu }: { isMobile?: boolean; onMen
                 height: 30,
                 borderRadius: 'var(--radius-pill)',
                 background: 'var(--grad-accent)',
-                color: '#fff',
+                color: 'var(--accent-contrast)',
                 fontSize: 13,
                 fontWeight: 700,
                 boxShadow: 'var(--shadow-sm)',
@@ -162,25 +151,14 @@ export function TopBar({ isMobile = false, onMenu }: { isMobile?: boolean; onMen
             </span>
           </div>
 
-          <button
+          <IconButton
             onClick={onLogout}
             title="退出登录"
             aria-label="退出登录"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 34,
-              height: 34,
-              borderRadius: 'var(--radius-md)',
-              background: 'var(--bg-raised)',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--bg-border)',
-              cursor: 'pointer',
-            }}
+            style={{ background: 'var(--bg-raised)' }}
           >
             <LogOut size={15} />
-          </button>
+          </IconButton>
         </div>
       )}
     </header>
