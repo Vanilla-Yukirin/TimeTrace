@@ -164,6 +164,10 @@ mv -Tf "${next_link}" "${current_link}"
 if systemctl --user is-enabled --quiet "${service}"; then
   systemctl --user disable "${service}"
 fi
+# The legacy uv launcher exits 143 after its graceful SIGTERM path, which
+# systemd records as failed even though shutdown completed cleanly. Keep the
+# retired rollback unit visible as inactive rather than leaving a false alarm.
+systemctl --user reset-failed "${service}" || true
 
 trap - ERR
 log "deployed ${image}:${ref}"
