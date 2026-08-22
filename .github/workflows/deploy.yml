@@ -93,7 +93,7 @@ jobs:
       TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
       TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
       REF: ${{ needs.resolve-ref.outputs.sha }}
-      CONTROL_PATH: ${{ runner.temp }}/timetrace-ssh-%C
+      CONTROL_PATH: /tmp/timetrace-ssh-${{ github.run_id }}-${{ github.run_attempt }}-%C
       REMOTE_DOCKER_CONFIG: /tmp/timetrace-ghcr-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout deployment files
@@ -185,7 +185,7 @@ jobs:
       TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
       TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
       REF: ${{ needs.resolve-ref.outputs.sha }}
-      CONTROL_PATH: ${{ runner.temp }}/timetrace-ssh-%C
+      CONTROL_PATH: /tmp/timetrace-ssh-${{ github.run_id }}-${{ github.run_attempt }}-%C
     steps:
       - name: Checkout immutable release
         uses: actions/checkout@v4
