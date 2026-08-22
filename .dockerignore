@@ -1,5 +1,4 @@
-# Don't ship caches / build artifacts / dev-only files into the image build
-# context. Smaller context = faster builds.
+# Do not ship caches, artifacts, local state, or development-only files.
 
 # Python
 __pycache__
@@ -21,29 +20,27 @@ htmlcov
 .DS_Store
 Thumbs.db
 
-# Frontend (server image doesn't serve the SPA — Caddy/nginx does)
+# Frontend (the host nginx serves the separately published SPA)
 frontend
 frontend-dist
 node_modules
 
-# Local data + tokens — these come in as bind mounts, never baked.
+# Local data, credentials, and tokens are bind mounts, never image content.
 data
 tokens
 TimeTraceData
 TimeTraceData-archive-*
+.env
+.env.*
+*.log
 
-# Repo metadata + dev-only files
+# Repository metadata and development-only material
 .git
 .github
 .gitignore
-.env
-.env.local
-*.log
-deploy
 devlogs
 docs
 infra
 tests
-README.md
 CLAUDE.md
 LICENSE

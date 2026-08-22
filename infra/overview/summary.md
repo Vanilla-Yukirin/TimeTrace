@@ -40,7 +40,7 @@ TimeTrace 是一个 **Windows Only、本地优先**的桌面活动记忆层。�
 - **登录 + 公网**：bcrypt 用户 + HttpOnly cookie session + bearer token 双通道鉴权（`server/auth.py`，`require_principal`）；Cloudflare Tunnel 出站接入家里小主机的 loopback nginx，由 nginx 统一托管 SPA 并反代 API 到 `127.0.0.1:8765`。
 - **分层记忆**：`5min→1h→6h→day→week` 指标与 LLM 叙述自底向上级联，`search_summaries` 可先读 day/week 再按时间窗下钻。
 - **Agent 友好**：MCP 提供检索、统计、分层叙述、标签修改和高层问答；`apply_label` 是唯一写工具。实时清单以 `server/mcp_layer/server.py` 为准。
-- **可观测与发布**：分析审计、LLM 请求账本、金字塔/LLM 页面已上线；`deploy` push 经同一条 FRP SSH 先部署 box 后端，再原子发布同 SHA 的本机 SPA release。
+- **可观测与发布**：分析审计、LLM 请求账本、金字塔/LLM 页面已上线；`deploy` push 先构建 GHCR 不可变 server 镜像，经 FRP SSH 切换 yukirin-server 上的 Compose release，再原子发布同 SHA 的本机 SPA release。数据/token 原位 bind mount，GPU/LM Studio 与 nginx 保持宿主机服务。
 
 ---
 

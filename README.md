@@ -18,7 +18,7 @@
 | 分析 | 本地 VLM 描述、flat-6 分类、审计日志、文本 embedding | Classifier V2 只有校准实验和预备稿，未进生产 |
 | 记忆 | `5min → 1h → 6h → day → week` 指标级联、LLM 叙述、粗到细下钻 | `source_hash` 不包含子叙述文本，手动重叙述父层仍需 `--force` |
 | AI 接口 | Web Agent、报告、MCP、`search_summaries` | 唯一写工具是 `apply_label`，MCP 不返回原始截图；实时工具清单看 `mcp_layer/server.py` |
-| 运维 | 登录鉴权、家里后端部署、Cloudflare Tunnel + nginx、GitHub Actions 前后端同 SHA 发布 | 生产 LLM 单卡串行；客户端公网故障转移仍需专项验证 |
+| 运维 | 登录鉴权、Docker/Compose 后端、Cloudflare Tunnel + nginx、GitHub Actions 前后端同 SHA 发布 | 生产 LLM 单卡串行；客户端公网故障转移仍需专项验证 |
 
 这里的「已上线」表示仓库代码已落地并在个人生产环境跑通过，不等于每项都已经完成通用产品化或长期性能验收。当前真实待办统一维护在 [devlogs/PLAN.md](devlogs/PLAN.md)。
 
@@ -67,7 +67,7 @@ npm run dev          # http://127.0.0.1:5173
 
 ```bash
 uv sync
-uv run timetrace-server                  # 起服务，监听 0.0.0.0:8765
+uv run timetrace-server                  # 起服务，默认监听 127.0.0.1:8765
 ```
 
 首次启动会自动生成一个 bearer token 写到 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600）并打印到日志，**复制这个 token**。
@@ -114,13 +114,17 @@ uv run timetrace-client print-config                # 看实际生效的配置�
 
 ### 部署到家里小主机
 
-当前生产部署：server 跑在家里 Ubuntu 小主机（NAT 后）；公网由 Cloudflare Tunnel 出站接入本机 `127.0.0.1:8080` nginx，nginx 统一托管 SPA 并反代受鉴权保护的 API。推送 `deploy` 分支后，GitHub Actions 经 2v4G FRP SSH 先部署后端，再把同一 SHA 的 SPA 发布到本机不可变 release 并原子切换 `current`；`workflow_dispatch` 是手动兜底。完整部署架构与脚手架见：
+当前生产部署：server 以非 root Docker 容器跑在家里 Ubuntu 小主机（NAT 后）；公网由 Cloudflare Tunnel 出站接入本机 `127.0.0.1:8080` nginx，nginx 统一托管 SPA 并反代受鉴权保护的 API。推送 `deploy` 分支后，GitHub Actions 构建不可变 GHCR 镜像，经 2v4G FRP SSH 让 Compose 原子切换后端，再把同一 SHA 的 SPA 发布到本机不可变 release；`workflow_dispatch` 是手动兜底。
+
+容器仅包含 TimeTrace server。宿主机上的 GPU / LM Studio、nginx 与 Cloudflare Tunnel 不进容器；Compose 使用 host network 访问 LM Studio 的 `127.0.0.1:1234`。现有 `/home/vanilla/TimeTraceData` 和 token 配置目录原位挂载，旧源码仓库保留为首次切换的自动回滚目标。完整部署脚手架见：
 
 - [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
 - [devlogs/infra/archive-202605161015-cicd-workflow.md](devlogs/infra/archive-202605161015-cicd-workflow.md)
-- [`deploy/deploy.sh`](deploy/deploy.sh) — 在小主机上跑的部署脚本（带详尽注释）
-- [`deploy/timetrace-server.service`](deploy/timetrace-server.service) — systemd `--user` 单元模板
-- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — `deploy` push 自动触发，后端健康后发布前端 release，带 fork-safe repo guard
+- [`deploy/Dockerfile`](deploy/Dockerfile) — 多阶段、非 root 的 server 镜像
+- [`deploy/docker-compose.yml`](deploy/docker-compose.yml) — 生产 host-network Compose 与原位数据挂载
+- [`deploy/deploy-container.sh`](deploy/deploy-container.sh) — 首次切换、SQLite 快照、健康检查和自动回滚
+- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — GHCR 镜像发布、容器部署及同 SHA 前端发布
+- [`deploy/deploy.sh`](deploy/deploy.sh) / [`deploy/timetrace-server.service`](deploy/timetrace-server.service) — 已退役的源码部署路径，仅保留作应急参考
 
 ---
 
