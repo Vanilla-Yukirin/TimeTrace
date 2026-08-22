@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-07-31
+**最后更新：** 2026-08-23
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -110,6 +110,7 @@ devlogs/
 | [archive-202607200155-frontend-publish-workflow.md](infra/archive-202607200155-frontend-publish-workflow.md) | LLM 统一账本(llm_log.py `timed_chat_completion`+进程级 sink，实测思考税 ~2500 tokens/次)+金字塔日视图两面板上线(38a6f9a/729fecc)；**根治安网前端三周 stale**：纯手动 scp 没人记得跑→deploy.yml 加 `publish-frontend` 并行 job(xcy 专用低权 ghdeploy 无 sudo、root 钥匙不进 secrets、hash 资产先传 index.html 最后、nginx index.html no-cache)，run 28813718613 双 job 绿、CI 自证首发布；附 argparse `-` 开头随机 token flaky 修 + box 改名 yukirin-server |
 | [archive-202607302346-main-ci-topology.md](infra/archive-202607302346-main-ci-topology.md) | 审查前端改动并修复 5 类行为风险，分段 commit 后 fast-forward 合入 `main`；CI 537 passed，同时确认 SPA 发布到 xcy 但公网 Tunnel 直达家中 FastAPI 的拓扑错位 |
 | [archive-202607310055-home-web-gateway-deploy-workflow.md](infra/archive-202607310055-home-web-gateway-deploy-workflow.md) | 将 SPA 自动发布从 xcy 迁回家庭 nginx：复用 `DEPLOY_*` FRP SSH、后端健康后发布同 SHA 不可变 release、原子切换 `current` 且探针失败自动回滚；同步 loopback nginx 模板、前端 CI 与活文档，尚未切 Tunnel/推进 deploy |
+| [archive-202608230244-docker-production-deployment.md](infra/archive-202608230244-docker-production-deployment.md) | 生产后端正式 Docker 化并在 yukirin-server 切换成功：GHCR SHA 镜像 + host-network Compose，现有数据/token 原位挂载，首次 stopped-service SQLite 快照与 systemd 自动回滚；最终容器 healthy、LM Studio 直通、同 SHA SPA 发布、旧 unit inactive/disabled，公网 Tunnel 仍待从 8765 切到 nginx 8080 |
 
 ---
 
