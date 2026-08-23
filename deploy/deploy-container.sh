@@ -33,6 +33,10 @@ previous_release=
 previous_image_ref=
 previous_image_repository=
 previous_image_tag=
+previous_data_dir=
+previous_token_dir=
+previous_host_uid=
+previous_host_gid=
 previous_runtime_target=
 previous_web_target=
 legacy_was_enabled=0
@@ -158,10 +162,10 @@ rollback() {
         TIMETRACE_IMAGE="${previous_image_repository}" \
         TIMETRACE_IMAGE_TAG="${previous_image_tag}" \
         TIMETRACE_ENV_FILE="${env_file}" \
-        TIMETRACE_DATA_DIR="${data_dir}" \
-        TIMETRACE_TOKEN_DIR="${token_dir}" \
-        TIMETRACE_HOST_UID="${host_uid}" \
-        TIMETRACE_HOST_GID="${host_gid}" \
+        TIMETRACE_DATA_DIR="${previous_data_dir}" \
+        TIMETRACE_TOKEN_DIR="${previous_token_dir}" \
+        TIMETRACE_HOST_UID="${previous_host_uid}" \
+        TIMETRACE_HOST_GID="${previous_host_gid}" \
         docker compose -p timetrace -f "${previous_compose}" up -d --remove-orphans --pull never || true
       wait_for_health 24 || true
     fi
@@ -227,6 +231,20 @@ if previous_image_ref=$(docker inspect --format '{{.Config.Image}}' timetrace-se
   previous_mode=docker
   previous_image_repository=${previous_image_ref%:*}
   previous_image_tag=${previous_image_ref##*:}
+  previous_runtime_user=$(docker inspect --format '{{.Config.User}}' timetrace-server)
+  if [[ "${previous_runtime_user}" =~ ^([0-9]+):([0-9]+)$ ]]; then
+    previous_host_uid=${BASH_REMATCH[1]}
+    previous_host_gid=${BASH_REMATCH[2]}
+  else
+    echo "running timetrace-server has an unsupported user: ${previous_runtime_user}" >&2
+    exit 1
+  fi
+  previous_data_dir=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/home/timetrace/TimeTraceData"}}{{.Source}}{{end}}{{end}}' timetrace-server)
+  previous_token_dir=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/home/timetrace/.config/timetrace-server"}}{{.Source}}{{end}}{{end}}' timetrace-server)
+  [[ "${previous_data_dir}" == /* && "${previous_token_dir}" == /* ]] || {
+    echo "could not capture the running container data/token bind sources" >&2
+    exit 1
+  }
 else
   if legacy_systemctl is-enabled --quiet "${service}"; then
     legacy_was_enabled=1
