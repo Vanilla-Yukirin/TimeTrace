@@ -17,6 +17,7 @@ config_dir=/srv/timetrace/config
 env_file="${config_dir}/timetrace.env"
 host_user=${TIMETRACE_HOST_USER:-vanilla}
 host_home=${TIMETRACE_HOST_HOME:-/home/${host_user}}
+install_target=${TIMETRACE_INSTALL_TARGET:-${host_home}/.local/bin/timetrace-update}
 legacy_env="${host_home}/Github/TimeTrace/.env"
 data_dir="${host_home}/TimeTraceData"
 token_dir="${host_home}/.config/timetrace-server"
@@ -282,6 +283,12 @@ fi
 # retired rollback unit visible as inactive rather than leaving a false alarm.
 legacy_systemctl reset-failed "${service}" || true
 
+# Keep the stable host command synchronized only after the release has passed
+# every health check. A failed release therefore never replaces the updater.
+install -m 755 "${release_dir}/timetrace-update.sh" "${install_target}"
+
 trap - ERR HUP INT TERM
 log "deployed ${image}:${ref} and published its bundled SPA"
+log "installed ${install_target} from ${ref}"
+log "update complete"
 docker inspect --format 'container={{.Name}} image={{.Config.Image}} status={{.State.Status}} health={{.State.Health.Status}}' timetrace-server
