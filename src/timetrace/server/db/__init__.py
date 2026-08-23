@@ -7,8 +7,8 @@ as a second implementation arrives, this alias becomes a `typing.Protocol`
 and callers split into "annotate as Database" vs "construct as SqliteDatabase".
 """
 
-from timetrace.server.db.sqlite import SqliteDatabase
+from timetrace.server.db.sqlite import DeviceBindingError, DeviceRecordConflict, SqliteDatabase
 
 Database = SqliteDatabase
 
-__all__ = ["Database", "SqliteDatabase"]
+__all__ = ["Database", "DeviceBindingError", "DeviceRecordConflict", "SqliteDatabase"]

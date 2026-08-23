@@ -13,7 +13,9 @@ runtime_root=${TIMETRACE_RUNTIME_ROOT:-/srv/timetrace/runtime}
 release_dir="${runtime_root}/releases/${ref}"
 compose_file="${release_dir}/docker-compose.yml"
 rollback_compose_override="${release_dir}/docker-compose.rollback.yml"
+compatibility_guard="${release_dir}/compatibility-guard.sh"
 current_link="${runtime_root}/current"
+minimum_compatibility_file="${runtime_root}/minimum-database-compatibility"
 config_dir=/srv/timetrace/config
 env_file="${config_dir}/timetrace.env"
 host_user=${TIMETRACE_HOST_USER:-vanilla}
@@ -21,6 +23,7 @@ host_home=${TIMETRACE_HOST_HOME:-/home/${host_user}}
 host_uid=${TIMETRACE_HOST_UID:-$(id -u "${host_user}")}
 host_gid=${TIMETRACE_HOST_GID:-$(id -g "${host_user}")}
 install_target=${TIMETRACE_INSTALL_TARGET:-${host_home}/.local/bin/timetrace-update}
+compatibility_install_target="${install_target%/*}/timetrace-compatibility-guard.sh"
 legacy_env="${host_home}/Github/TimeTrace/.env"
 data_dir="${host_home}/TimeTraceData"
 token_dir="${host_home}/.config/timetrace-server"
@@ -39,6 +42,7 @@ previous_token_dir=
 previous_host_uid=
 previous_host_gid=
 previous_env_file=
+previous_device_db_compat=incompatible
 previous_runtime_target=
 previous_web_target=
 legacy_was_enabled=0
@@ -49,6 +53,13 @@ web_staging=
 backup_staging=
 updater_staging=
 env_staging=
+compatibility_staging=
+minimum_compatibility_staging=
+target_device_db_compat=
+
+test -s "${compatibility_guard}"
+# shellcheck source=deploy/compatibility-guard.sh
+source "${compatibility_guard}"
 
 log() {
   printf '==> %s\n' "$*"
@@ -58,6 +69,18 @@ cleanup_updater_staging() {
   if [[ -n "${updater_staging}" && -f "${updater_staging}" ]]; then
     case "${updater_staging}" in
       "${install_target%/*}"/.timetrace-update.*) rm -f -- "${updater_staging}" ;;
+    esac
+  fi
+  if [[ -n "${compatibility_staging}" && -f "${compatibility_staging}" ]]; then
+    case "${compatibility_staging}" in
+      "${compatibility_install_target%/*}"/.timetrace-compatibility.*) \
+        rm -f -- "${compatibility_staging}" ;;
+    esac
+  fi
+  if [[ -n "${minimum_compatibility_staging}" && -f "${minimum_compatibility_staging}" ]]; then
+    case "${minimum_compatibility_staging}" in
+      "${runtime_root}"/.minimum-database-compatibility.*) \
+        rm -f -- "${minimum_compatibility_staging}" ;;
     esac
   fi
 }
@@ -138,6 +161,7 @@ rollback() {
   trap - ERR
   trap '' HUP INT TERM
   if ((cutover_started == 0)); then
+    cleanup_updater_staging
     cleanup_env_staging
     cleanup_previous_env_file
     exit "${status}"
@@ -145,6 +169,31 @@ rollback() {
 
   log "deployment failed; collecting logs and restoring the previous runtime"
   docker logs --tail 200 timetrace-server 2>&1 || true
+
+  # A failed device-aware candidate may already have accepted the first
+  # device-owned records. Re-check immediately before rollback. Refusing an
+  # incompatible previous runtime is safer than letting its global startup
+  # healer rewrite interleaved device timelines; freeze the candidate first,
+  # then leave it stopped with current links in place for operator diagnosis.
+  if [[ "${previous_mode}" == docker || "${previous_mode}" == systemd ]]; then
+    log "freezing the candidate before checking automatic rollback compatibility"
+    if ! compose stop server; then
+      log "automatic rollback refused because the candidate could not be stopped safely"
+      cleanup_updater_staging
+      cleanup_env_staging
+      exit "${status}"
+    fi
+    if ! timetrace_assert_compat_state_for_database \
+        "${previous_device_db_compat}" "${image}:${ref}" \
+        "${data_dir}" "${host_uid}" "${host_gid}" \
+        "automatic rollback to the previous ${previous_mode} runtime" \
+        "${minimum_compatibility_file}"; then
+      log "automatic rollback refused by the database compatibility guard; candidate remains stopped and no old runtime was started"
+      cleanup_updater_staging
+      cleanup_env_staging
+      exit "${status}"
+    fi
+  fi
   compose down --remove-orphans || true
 
   if ((runtime_switched == 1)); then
@@ -234,6 +283,7 @@ trap 'rollback 143' TERM
 test -f "${compose_file}"
 test -s "${rollback_compose_override}"
 test -s "${release_dir}/timetrace-update.sh"
+test -s "${compatibility_guard}"
 test -s "${frontend_source}/index.html"
 test -d "${data_dir}"
 test -d "${token_dir}"
@@ -278,6 +328,7 @@ fi
 if [[ $(docker inspect --format '{{.State.Running}}' timetrace-server 2>/dev/null || true) == true ]]; then
   previous_image_ref=$(docker inspect --format '{{.Config.Image}}' timetrace-server)
   previous_mode=docker
+  previous_device_db_compat=$(timetrace_container_device_db_compat timetrace-server)
   previous_image_repository=${previous_image_ref%:*}
   previous_image_tag=${previous_image_ref##*:}
   previous_runtime_user=$(docker inspect --format '{{.Config.User}}' timetrace-server)
@@ -316,6 +367,20 @@ log "validating Compose release ${ref}"
 compose config --quiet
 log "pulling ${image}:${ref} before changing the running service"
 compose pull server
+target_device_db_compat=$(timetrace_image_device_db_compat "${image}:${ref}")
+timetrace_assert_compat_state_for_database \
+  "${target_device_db_compat}" "${image}:${ref}" "${data_dir}" "${host_uid}" "${host_gid}" \
+  "activation of ${image}:${ref}" "${minimum_compatibility_file}"
+
+# Install the guard dependency first, then atomically replace the host wrapper
+# as the fail-closed activation point. This must finish before any service stop
+# or candidate start: if either publication fails, cutover_started is still 0
+# and the current runtime remains untouched. The new wrapper is intentionally
+# retained across later runtime rollback because it is backward-compatible
+# with a legacy/empty database and protects future explicit downgrades.
+timetrace_publish_guarded_updater \
+  "${compatibility_guard}" "${compatibility_install_target}" \
+  "${release_dir}/timetrace-update.sh" "${install_target}"
 
 if [[ "${previous_mode}" == systemd ]]; then
   log "stopping the legacy systemd service for the first container cutover"
@@ -391,18 +456,17 @@ legacy_systemctl reset-failed "${service}" || true
 log "deployed ${image}:${ref} and published its bundled SPA"
 docker inspect --format 'container={{.Name}} image={{.Config.Image}} status={{.State.Status}} health={{.State.Health.Status}}' timetrace-server
 
-# The runtime transaction is now committed. Stop routing later publication
-# failures or signals into runtime rollback: the updater is a separate atomic
-# write, so failure leaves the previous recovery command intact while the
-# already healthy runtime remains active.
+# The guard-aware host updater was activated before cutover. Commit the
+# irreversible database floor now that every runtime, SPA, and public-origin
+# check has passed. Marker failure still leaves the safe updater installed.
+timetrace_commit_minimum_device_db_compat \
+  "${minimum_compatibility_file}" "${target_device_db_compat}" "${runtime_root}"
+
+# Runtime and recovery tooling are now one committed transaction. No fallible
+# publication remains after the compatibility marker, so it is safe to stop
+# routing later signals into rollback.
 trap - ERR HUP INT TERM
 cleanup_previous_env_file
-trap cleanup_updater_staging EXIT
-updater_staging=$(mktemp "${install_target%/*}/.timetrace-update.XXXXXX")
-install -m 755 "${release_dir}/timetrace-update.sh" "${updater_staging}"
-mv -Tf "${updater_staging}" "${install_target}"
-updater_staging=
-trap - EXIT
 
 log "installed ${install_target} from ${ref}"
 log "update complete"

@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from timetrace.common.phash_hash import phash_to_blob
+from timetrace.common.protocol import DeviceMetadata, validate_device_id
 
 if TYPE_CHECKING:
     from timetrace.common.models import CaptureContext
@@ -185,6 +186,10 @@ class HttpBackend:
         client: httpx.AsyncClient | None = None,
         auth_token: str | None = None,
         device_id: str | None = None,
+        device_name: str = "",
+        device_description: str = "",
+        client_version: str = "",
+        capabilities: tuple[str, ...] = (),
         data_dir: Path | str | None = None,
         timeout_s: float = 30.0,
         base_url_provider: Callable[[], str | None] | None = None,
@@ -194,6 +199,26 @@ class HttpBackend:
         # baked in at construction) or borrowed (per-request _extra_headers).
         self._auth_token = auth_token or None
         self._device_id = device_id or None
+        if self._device_id:
+            try:
+                self._device_id = validate_device_id(self._device_id)
+            except ValueError as exc:
+                raise ValueError(
+                    "invalid HttpBackend device_id; correct client configuration before "
+                    f"upload: {exc}"
+                ) from exc
+        try:
+            self._device_metadata = DeviceMetadata(
+                name=device_name,
+                description=device_description,
+                client_version=client_version,
+                capabilities=list(capabilities),
+            ).model_dump()
+        except ValueError as exc:
+            raise ValueError(
+                "invalid HttpBackend device metadata; correct client configuration before "
+                f"upload: {exc}"
+            ) from exc
         # data_dir lets submit_screenshot resolve paths relative to the client's
         # storage root (capture_active_window emits relative paths). Without it,
         # only absolute paths are accepted.
@@ -382,6 +407,12 @@ class HttpBackend:
         image_bytes: bytes | None,
         thumb_bytes: bytes | None,
     ) -> dict:
+        # Metadata is injected at drain time rather than persisted in each
+        # outbox entry. This upgrades old queued entries after a client update
+        # and keeps client.toml as the single source of device presentation.
+        if self._device_id:
+            payload = {**payload, "device": self._device_metadata}
+
         # httpx wants `data=` for the JSON form field and `files=` for binaries;
         # mixing both in one call is the canonical multipart shape.
         data = {"record": json.dumps(payload, ensure_ascii=False)}

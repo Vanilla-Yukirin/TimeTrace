@@ -312,10 +312,10 @@ async def test_device_id_header_added_when_set(db, blob_storage):
 
     transport = httpx.ASGITransport(app=base_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw:
-        backend = HttpBackend(client=raw, device_id="dev-uuid-xyz")
+        backend = HttpBackend(client=raw, device_id="57b81d95-8c0d-41d8-8e56-ef116904661c")
         await backend.submit_record(_CTX, reason="heartbeat")
 
-    assert any(h == "dev-uuid-xyz" for h in captured)
+    assert any(h == "57b81d95-8c0d-41d8-8e56-ef116904661c" for h in captured)
 
 
 async def test_no_device_id_header_when_unset(db, blob_storage):
@@ -333,6 +333,47 @@ async def test_no_device_id_header_when_unset(db, blob_storage):
         await backend.submit_record(_CTX, reason="heartbeat")
 
     assert all(h is None for h in captured)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field"),
+    [
+        ({"device_name": "n" * 129}, "name"),
+        ({"device_description": "d" * 513}, "description"),
+        ({"client_version": "v" * 65}, "client_version"),
+        ({"capabilities": ("INVALID CAPABILITY",)}, "capabilities"),
+    ],
+)
+def test_http_backend_rejects_unsendable_device_metadata_before_network(kwargs, field):
+    with pytest.raises(ValueError, match="invalid HttpBackend device metadata") as exc_info:
+        HttpBackend(
+            base_url="http://test", device_id="57b81d95-8c0d-41d8-8e56-ef116904661c", **kwargs
+        )
+    assert exc_info.value.__cause__ is not None
+    assert field in str(exc_info.value.__cause__)
+
+
+@pytest.mark.parametrize(
+    "device_id",
+    [
+        "not-a-uuid",
+        "57B81D95-8C0D-41D8-8E56-EF116904661C",
+        "{57b81d95-8c0d-41d8-8e56-ef116904661c}",
+    ],
+)
+async def test_http_backend_rejects_invalid_device_id_before_network(device_id):
+    calls = 0
+
+    async def handler(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"record_id": "unexpected"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw:
+        with pytest.raises(ValueError, match="invalid HttpBackend device_id"):
+            HttpBackend(client=raw, device_id=device_id)
+    assert calls == 0
 
 
 async def test_borrowed_client_aclose_is_noop(backend):

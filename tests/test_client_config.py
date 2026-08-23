@@ -8,6 +8,8 @@ import pytest
 
 from timetrace.client.core.config import ClientConfig
 
+VALID_DEVICE_ID = "57b81d95-8c0d-41d8-8e56-ef116904661c"
+
 
 def test_load_missing_file_returns_defaults(tmp_path):
     cfg = ClientConfig.load_or_default(tmp_path / "nope.toml")
@@ -30,7 +32,7 @@ def test_save_then_load_roundtrips_all_fields(tmp_path):
     original = ClientConfig()
     original.server.url = "https://server.test:9000"
     original.server.auth_token = "tt_live_abc123"
-    original.device.id = "device-uuid-xyz"
+    original.device.id = VALID_DEVICE_ID
     original.device.name = "Yuki-Laptop"
     original.device.description = "日常开发与写作"
     original.outbox.root_dir = tmp_path / "ob"
@@ -51,7 +53,7 @@ def test_save_then_load_roundtrips_all_fields(tmp_path):
     loaded = ClientConfig.load_or_default(path)
     assert loaded.server.url == "https://server.test:9000"
     assert loaded.server.auth_token == "tt_live_abc123"
-    assert loaded.device.id == "device-uuid-xyz"
+    assert loaded.device.id == VALID_DEVICE_ID
     assert loaded.device.name == "Yuki-Laptop"
     assert loaded.device.description == "日常开发与写作"
     assert loaded.outbox.root_dir == tmp_path / "ob"
@@ -99,6 +101,14 @@ def test_ensure_device_id_is_idempotent():
     assert a == b
 
 
+def test_ensure_device_id_rejects_nonempty_invalid_value_without_replacing_it():
+    cfg = ClientConfig()
+    cfg.device.id = "legacy-not-a-uuid"
+    with pytest.raises(ValueError, match=r"device\.id.*must be a UUID"):
+        cfg.ensure_device_id()
+    assert cfg.device.id == "legacy-not-a-uuid"
+
+
 def test_save_creates_parent_directory(tmp_path):
     target = tmp_path / "deep" / "nested" / "client.toml"
     ClientConfig().save(target)
@@ -138,7 +148,7 @@ def test_apply_env_overrides_overlays_on_loaded(tmp_path, monkeypatch):
     monkeypatch.setenv("TIMETRACE_DATA_DIR", str(tmp_path / "envdata"))
     monkeypatch.setenv("TIMETRACE_PRIVACY_MODE", "full")
 
-    cfg = ClientConfig.load_or_default(path).apply_env_overrides()
+    cfg = ClientConfig.load_or_default(path)
     assert cfg.server.url == "http://from-env"
     assert cfg.server.auth_token == "tt_live_from_env"
     assert cfg.upload.max_kbps == 512
@@ -189,3 +199,100 @@ def test_app_blacklist_with_special_chars_roundtrips(tmp_path):
         "C:\\Program Files\\App.exe",
         'has"quote.exe',
     ]
+
+
+def test_toml_rejects_device_name_that_server_would_reject(tmp_path):
+    path = tmp_path / "client.toml"
+    path.write_text(f'[device]\nname = "{"n" * 129}"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"device\.name.*128"):
+        ClientConfig.load_or_default(path)
+
+
+def test_env_rejects_device_description_that_server_would_reject(monkeypatch):
+    monkeypatch.setenv("TIMETRACE_DEVICE_DESC", "d" * 513)
+    with pytest.raises(ValueError, match=r"device\.description.*512"):
+        ClientConfig().apply_env_overrides()
+
+
+def test_device_metadata_exact_bounds_are_accepted(tmp_path):
+    cfg = ClientConfig()
+    cfg.device.name = "n" * 128
+    cfg.device.description = "d" * 512
+    path = cfg.save(tmp_path / "client.toml")
+    loaded = ClientConfig.load_or_default(path)
+    assert len(loaded.device.name) == 128
+    assert len(loaded.device.description) == 512
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "not-a-uuid",
+        VALID_DEVICE_ID.upper(),
+        "{" + VALID_DEVICE_ID + "}",
+    ],
+)
+def test_toml_rejects_invalid_or_noncanonical_device_id_without_rewriting(
+    tmp_path, monkeypatch, configured
+):
+    for key in ("TIMETRACE_DEVICE_ID", "TIMETRACE_DEVICE_NAME", "TIMETRACE_DEVICE_DESC"):
+        monkeypatch.delenv(key, raising=False)
+    path = tmp_path / "client.toml"
+    path.write_text(f'[device]\nid = "{configured}"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"device\.id"):
+        ClientConfig.load_or_default(path)
+    assert configured in path.read_text(encoding="utf-8")
+
+
+def test_valid_env_identity_overrides_invalid_toml_before_effective_validation(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "client.toml"
+    path.write_text(
+        f'[device]\nid = "legacy-not-a-uuid"\nname = "{"n" * 129}"\ndescription = "{"d" * 513}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TIMETRACE_DEVICE_ID", VALID_DEVICE_ID)
+    monkeypatch.setenv("TIMETRACE_DEVICE_NAME", "Env Workstation")
+    monkeypatch.setenv("TIMETRACE_DEVICE_DESC", "Effective metadata from env")
+
+    loaded = ClientConfig.load_or_default(path)
+
+    assert loaded.device.id == VALID_DEVICE_ID
+    assert loaded.device.name == "Env Workstation"
+    assert loaded.device.description == "Effective metadata from env"
+    # Loading never rewrites the invalid lower-priority file layer.
+    assert "legacy-not-a-uuid" in path.read_text(encoding="utf-8")
+
+
+def test_invalid_env_override_does_not_hide_invalid_toml(tmp_path, monkeypatch):
+    path = tmp_path / "client.toml"
+    path.write_text('[device]\nid = "file-invalid"\n', encoding="utf-8")
+    monkeypatch.setenv("TIMETRACE_DEVICE_ID", VALID_DEVICE_ID.upper())
+
+    with pytest.raises(ValueError, match=VALID_DEVICE_ID):
+        ClientConfig.load_or_default(path)
+
+    assert "file-invalid" in path.read_text(encoding="utf-8")
+
+
+def test_noncanonical_env_device_id_reports_canonical_value(monkeypatch):
+    monkeypatch.setenv("TIMETRACE_DEVICE_ID", VALID_DEVICE_ID.upper())
+    with pytest.raises(ValueError, match=VALID_DEVICE_ID):
+        ClientConfig().apply_env_overrides()
+
+
+def test_exact_canonical_device_id_is_accepted(tmp_path):
+    cfg = ClientConfig()
+    cfg.device.id = VALID_DEVICE_ID
+    path = cfg.save(tmp_path / "client.toml")
+    assert ClientConfig.load_or_default(path).device.id == VALID_DEVICE_ID
+
+
+def test_save_rejects_invalid_device_id_before_writing(tmp_path):
+    cfg = ClientConfig()
+    cfg.device.id = "legacy-device-id"
+    path = tmp_path / "client.toml"
+    with pytest.raises(ValueError, match=r"device\.id"):
+        cfg.save(path)
+    assert not path.exists()

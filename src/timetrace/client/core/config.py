@@ -26,11 +26,13 @@ short and a human can hand-edit it without surprises.
 
 Env-var overrides
 -----------------
-`apply_env_overrides()` reads `TIMETRACE_SERVER_URL`, `TIMETRACE_AUTH_TOKEN`,
+`load_or_default()` reads the file, overlays `TIMETRACE_SERVER_URL`,
+`TIMETRACE_AUTH_TOKEN`,
 `TIMETRACE_DEVICE_ID`, `TIMETRACE_DEVICE_NAME`, `TIMETRACE_OUTBOX_DIR`,
 `TIMETRACE_UPLOAD_MAX_KBPS`, `TIMETRACE_DATA_DIR`, `TIMETRACE_PRIVACY_MODE`
-and overlays them on top of the loaded values. Useful for headless
-deployments that want to ship a baseline `client.toml` and tune via env.
+and the other supported environment variables, then validates the effective
+configuration. Useful for headless deployments that want to ship a baseline
+`client.toml` and tune via env.
 """
 
 from __future__ import annotations
@@ -41,7 +43,10 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig
+from timetrace.common.protocol import DeviceMetadata, validate_device_id
 
 _DEFAULT_PATH = Path.home() / "TimeTraceData" / "client.toml"
 _DEFAULT_OUTBOX_DIR = Path.home() / "TimeTraceData" / "outbox"
@@ -135,12 +140,28 @@ class ClientConfig:
 
     @classmethod
     def load_or_default(cls, path: Path | None = None) -> ClientConfig:
-        """Read from disk, falling back to defaults for any missing field/section.
+        """Load and validate the effective file -> environment configuration.
 
         Missing file → returns the all-defaults config (caller decides whether
         to `.save()` it). Missing section → defaults for that section only.
+
+        File values are deliberately not validated before environment
+        overrides are applied: a deployment may keep a placeholder or stale
+        value in ``client.toml`` and supply the valid host identity through
+        ``TIMETRACE_DEVICE_*``. Ordinary callers use this method so they cannot
+        accidentally forget either the override layer or final validation.
         """
         path = path or _DEFAULT_PATH
+        config = cls._load_file_or_default(path)
+        config.apply_env_overrides(validate=False)
+        config.validate_device_identity(
+            source=f"effective client configuration ({path} + TIMETRACE_* environment)"
+        )
+        return config
+
+    @classmethod
+    def _load_file_or_default(cls, path: Path) -> ClientConfig:
+        """Parse only the file layer without validation (internal use only)."""
         if not path.exists():
             return cls()
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -198,7 +219,7 @@ class ClientConfig:
     # Env-var overrides                                                    #
     # ------------------------------------------------------------------ #
 
-    def apply_env_overrides(self) -> ClientConfig:
+    def apply_env_overrides(self, *, validate: bool = True) -> ClientConfig:
         """Overlay TIMETRACE_* env vars on top of current values, in place.
 
         Returns self so callers can chain. Env vars beat file values; absent
@@ -223,7 +244,48 @@ class ClientConfig:
             self.storage.data_dir = Path(v)
         if v := os.getenv("TIMETRACE_PRIVACY_MODE"):
             self.privacy.mode = v
+        if validate:
+            self.validate_device_identity(source="TIMETRACE_* environment overrides")
         return self
+
+    def validate_device_identity(
+        self,
+        *,
+        source: str = "client configuration",
+        client_version: str = "",
+        capabilities: tuple[str, ...] = (),
+    ) -> DeviceMetadata:
+        """Validate the exact identity contract the server will receive.
+
+        This deliberately raises instead of truncating a user-provided label.
+        A strict-FIFO outbox cannot make progress past a server-side 422, so a
+        local, field-specific startup error is both safer and more actionable.
+        """
+        if self.device.id:
+            try:
+                validate_device_id(self.device.id)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{source} has invalid device.id: {exc}. "
+                    "The non-empty ID was not rewritten because queued records may already "
+                    "belong to it; correct client.toml or TIMETRACE_DEVICE_ID explicitly."
+                ) from exc
+        try:
+            return DeviceMetadata(
+                name=self.device.name,
+                description=self.device.description,
+                client_version=client_version,
+                capabilities=list(capabilities),
+            )
+        except ValidationError as exc:
+            details = "; ".join(
+                f"device.{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                for error in exc.errors()
+            )
+            raise ValueError(
+                f"{source} has invalid device metadata: {details}. "
+                "Correct client.toml or TIMETRACE_DEVICE_* and restart the client."
+            ) from exc
 
     # ------------------------------------------------------------------ #
     # Save                                                                 #
@@ -233,6 +295,14 @@ class ClientConfig:
         """Mint a UUID for `device.id` if empty. Returns the (possibly new) id."""
         if not self.device.id:
             self.device.id = str(uuid.uuid4())
+        else:
+            try:
+                validate_device_id(self.device.id)
+            except ValueError as exc:
+                raise ValueError(
+                    f"configured device.id is invalid: {exc}. Refusing to replace a non-empty "
+                    "ID because existing outbox entries may already belong to it."
+                ) from exc
         return self.device.id
 
     def save(self, path: Path | None = None) -> Path:
@@ -242,6 +312,7 @@ class ClientConfig:
         fixed schema — no tomli-w dependency.
         """
         path = path or _DEFAULT_PATH
+        self.validate_device_identity(source=str(path))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self._render_toml(), encoding="utf-8")
         return path

@@ -112,6 +112,14 @@ def test_fill_interactive_rejects_non_int_max_kbps():
         fill_interactive(cfg, scripted.ask, scripted.confirm)
 
 
+def test_fill_interactive_rejects_oversize_device_name_before_other_prompts():
+    cfg = ClientConfig()
+    scripted = _Scripted(["", "", "n" * 129, ""])
+    with pytest.raises(SystemExit, match=r"device\.name.*128"):
+        fill_interactive(cfg, scripted.ask, scripted.confirm)
+    assert len(scripted.prompts) == 4
+
+
 def test_fill_interactive_mints_device_id_once():
     cfg = ClientConfig()
     scripted = _Scripted(["", "", "", "", "", "", "", ""])
@@ -229,3 +237,68 @@ def test_run_writes_device_id_in_non_interactive(tmp_path):
     joined = "\n".join(out.lines)
     assert "device_id" in joined
     assert loaded.device.id in joined
+
+
+def test_run_non_interactive_reports_invalid_device_env_without_writing(tmp_path, monkeypatch):
+    monkeypatch.setenv("TIMETRACE_DEVICE_NAME", "n" * 129)
+    target = tmp_path / "client.toml"
+    out = _Capture()
+    rc = run(["--config", str(target), "--non-interactive"], out=out)
+    assert rc == 2
+    assert not target.exists()
+    assert "device.name" in "\n".join(out.lines)
+
+
+def test_run_non_interactive_rejects_invalid_device_id_without_generating_replacement(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("TIMETRACE_DEVICE_ID", "legacy-device-id")
+    target = tmp_path / "client.toml"
+    out = _Capture()
+    rc = run(["--config", str(target), "--non-interactive"], out=out)
+    assert rc == 2
+    assert not target.exists()
+    output = "\n".join(out.lines)
+    assert "device.id" in output
+    assert "not rewritten" in output
+
+
+def test_run_non_interactive_accepts_valid_env_over_invalid_file_identity(tmp_path, monkeypatch):
+    target = tmp_path / "client.toml"
+    target.write_text(
+        f'[device]\nid = "file-invalid"\nname = "{"n" * 129}"\ndescription = "{"d" * 513}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TIMETRACE_DEVICE_ID", "57b81d95-8c0d-41d8-8e56-ef116904661c")
+    monkeypatch.setenv("TIMETRACE_DEVICE_NAME", "Env Laptop")
+    monkeypatch.setenv("TIMETRACE_DEVICE_DESC", "Environment wins")
+    out = _Capture()
+
+    rc = run(
+        ["--config", str(target), "--non-interactive", "--force"],
+        out=out,
+    )
+
+    assert rc == 0
+    saved = target.read_text(encoding="utf-8")
+    assert 'id = "57b81d95-8c0d-41d8-8e56-ef116904661c"' in saved
+    assert 'name = "Env Laptop"' in saved
+    assert 'description = "Environment wins"' in saved
+
+
+def test_run_non_interactive_rejects_invalid_toml_without_env_override(tmp_path, monkeypatch):
+    for key in ("TIMETRACE_DEVICE_ID", "TIMETRACE_DEVICE_NAME", "TIMETRACE_DEVICE_DESC"):
+        monkeypatch.delenv(key, raising=False)
+    target = tmp_path / "client.toml"
+    target.write_text('[device]\nid = "file-invalid"\n', encoding="utf-8")
+    before = target.read_bytes()
+    out = _Capture()
+
+    rc = run(
+        ["--config", str(target), "--non-interactive", "--force"],
+        out=out,
+    )
+
+    assert rc == 2
+    assert target.read_bytes() == before
+    assert "device.id" in "\n".join(out.lines)

@@ -14,6 +14,7 @@ multi-connection plumbing.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from typing import Any
@@ -27,6 +28,15 @@ logger = structlog.get_logger(__name__)
 
 _MAX_ORPHAN_BRIDGE_MS = 5 * 60 * 1000
 
+
+class DeviceBindingError(ValueError):
+    """A device is revoked or already belongs to a different bearer token."""
+
+
+class DeviceRecordConflict(ValueError):
+    """A client record id already belongs to another device."""
+
+
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -35,9 +45,29 @@ PRAGMA synchronous=NORMAL;
 -- loop serialize cleanly rather than hitting "database is locked".
 PRAGMA busy_timeout=5000;
 
+CREATE TABLE IF NOT EXISTS devices (
+    id                TEXT PRIMARY KEY,
+    token_fingerprint TEXT,
+    token_label       TEXT,
+    name              TEXT NOT NULL DEFAULT '',
+    description       TEXT NOT NULL DEFAULT '',
+    reported_name     TEXT NOT NULL DEFAULT '',
+    reported_description TEXT NOT NULL DEFAULT '',
+    client_version    TEXT NOT NULL DEFAULT '',
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    first_seen_at     INTEGER NOT NULL,
+    last_seen_at      INTEGER NOT NULL,
+    revoked_at        INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_devices_token_fingerprint
+    ON devices(token_fingerprint) WHERE token_fingerprint IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS records (
     id               TEXT PRIMARY KEY,
     client_record_id TEXT,
+    device_id         TEXT,
     ts_start         INTEGER NOT NULL,
     ts_end           INTEGER,
     event_type       TEXT NOT NULL DEFAULT 'heartbeat',
@@ -372,7 +402,7 @@ class SqliteDatabase:
             await self._conn.executescript(_SCHEMA)
             await self._conn.commit()
             await self._migrate()
-            healed = await self._close_open_records_before(_now_ms(), tail_ts=None)
+            healed = await self._close_open_records_by_device(_now_ms(), tail_ts=None)
             if healed:
                 logger.info("database.heal_open_records_on_start", count=healed)
             capped = await self._cap_implausible_record_durations(_now_ms())
@@ -405,6 +435,15 @@ class SqliteDatabase:
             )
             await self._conn.commit()
             logger.info("database.migrate", added_column="records.client_record_id")
+        if "device_id" not in record_cols:
+            await self._conn.execute("ALTER TABLE records ADD COLUMN device_id TEXT")
+            await self._conn.commit()
+            logger.info("database.migrate", added_column="records.device_id")
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_device_ts "
+            "ON records(device_id, ts_start DESC) WHERE device_id IS NOT NULL"
+        )
+        await self._conn.commit()
 
         # Embedding columns on analysis_results — added in embedding-pipeline
         # Phase 1. Existing rows get NULL until backfill (Phase 2) sweeps.
@@ -508,6 +547,7 @@ class SqliteDatabase:
         event_type: str = "heartbeat",
         *,
         client_record_id: str | None = None,
+        device_id: str | None = None,
         ts_start: int | None = None,
     ) -> str:
         record_id = _new_id()
@@ -520,7 +560,7 @@ class SqliteDatabase:
         # record. created_at/updated_at stay on the server clock (bookkeeping).
         ts_start_value = ts_start if ts_start is not None else now
         async with self._lock:
-            healed = await self._close_open_records_before(now, tail_ts=now)
+            healed = await self._close_open_records_before(now, tail_ts=now, device_id=device_id)
             if healed:
                 logger.info("database.heal_open_records_on_insert", count=healed)
                 # Commit the heal independently of the INSERT below so that a
@@ -530,13 +570,14 @@ class SqliteDatabase:
             try:
                 await self.conn.execute(
                     """INSERT INTO records
-                       (id, client_record_id, ts_start, event_type, app_name,
+                       (id, client_record_id, device_id, ts_start, event_type, app_name,
                         process_name, window_title, url, capture_reason,
                         status, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         record_id,
                         client_record_id,
+                        device_id,
                         ts_start_value,
                         event_type,
                         ctx.app_name,
@@ -589,6 +630,7 @@ class SqliteDatabase:
         event_type: str,
         client_record_id: str,
         ts_start: int | None = None,
+        device_id: str | None = None,
     ) -> tuple[str, bool]:
         """Insert a record with the given client_record_id, or return the
         existing one if a row already carries this id.
@@ -607,6 +649,7 @@ class SqliteDatabase:
                 reason=reason,
                 event_type=event_type,
                 client_record_id=client_record_id,
+                device_id=device_id,
                 ts_start=ts_start,
             )
             return rid, True
@@ -616,7 +659,334 @@ class SqliteDatabase:
                 # Should be impossible: UNIQUE violation but row missing on re-read.
                 # Re-raise so the caller doesn't silently corrupt state.
                 raise
+            existing_device = existing.get("device_id")
+            if existing_device != device_id:
+                raise DeviceRecordConflict(
+                    f"client_record_id {client_record_id!r} has incompatible device ownership"
+                )
             return existing["id"], False
+
+    async def ingest_device_or_get_record(
+        self,
+        ctx: CaptureContext,
+        reason: str,
+        event_type: str,
+        client_record_id: str,
+        device_id: str,
+        *,
+        token_fingerprint: str | None,
+        token_label: str | None,
+        ts_start: int | None = None,
+    ) -> tuple[str, bool]:
+        """Atomically bind/register a device and ingest (or claim) its record.
+
+        Pre-device servers persisted client_record_id but ignored the already
+        transmitted X-Device-Id. Therefore an exact idempotent replay may claim
+        a legacy NULL-owned row once. A non-NULL owner never changes.
+        """
+        now = _now_ms()
+        ts_start_value = ts_start if ts_start is not None else now
+        async with self._lock:
+            try:
+                async with self.conn.execute(
+                    "SELECT * FROM records WHERE client_record_id=?",
+                    (client_record_id,),
+                ) as cur:
+                    existing_row = await cur.fetchone()
+                existing = dict(existing_row) if existing_row else None
+                if existing is not None and existing["device_id"] not in (None, device_id):
+                    raise DeviceRecordConflict(
+                        f"client_record_id {client_record_id!r} belongs to another device"
+                    )
+
+                await self._validate_or_register_device_locked(
+                    device_id,
+                    token_fingerprint=token_fingerprint,
+                    token_label=token_label,
+                    register=True,
+                )
+
+                if existing is not None:
+                    if existing["device_id"] is None:
+                        await self.conn.execute(
+                            "UPDATE records SET device_id=?, updated_at=? WHERE id=?",
+                            (device_id, now, existing["id"]),
+                        )
+                    await self.conn.commit()
+                    return existing["id"], False
+
+                await self._close_open_records_before(now, tail_ts=now, device_id=device_id)
+                record_id = _new_id()
+                await self.conn.execute(
+                    """INSERT INTO records
+                       (id, client_record_id, device_id, ts_start, event_type, app_name,
+                        process_name, window_title, url, capture_reason,
+                        status, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        record_id,
+                        client_record_id,
+                        device_id,
+                        ts_start_value,
+                        event_type,
+                        ctx.app_name,
+                        ctx.process_name,
+                        ctx.window_title,
+                        ctx.url,
+                        reason,
+                        "captured",
+                        now,
+                        now,
+                    ),
+                )
+                await self.conn.execute(
+                    """INSERT INTO records_fts
+                       (record_id, window_title, app_name, process_name, url, vlm_desc)
+                       VALUES (?, ?, ?, ?, ?, '')""",
+                    (
+                        record_id,
+                        ctx.window_title or "",
+                        ctx.app_name or "",
+                        ctx.process_name or "",
+                        ctx.url or "",
+                    ),
+                )
+                await self.conn.commit()
+                return record_id, True
+            except Exception:
+                await self.conn.rollback()
+                raise
+
+    # ------------------------------------------------------------------ #
+    # Capture devices                                                      #
+    # ------------------------------------------------------------------ #
+
+    async def validate_or_register_device(
+        self,
+        device_id: str,
+        *,
+        token_fingerprint: str | None,
+        token_label: str | None,
+        register: bool = True,
+    ) -> bool:
+        """Register a first-seen device or validate its durable token binding.
+
+        A database first used without auth stores an unbound device. The first
+        authenticated request may claim it. Bound devices never migrate merely
+        because a different valid token presents the same public UUID.
+        """
+        async with self._lock:
+            try:
+                created = await self._validate_or_register_device_locked(
+                    device_id,
+                    token_fingerprint=token_fingerprint,
+                    token_label=token_label,
+                    register=register,
+                )
+                await self.conn.commit()
+                return created
+            except Exception:
+                await self.conn.rollback()
+                raise
+
+    async def _validate_or_register_device_locked(
+        self,
+        device_id: str,
+        *,
+        token_fingerprint: str | None,
+        token_label: str | None,
+        register: bool,
+    ) -> bool:
+        """Lock-held, transaction-neutral core for device binding."""
+        async with self.conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            if not register:
+                raise DeviceBindingError("device is not registered")
+            now = _now_ms()
+            await self.conn.execute(
+                """INSERT INTO devices
+                   (id, token_fingerprint, token_label, first_seen_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (device_id, token_fingerprint, token_label, now, 0),
+            )
+            return True
+
+        device = dict(row)
+        if device["revoked_at"] is not None:
+            raise DeviceBindingError("device is revoked")
+        bound = device["token_fingerprint"]
+        if bound is not None and token_fingerprint != bound:
+            raise DeviceBindingError("device belongs to a different bearer token")
+        if bound is None and token_fingerprint is not None:
+            await self.conn.execute(
+                "UPDATE devices SET token_fingerprint=?, token_label=? WHERE id=?",
+                (token_fingerprint, token_label, device_id),
+            )
+        return False
+
+    async def close_device_record(
+        self,
+        record_ref: str,
+        *,
+        device_id: str | None,
+        token_fingerprint: str | None,
+        token_label: str | None,
+        ts_end: int,
+    ) -> str | None:
+        """Atomically authorize ownership, legacy-claim, close, and touch."""
+        now = _now_ms()
+        async with self._lock:
+            try:
+                matched_client_id = False
+                async with self.conn.execute(
+                    "SELECT * FROM records WHERE id=?", (record_ref,)
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is None:
+                    async with self.conn.execute(
+                        "SELECT * FROM records WHERE client_record_id=?", (record_ref,)
+                    ) as cur:
+                        row = await cur.fetchone()
+                    matched_client_id = row is not None
+                if row is None:
+                    return None
+                record = dict(row)
+                owner = record["device_id"]
+                if device_id is None:
+                    if owner is not None:
+                        return None
+                else:
+                    if owner not in (None, device_id):
+                        return None
+                    # Only the exact client-generated idempotency key may claim
+                    # a pre-device NULL row. Server ids are readable through the
+                    # records API and therefore are not proof of upload origin.
+                    if owner is None and not matched_client_id:
+                        return None
+                    await self._validate_or_register_device_locked(
+                        device_id,
+                        token_fingerprint=token_fingerprint,
+                        token_label=token_label,
+                        register=True,
+                    )
+                    if owner is None:
+                        await self.conn.execute(
+                            "UPDATE records SET device_id=? WHERE id=?",
+                            (device_id, record["id"]),
+                        )
+
+                await self.conn.execute(
+                    "UPDATE records SET ts_end=?, updated_at=? WHERE id=?",
+                    (ts_end, now, record["id"]),
+                )
+                if device_id is not None:
+                    await self.conn.execute(
+                        """UPDATE devices SET last_seen_at=?
+                           WHERE id=? AND last_seen_at<=?""",
+                        (now, device_id, now - 60_000),
+                    )
+                await self.conn.commit()
+                return record["id"]
+            except Exception:
+                await self.conn.rollback()
+                raise
+
+    async def touch_device(
+        self,
+        device_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        client_version: str | None = None,
+        capabilities: list[str] | None = None,
+    ) -> None:
+        """Refresh liveness and the latest client-reported presentation data."""
+        now = _now_ms()
+        capabilities_json = (
+            json.dumps(sorted(set(capabilities)), separators=(",", ":"))
+            if capabilities is not None
+            else None
+        )
+        async with self._lock:
+            await self.conn.execute(
+                """UPDATE devices SET
+                   name=CASE WHEN name='' AND COALESCE(?, '')<>'' THEN ? ELSE name END,
+                   description=CASE WHEN description='' AND COALESCE(?, '')<>''
+                                    THEN ? ELSE description END,
+                   reported_name=COALESCE(?, reported_name),
+                   reported_description=COALESCE(?, reported_description),
+                   client_version=COALESCE(?, client_version),
+                   capabilities_json=COALESCE(?, capabilities_json),
+                   last_seen_at=CASE WHEN last_seen_at<=? THEN ? ELSE last_seen_at END
+                   WHERE id=? AND (
+                       last_seen_at<=?
+                       OR (? IS NOT NULL AND reported_name<>?)
+                       OR (? IS NOT NULL AND reported_description<>?)
+                       OR (? IS NOT NULL AND client_version<>?)
+                       OR (? IS NOT NULL AND capabilities_json<>?)
+                   )""",
+                (
+                    name,
+                    name,
+                    description,
+                    description,
+                    name,
+                    description,
+                    client_version,
+                    capabilities_json,
+                    now - 60_000,
+                    now,
+                    device_id,
+                    now - 60_000,
+                    name,
+                    name,
+                    description,
+                    description,
+                    client_version,
+                    client_version,
+                    capabilities_json,
+                    capabilities_json,
+                ),
+            )
+            await self.conn.commit()
+
+    async def list_devices(self) -> list[dict]:
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT * FROM devices ORDER BY last_seen_at DESC, id"
+            ) as cur:
+                rows = await cur.fetchall()
+        devices = [dict(row) for row in rows]
+        for device in devices:
+            device["capabilities"] = json.loads(device.pop("capabilities_json"))
+            # The fingerprint is an internal binding primitive, not admin API data.
+            device.pop("token_fingerprint", None)
+        return devices
+
+    async def update_device(self, device_id: str, *, name: str, description: str) -> bool:
+        async with self._lock:
+            cur = await self.conn.execute(
+                "UPDATE devices SET name=?, description=? WHERE id=?",
+                (name, description, device_id),
+            )
+            await self.conn.commit()
+            return bool(cur.rowcount)
+
+    async def set_device_revoked(self, device_id: str, *, revoked: bool) -> bool:
+        """Toggle one source identity; bearer credential revocation is separate.
+
+        A bearer token may authorize multiple devices in this first protocol
+        version. Revoking a device blocks that UUID, but administrators must
+        revoke the token itself to withdraw upload authority altogether.
+        """
+        async with self._lock:
+            cur = await self.conn.execute(
+                "UPDATE devices SET revoked_at=? WHERE id=?",
+                (_now_ms() if revoked else None, device_id),
+            )
+            await self.conn.commit()
+            return bool(cur.rowcount)
 
     async def close_record(self, record_id: str, ts_end: int | None = None) -> bool:
         """Set ts_end on a record (e.g. when window switches away).
@@ -647,6 +1017,7 @@ class SqliteDatabase:
         ts_cutoff: int,
         *,
         tail_ts: int | None,
+        device_id: str | None = None,
     ) -> int:
         """Close any orphaned `records.ts_end IS NULL` rows older than `ts_cutoff`.
 
@@ -666,43 +1037,88 @@ class SqliteDatabase:
         Returns the number of rows updated.
         """
         now = _now_ms()
+        if device_id is None:
+            next_scope = " AND n.device_id IS NULL"
+            outer_scope = " AND records.device_id IS NULL"
+            next_scope_params = ()
+            outer_scope_params = ()
+        else:
+            next_scope = " AND n.device_id = ?"
+            outer_scope = " AND records.device_id = ?"
+            next_scope_params = (device_id,)
+            outer_scope_params = (device_id,)
+
         if tail_ts is None:
-            sql = """UPDATE records
+            sql = f"""UPDATE records
                      SET ts_end = COALESCE(
                              (SELECT MIN(n.ts_start) FROM records n
                               WHERE n.ts_start > records.ts_start
-                                AND n.ts_start - records.ts_start <= ?),
+                                AND n.ts_start - records.ts_start <= ?{next_scope}),
                              records.ts_start
                          ),
                          updated_at = ?
-                     WHERE ts_end IS NULL AND ts_start < ?"""
-            params: tuple = (_MAX_ORPHAN_BRIDGE_MS, now, ts_cutoff)
+                     WHERE ts_end IS NULL AND ts_start < ?{outer_scope}"""
+            params: tuple = (
+                _MAX_ORPHAN_BRIDGE_MS,
+                *next_scope_params,
+                now,
+                ts_cutoff,
+                *outer_scope_params,
+            )
         else:
-            sql = """UPDATE records
+            sql = f"""UPDATE records
                      SET ts_end = COALESCE(
                              (SELECT MIN(n.ts_start) FROM records n
                               WHERE n.ts_start > records.ts_start
-                                AND n.ts_start - records.ts_start <= ?),
+                                AND n.ts_start - records.ts_start <= ?{next_scope}),
                              CASE
                                  WHEN ? - records.ts_start <= ? THEN ?
                                  ELSE records.ts_start
                              END
                          ),
                          updated_at = ?
-                     WHERE ts_end IS NULL AND ts_start < ?"""
+                     WHERE ts_end IS NULL AND ts_start < ?{outer_scope}"""
             params = (
                 _MAX_ORPHAN_BRIDGE_MS,
+                *next_scope_params,
                 tail_ts,
                 _MAX_ORPHAN_BRIDGE_MS,
                 tail_ts,
                 now,
                 ts_cutoff,
+                *outer_scope_params,
             )
 
         cur = await self.conn.execute(sql, params)
         rowcount = cur.rowcount
         await cur.close()
         return rowcount
+
+    async def _close_open_records_by_device(
+        self,
+        ts_cutoff: int,
+        *,
+        tail_ts: int | None,
+    ) -> int:
+        """Startup healing across independent device timelines.
+
+        Caller holds ``self._lock``. Each distinct device (including the NULL
+        legacy/single-process scope) is healed separately so one machine's next
+        timestamp can never become another machine's boundary.
+        """
+        async with self.conn.execute(
+            "SELECT DISTINCT device_id FROM records WHERE ts_end IS NULL AND ts_start < ?",
+            (ts_cutoff,),
+        ) as cur:
+            scopes = [row["device_id"] for row in await cur.fetchall()]
+        healed = 0
+        for scope in scopes:
+            healed += await self._close_open_records_before(
+                ts_cutoff,
+                tail_ts=tail_ts,
+                device_id=scope,
+            )
+        return healed
 
     async def _cap_implausible_record_durations(self, now: int) -> int:
         """Collapse impossible record spans left by older orphan-heal logic.
@@ -790,6 +1206,7 @@ class SqliteDatabase:
         apps: list[str] | None = None,
         categories: list[str] | None = None,
         keyword: str | None = None,
+        device_id: str | None = None,
         order: str = "asc",
     ) -> list[dict]:
         """Query records over a time window with optional filters.
@@ -825,6 +1242,12 @@ class SqliteDatabase:
             placeholders = ",".join("?" * len(categories))
             conditions.append(f"a.category_final IN ({placeholders})")
             where_params.extend(categories)
+
+        if device_id == "_unknown_device":
+            conditions.append("r.device_id IS NULL")
+        elif device_id is not None:
+            conditions.append("r.device_id = ?")
+            where_params.append(device_id)
 
         # Keyword strategy: trigram-FTS5 MATCH for ≥3-char queries (CJK-friendly,
         # BM25-ranked), multi-field LIKE for <3 chars (so "VS" / "鸣潮" still

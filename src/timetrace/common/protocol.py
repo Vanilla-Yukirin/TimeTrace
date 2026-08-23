@@ -9,7 +9,9 @@ IngestRecordPayload as the multipart `record` part. Keeping them both in
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +38,43 @@ class ScreenshotSubmission:
 # --------------------------------------------------------------------------- #
 # HTTP wire schema (POST /v1/ingest/record)                                    #
 # --------------------------------------------------------------------------- #
+
+
+Capability = Annotated[
+    str,
+    Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9._-]*$"),
+]
+
+
+def validate_device_id(value: str, *, field_name: str = "device.id") -> str:
+    """Return a canonical UUID or raise without rewriting caller identity.
+
+    Uppercase/braced UUIDs are parseable, but silently normalizing a configured
+    device can reattribute an existing outbox. Report the exact canonical value
+    instead and require the operator to make that identity decision explicitly.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a UUID")
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a UUID") from exc
+    canonical = str(parsed)
+    if value != canonical:
+        raise ValueError(
+            f"{field_name} must use canonical lowercase UUID form; "
+            f"the canonical value is {canonical!r}"
+        )
+    return canonical
+
+
+class DeviceMetadata(BaseModel):
+    """Non-secret client facts refreshed whenever the device ingests data."""
+
+    name: str = Field(default="", max_length=128)
+    description: str = Field(default="", max_length=512)
+    client_version: str = Field(default="", max_length=64)
+    capabilities: list[Capability] = Field(default_factory=list, max_length=32)
 
 
 class IngestRecordPayload(BaseModel):
@@ -71,6 +110,7 @@ class IngestRecordPayload(BaseModel):
     thumb_format: str = "jpg"
 
     schema_version: int = 1
+    device: DeviceMetadata | None = None
 
 
 class IngestRecordResponse(BaseModel):
