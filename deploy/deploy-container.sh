@@ -47,6 +47,7 @@ web_switched=0
 web_staging=
 backup_staging=
 updater_staging=
+env_staging=
 
 log() {
   printf '==> %s\n' "$*"
@@ -67,6 +68,14 @@ cleanup_previous_env_file() {
     esac
   fi
   previous_env_file=
+}
+
+cleanup_env_staging() {
+  if [[ -n "${env_staging}" && -f "${env_staging}" ]]; then
+    case "${env_staging}" in
+      "${config_dir}"/.timetrace.env.*) rm -f -- "${env_staging}" ;;
+    esac
+  fi
 }
 
 compose() {
@@ -128,6 +137,7 @@ rollback() {
   trap - ERR
   trap '' HUP INT TERM
   if ((cutover_started == 0)); then
+    cleanup_env_staging
     cleanup_previous_env_file
     exit "${status}"
   fi
@@ -165,6 +175,7 @@ rollback() {
     esac
   fi
   cleanup_updater_staging
+  cleanup_env_staging
 
   if [[ "${previous_mode}" == docker && -n "${previous_release}" ]]; then
     local previous_compose="${previous_release}/docker-compose.yml"
@@ -225,11 +236,16 @@ install -d -m 700 "${runtime_root}/releases" "${config_dir}"
 install -d -m 755 "${web_root}/releases"
 
 if [[ ! -f "${env_file}" ]]; then
+  env_staging=$(mktemp "${config_dir}/.timetrace.env.XXXXXX")
   if [[ -f "${legacy_env}" ]]; then
-    install -m 600 "${legacy_env}" "${env_file}"
+    install -m 600 "${legacy_env}" "${env_staging}"
+    mv -Tf "${env_staging}" "${env_file}"
+    env_staging=
     log "copied the legacy environment file once to ${env_file}"
   else
-    install -m 600 /dev/null "${env_file}"
+    install -m 600 /dev/null "${env_staging}"
+    mv -Tf "${env_staging}" "${env_file}"
+    env_staging=
     log "created an empty environment file at ${env_file}"
   fi
 fi
