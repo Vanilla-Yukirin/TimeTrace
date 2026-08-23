@@ -114,6 +114,7 @@ install -d -m 700 "${releases_dir}"
 release_dir="${releases_dir}/${ref}"
 staging_dir=
 extract_container=
+deploy_pid=
 
 cleanup() {
   if [[ -n "${extract_container}" ]]; then
@@ -126,6 +127,27 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+forward_deploy_signal() {
+  local signal_name=$1
+  local fallback_status=$2
+  local child_status
+  trap '' HUP INT TERM
+
+  if [[ -z "${deploy_pid}" ]]; then
+    exit "${fallback_status}"
+  fi
+  kill -s "${signal_name}" "${deploy_pid}" 2>/dev/null || true
+  if wait "${deploy_pid}"; then
+    child_status=0
+  else
+    child_status=$?
+  fi
+  if ((child_status == 0)); then
+    child_status=${fallback_status}
+  fi
+  exit "${child_status}"
+}
 
 if [[ ! -d "${release_dir}" ]]; then
   staging_dir=$(mktemp -d "${releases_dir}/.staging-${ref}.XXXXXX")
@@ -150,10 +172,24 @@ test -s "${release_dir}/timetrace-update.sh"
 test -s "${release_dir}/frontend-dist/index.html"
 
 log "activating ${ref}"
+trap 'forward_deploy_signal HUP 129' HUP
+trap 'forward_deploy_signal INT 130' INT
+trap 'forward_deploy_signal TERM 143' TERM
 TIMETRACE_HOST_USER="${host_user}" \
 TIMETRACE_HOST_HOME="${host_home}" \
 TIMETRACE_RUNTIME_ROOT="${runtime_root}" \
-  bash "${release_dir}/deploy-container.sh" "${ref}" "${image}"
+  bash "${release_dir}/deploy-container.sh" "${ref}" "${image}" &
+deploy_pid=$!
+if wait "${deploy_pid}"; then
+  deploy_status=0
+else
+  deploy_status=$?
+fi
+deploy_pid=
+trap - HUP INT TERM
+if ((deploy_status != 0)); then
+  exit "${deploy_status}"
+fi
 
 # Keep the stable host command synchronized with the successfully activated
 # release. A failed release never replaces the updater.
