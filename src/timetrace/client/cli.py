@@ -99,7 +99,7 @@ async def _run(
     quit_event: asyncio.Event,
     runtime: dict | None = None,
 ) -> None:
-    client_cfg.validate_device_metadata(
+    client_cfg.validate_device_identity(
         source="timetrace-client startup",
         client_version=__version__,
         capabilities=_CLIENT_CAPABILITIES,
@@ -219,7 +219,7 @@ def main() -> None:
     # a baseline `client.toml` and tune per-host via systemd `Environment=`.
     try:
         client_cfg = ClientConfig.load_or_default().apply_env_overrides()
-        client_cfg.validate_device_metadata(
+        client_cfg.validate_device_identity(
             source="timetrace-client startup",
             client_version=__version__,
             capabilities=_CLIENT_CAPABILITIES,

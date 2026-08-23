@@ -353,6 +353,29 @@ def test_http_backend_rejects_unsendable_device_metadata_before_network(kwargs, 
     assert field in str(exc_info.value.__cause__)
 
 
+@pytest.mark.parametrize(
+    "device_id",
+    [
+        "not-a-uuid",
+        "57B81D95-8C0D-41D8-8E56-EF116904661C",
+        "{57b81d95-8c0d-41d8-8e56-ef116904661c}",
+    ],
+)
+async def test_http_backend_rejects_invalid_device_id_before_network(device_id):
+    calls = 0
+
+    async def handler(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"record_id": "unexpected"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw:
+        with pytest.raises(ValueError, match="invalid HttpBackend device_id"):
+            HttpBackend(client=raw, device_id=device_id)
+    assert calls == 0
+
+
 async def test_borrowed_client_aclose_is_noop(backend):
     """When the AsyncClient comes from outside (test harness, app composer)
     HttpBackend must not close it on aclose() — that's the caller's job."""

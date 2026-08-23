@@ -66,7 +66,7 @@ def fill_interactive(
         ask("Device description", cfg.device.description) or cfg.device.description
     )
     try:
-        cfg.validate_device_metadata(source="interactive device answers")
+        cfg.validate_device_identity(source="interactive device answers")
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 

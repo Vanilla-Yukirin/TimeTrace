@@ -44,7 +44,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig
-from timetrace.common.protocol import DeviceMetadata
+from timetrace.common.protocol import DeviceMetadata, validate_device_id
 
 _DEFAULT_PATH = Path.home() / "TimeTraceData" / "client.toml"
 _DEFAULT_OUTBOX_DIR = Path.home() / "TimeTraceData" / "outbox"
@@ -196,7 +196,7 @@ class ClientConfig:
             capture=_capture_from_toml(capture_data),
             privacy=_privacy_from_toml(privacy_data),
         )
-        config.validate_device_metadata(source=str(path))
+        config.validate_device_identity(source=str(path))
         return config
 
     # ------------------------------------------------------------------ #
@@ -228,22 +228,31 @@ class ClientConfig:
             self.storage.data_dir = Path(v)
         if v := os.getenv("TIMETRACE_PRIVACY_MODE"):
             self.privacy.mode = v
-        self.validate_device_metadata(source="TIMETRACE_DEVICE_* environment overrides")
+        self.validate_device_identity(source="TIMETRACE_DEVICE_* environment overrides")
         return self
 
-    def validate_device_metadata(
+    def validate_device_identity(
         self,
         *,
         source: str = "client configuration",
         client_version: str = "",
         capabilities: tuple[str, ...] = (),
     ) -> DeviceMetadata:
-        """Validate the exact metadata contract the server will receive.
+        """Validate the exact identity contract the server will receive.
 
         This deliberately raises instead of truncating a user-provided label.
         A strict-FIFO outbox cannot make progress past a server-side 422, so a
         local, field-specific startup error is both safer and more actionable.
         """
+        if self.device.id:
+            try:
+                validate_device_id(self.device.id)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{source} has invalid device.id: {exc}. "
+                    "The non-empty ID was not rewritten because queued records may already "
+                    "belong to it; correct client.toml or TIMETRACE_DEVICE_ID explicitly."
+                ) from exc
         try:
             return DeviceMetadata(
                 name=self.device.name,
@@ -269,6 +278,14 @@ class ClientConfig:
         """Mint a UUID for `device.id` if empty. Returns the (possibly new) id."""
         if not self.device.id:
             self.device.id = str(uuid.uuid4())
+        else:
+            try:
+                validate_device_id(self.device.id)
+            except ValueError as exc:
+                raise ValueError(
+                    f"configured device.id is invalid: {exc}. Refusing to replace a non-empty "
+                    "ID because existing outbox entries may already belong to it."
+                ) from exc
         return self.device.id
 
     def save(self, path: Path | None = None) -> Path:
@@ -278,7 +295,7 @@ class ClientConfig:
         fixed schema — no tomli-w dependency.
         """
         path = path or _DEFAULT_PATH
-        self.validate_device_metadata(source=str(path))
+        self.validate_device_identity(source=str(path))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self._render_toml(), encoding="utf-8")
         return path

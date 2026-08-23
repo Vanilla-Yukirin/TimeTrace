@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import time
-import uuid
 from datetime import datetime, timezone
 
 import structlog
@@ -30,7 +29,11 @@ from pydantic import BaseModel, ValidationError
 
 from timetrace.common.models import CaptureContext
 from timetrace.common.phash_hash import phash_to_blob
-from timetrace.common.protocol import IngestRecordPayload, IngestRecordResponse
+from timetrace.common.protocol import (
+    IngestRecordPayload,
+    IngestRecordResponse,
+    validate_device_id,
+)
 from timetrace.server.db import DeviceBindingError, DeviceRecordConflict
 
 logger = structlog.get_logger(__name__)
@@ -55,16 +58,9 @@ def _device_id(request: Request) -> str | None:
     if raw is None:
         return None
     try:
-        parsed = uuid.UUID(raw)
+        return validate_device_id(raw, field_name="X-Device-Id")
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail="X-Device-Id must be a UUID") from exc
-    canonical = str(parsed)
-    if raw != canonical:
-        raise HTTPException(
-            status_code=422,
-            detail="X-Device-Id must use canonical lowercase UUID form",
-        )
-    return canonical
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _device_principal(request: Request) -> tuple[str | None, str | None]:

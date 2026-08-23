@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from timetrace.common.phash_hash import phash_to_blob
-from timetrace.common.protocol import DeviceMetadata
+from timetrace.common.protocol import DeviceMetadata, validate_device_id
 
 if TYPE_CHECKING:
     from timetrace.common.models import CaptureContext
@@ -199,6 +199,14 @@ class HttpBackend:
         # baked in at construction) or borrowed (per-request _extra_headers).
         self._auth_token = auth_token or None
         self._device_id = device_id or None
+        if self._device_id:
+            try:
+                self._device_id = validate_device_id(self._device_id)
+            except ValueError as exc:
+                raise ValueError(
+                    "invalid HttpBackend device_id; correct client configuration before "
+                    f"upload: {exc}"
+                ) from exc
         try:
             self._device_metadata = DeviceMetadata(
                 name=device_name,

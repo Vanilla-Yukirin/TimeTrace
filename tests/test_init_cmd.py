@@ -247,3 +247,17 @@ def test_run_non_interactive_reports_invalid_device_env_without_writing(tmp_path
     assert rc == 2
     assert not target.exists()
     assert "device.name" in "\n".join(out.lines)
+
+
+def test_run_non_interactive_rejects_invalid_device_id_without_generating_replacement(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("TIMETRACE_DEVICE_ID", "legacy-device-id")
+    target = tmp_path / "client.toml"
+    out = _Capture()
+    rc = run(["--config", str(target), "--non-interactive"], out=out)
+    assert rc == 2
+    assert not target.exists()
+    output = "\n".join(out.lines)
+    assert "device.id" in output
+    assert "not rewritten" in output
