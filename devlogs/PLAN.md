@@ -94,12 +94,12 @@ Windows PC B（独立 device_id / token / outbox）──┘
 - **Evidence**：临时 outbox 长时间模拟、排空吞吐和磁盘曲线；生产只做只读容量盘点。
 - **Rollback**：限速与提示可关闭；不得通过静默删除未上传记录解决 backlog。
 
-#### F. 部署必须经过主机 readiness gate
+#### F. 发布制品与主机激活分别经过 readiness gate
 
-- **Next**：在推进 `deploy` 前人工确认小主机已开机、FRP/SSH 可达、磁盘充足、备份存在、模型状态明确；随后把这些检查固化成 workflow preflight，并评估为后端/前端增加独立的手动开关。
-- **Done when**：后端主机离线会在改变生产指针前被阻止；操作者能明确只部署后端、只发布前端或两者都做；两个结果不会被误报为一个整体成功。
-- **Evidence**：离线/在线两种 preflight 测试和 workflow run 记录。
-- **Rollback**：preflight 误判时保持 `deploy` 不变；不要为了让 workflow 变绿而跳过主机检查。
+- **Next**：推进 `deploy` 前确认目标提交已 review 且 CI 通过；Actions 只验证并发布包含后端、SPA 和部署资产的不可变 GHCR SHA 镜像。镜像就绪后，再由操作者在部署机本地确认 Docker/GHCR、磁盘、数据/token 目录、备份与模型状态，然后执行 `timetrace-update`。workflow 不检查 FRP/SSH，也不连接部署机。
+- **Done when**：部署机离线不阻塞制品发布，也不会改变现有运行态；只有部署机主动执行更新器才会同时激活同一 SHA 的后端与前端，任何检查或健康探针失败均恢复上一套完整 release。
+- **Evidence**：Actions run 与不可变镜像 SHA、部署机本地 preflight/update 输出、runtime/web 指针、容器和本机/公网探针；不记录凭据或私有网络拓扑。
+- **Rollback**：主机未就绪时不执行更新器；激活失败交给更新器自动回滚。不要向 workflow 重新加入部署 SSH/FRP readiness 或拆分前后端生产版本。
 
 在完成 B 之前，第二台客户端可以用于短时实验，但记录会与第一台混在一起且无法事后可靠拆分，不建议作为正式日常运行方式。
 
