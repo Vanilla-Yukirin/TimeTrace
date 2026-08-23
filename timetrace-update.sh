@@ -69,6 +69,11 @@ fi
   echo "TIMETRACE_PULL_INTERVAL must be a non-negative integer" >&2
   exit 2
 }
+install -d -m 755 "${install_dir}"
+test -w "${install_dir}" || {
+  echo "updater install directory is not writable: ${install_dir}" >&2
+  exit 1
+}
 
 image_ref="${image}:${ref}"
 pulled=0
