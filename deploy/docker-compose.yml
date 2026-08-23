@@ -11,9 +11,6 @@ services:
     env_file:
       - path: "${TIMETRACE_ENV_FILE:-/srv/timetrace/config/timetrace.env}"
         required: true
-        # Rollback snapshots come from Docker's Config.Env. Raw mode keeps
-        # literal $, quotes, and backslashes from being re-expanded by Compose.
-        format: raw
     environment:
       HOME: /home/timetrace
       TZ: "${TIMETRACE_TZ:-Asia/Shanghai}"
