@@ -31,6 +31,7 @@ previous_web_target=
 cutover_started=0
 web_switched=0
 web_staging=
+backup_staging=
 
 log() {
   printf '==> %s\n' "$*"
@@ -109,6 +110,11 @@ rollback() {
       "${web_root}"/releases/.staging-*) rm -rf -- "${web_staging}" ;;
     esac
   fi
+  if [[ -n "${backup_staging}" && -d "${backup_staging}" ]]; then
+    case "${backup_staging}" in
+      "${data_dir}"/db/.pre-docker-*) rm -rf -- "${backup_staging}" ;;
+    esac
+  fi
 
   if [[ "${previous_mode}" == docker && -n "${previous_release}" ]]; then
     local previous_compose="${previous_release}/docker-compose.yml"
@@ -149,9 +155,13 @@ install -d -m 700 "${runtime_root}/releases" "${config_dir}"
 install -d -m 755 "${web_root}/releases"
 
 if [[ ! -f "${env_file}" ]]; then
-  test -s "${legacy_env}"
-  install -m 600 "${legacy_env}" "${env_file}"
-  log "copied the legacy environment file once to ${env_file}"
+  if [[ -f "${legacy_env}" ]]; then
+    install -m 600 "${legacy_env}" "${env_file}"
+    log "copied the legacy environment file once to ${env_file}"
+  else
+    install -m 600 /dev/null "${env_file}"
+    log "created an empty environment file at ${env_file}"
+  fi
 fi
 chmod 600 "${env_file}"
 
@@ -180,13 +190,15 @@ if [[ "${previous_mode}" == systemd ]]; then
 
   backup_dir="${data_dir}/db/pre-docker-${ref}"
   if [[ ! -e "${backup_dir}" ]]; then
-    install -d -m 700 "${backup_dir}"
+    backup_staging=$(mktemp -d "${data_dir}/db/.pre-docker-${ref}.XXXXXX")
     for name in timetrace.db timetrace.db-wal timetrace.db-shm; do
       if [[ -f "${data_dir}/db/${name}" ]]; then
         cp --reflink=auto --preserve=mode,timestamps \
-          "${data_dir}/db/${name}" "${backup_dir}/${name}"
+          "${data_dir}/db/${name}" "${backup_staging}/${name}"
       fi
     done
+    mv -T "${backup_staging}" "${backup_dir}"
+    backup_staging=
     log "created a stopped-service SQLite snapshot at ${backup_dir}"
   fi
 elif [[ "${previous_mode}" == docker ]]; then
