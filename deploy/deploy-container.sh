@@ -27,6 +27,9 @@ service=timetrace-server.service
 
 previous_mode=none
 previous_release=
+previous_image_ref=
+previous_image_repository=
+previous_image_tag=
 previous_runtime_target=
 previous_web_target=
 legacy_was_enabled=0
@@ -41,7 +44,8 @@ log() {
 }
 
 compose() {
-  TIMETRACE_IMAGE="${image}" \
+  TIMETRACE_IMAGE_REF="${image}:${ref}" \
+    TIMETRACE_IMAGE="${image}" \
     TIMETRACE_IMAGE_TAG="${ref}" \
     TIMETRACE_ENV_FILE="${env_file}" \
     TIMETRACE_DATA_DIR="${data_dir}" \
@@ -134,11 +138,10 @@ rollback() {
 
   if [[ "${previous_mode}" == docker && -n "${previous_release}" ]]; then
     local previous_compose="${previous_release}/docker-compose.yml"
-    local previous_ref
-    previous_ref=$(basename "${previous_release}")
     if [[ -f "${previous_compose}" ]]; then
-      TIMETRACE_IMAGE="${image}" \
-        TIMETRACE_IMAGE_TAG="${previous_ref}" \
+      TIMETRACE_IMAGE_REF="${previous_image_ref}" \
+        TIMETRACE_IMAGE="${previous_image_repository}" \
+        TIMETRACE_IMAGE_TAG="${previous_image_tag}" \
         TIMETRACE_ENV_FILE="${env_file}" \
         TIMETRACE_DATA_DIR="${data_dir}" \
         TIMETRACE_TOKEN_DIR="${token_dir}" \
@@ -194,8 +197,10 @@ fi
 if [[ -L "${web_root}/current" ]]; then
   previous_web_target=$(readlink "${web_root}/current" || true)
 fi
-if docker inspect timetrace-server >/dev/null 2>&1; then
+if previous_image_ref=$(docker inspect --format '{{.Config.Image}}' timetrace-server 2>/dev/null); then
   previous_mode=docker
+  previous_image_repository=${previous_image_ref%:*}
+  previous_image_tag=${previous_image_ref##*:}
 else
   if legacy_systemctl is-enabled --quiet "${service}"; then
     legacy_was_enabled=1

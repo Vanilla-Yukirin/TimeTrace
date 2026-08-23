@@ -2,7 +2,7 @@ name: timetrace
 
 services:
   server:
-    image: "${TIMETRACE_IMAGE:?TIMETRACE_IMAGE is required}:${TIMETRACE_IMAGE_TAG:?TIMETRACE_IMAGE_TAG is required}"
+    image: "${TIMETRACE_IMAGE_REF:-${TIMETRACE_IMAGE:?TIMETRACE_IMAGE is required}:${TIMETRACE_IMAGE_TAG:?TIMETRACE_IMAGE_TAG is required}}"
     container_name: timetrace-server
     network_mode: host
     restart: unless-stopped
