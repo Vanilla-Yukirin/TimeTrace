@@ -125,11 +125,25 @@ class UploadSection:
 
 
 @dataclass
+class ControlSection:
+    """Loopback-only local control panel settings.
+
+    The bind address is intentionally not configurable: the client control API
+    is a desktop-local surface and must never become a LAN listener by a TOML
+    typo. ``port`` may be changed to avoid a local conflict.
+    """
+
+    enabled: bool = True
+    port: int = 8764
+
+
+@dataclass
 class ClientConfig:
     server: ServerSection = field(default_factory=ServerSection)
     device: DeviceSection = field(default_factory=DeviceSection)
     outbox: OutboxSection = field(default_factory=OutboxSection)
     upload: UploadSection = field(default_factory=UploadSection)
+    control: ControlSection = field(default_factory=ControlSection)
     storage: StorageConfig = field(default_factory=StorageConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
@@ -157,6 +171,7 @@ class ClientConfig:
         config.validate_device_identity(
             source=f"effective client configuration ({path} + TIMETRACE_* environment)"
         )
+        config.validate_control(source=str(path))
         return config
 
     @classmethod
@@ -170,6 +185,7 @@ class ClientConfig:
         device_data = data.get("device", {})
         outbox_data = data.get("outbox", {})
         upload_data = data.get("upload", {})
+        control_data = data.get("control", {})
         storage_data = data.get("storage", {})
         capture_data = data.get("capture", {})
         privacy_data = data.get("privacy", {})
@@ -209,6 +225,10 @@ class ClientConfig:
                 max_kbps=int(upload_data.get("max_kbps", 0)),
                 max_image_mb=float(upload_data.get("max_image_mb", UploadSection.max_image_mb)),
                 concurrency=int(upload_data.get("concurrency", UploadSection.concurrency)),
+            ),
+            control=ControlSection(
+                enabled=bool(control_data.get("enabled", ControlSection.enabled)),
+                port=int(control_data.get("port", ControlSection.port)),
             ),
             storage=_storage_from_toml(storage_data),
             capture=_capture_from_toml(capture_data),
@@ -305,6 +325,10 @@ class ClientConfig:
                 ) from exc
         return self.device.id
 
+    def validate_control(self, *, source: str = "client configuration") -> None:
+        if not 1 <= self.control.port <= 65535:
+            raise ValueError(f"{source} has invalid control.port: expected 1..65535")
+
     def save(self, path: Path | None = None) -> Path:
         """Write the current config out to `path` (default location if None).
 
@@ -313,8 +337,72 @@ class ClientConfig:
         """
         path = path or _DEFAULT_PATH
         self.validate_device_identity(source=str(path))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self._render_toml(), encoding="utf-8")
+        self.validate_control(source=str(path))
+        _atomic_write_text(path, self._render_toml())
+        return path
+
+    def save_control_state(
+        self,
+        path: Path | None = None,
+        *,
+        paused: bool | None = None,
+        endpoint_enabled: tuple[bool, ...] | None = None,
+    ) -> Path:
+        """Persist UI-owned runtime controls without leaking env-only secrets.
+
+        ``load_or_default`` applies environment overrides in memory. Saving that
+        object directly could copy ``TIMETRACE_AUTH_TOKEN`` into client.toml.
+        The control panel only owns pause state and endpoint enabled flags, so
+        reload the file layer, overlay exactly those values, then atomically
+        save the result.
+        """
+        path = path or _DEFAULT_PATH
+        file_config = self._load_file_or_default(path)
+        file_config.privacy.paused = self.privacy.paused if paused is None else paused
+
+        if file_config.server.endpoints:
+            if len(file_config.server.endpoints) != len(self.server.endpoints):
+                raise ValueError("endpoint configuration changed on disk; restart the client")
+            for persisted, live in zip(file_config.server.endpoints, self.server.endpoints):
+                if (persisted.name, persisted.url) != (live.name, live.url):
+                    raise ValueError("endpoint configuration changed on disk; restart the client")
+            enabled_values = (
+                endpoint_enabled
+                if endpoint_enabled is not None
+                else tuple(e.enabled for e in self.server.endpoints)
+            )
+            if len(enabled_values) != len(file_config.server.endpoints):
+                raise ValueError("endpoint configuration changed in memory; restart the client")
+            for persisted, enabled in zip(file_config.server.endpoints, enabled_values):
+                persisted.enabled = enabled
+        elif endpoint_enabled is not None:
+            raise ValueError(
+                "endpoint is managed by legacy server.url; add [[server.endpoints]] before editing"
+            )
+
+        return file_config._save_file_layer(path)
+
+    def save_seeded_device(self, path: Path | None = None) -> Path:
+        """Persist a newly minted ID without copying environment secrets."""
+        path = path or _DEFAULT_PATH
+        file_config = self._load_file_or_default(path)
+        file_config.device.id = self.device.id
+        if "TIMETRACE_DEVICE_NAME" not in os.environ:
+            file_config.device.name = self.device.name
+        if "TIMETRACE_DEVICE_DESC" not in os.environ:
+            file_config.device.description = self.device.description
+        return file_config._save_file_layer(path)
+
+    def _save_file_layer(self, path: Path) -> Path:
+        """Write parsed file-layer values without effective-env validation.
+
+        A stale device value in TOML may intentionally be repaired by a valid
+        ``TIMETRACE_DEVICE_*`` override. Control-only persistence must preserve
+        that raw value, not reject it or copy the env replacement into the file.
+        Ordinary ``save()`` remains strict and validates effective identity.
+        """
+        self.validate_control(source=str(path))
+        _atomic_write_text(path, self._render_toml())
         return path
 
     def _render_toml(self) -> str:
@@ -352,6 +440,10 @@ class ClientConfig:
             _kv("max_image_mb", self.upload.max_image_mb),
             _kv("concurrency", self.upload.concurrency),
             "",
+            "[control]",
+            _kv("enabled", self.control.enabled),
+            _kv("port", self.control.port),
+            "",
             "[storage]",
             _kv("data_dir", str(self.storage.data_dir)),
             "",
@@ -371,6 +463,33 @@ class ClientConfig:
             "",
         ]
         return "\n".join(lines)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Durably replace a small UTF-8 config file from the same directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(temp_path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        # POSIX can also make the directory entry durable. Windows rejects
+        # opening directories, while os.replace above is already atomic there.
+        if os.name != "nt":
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------- #

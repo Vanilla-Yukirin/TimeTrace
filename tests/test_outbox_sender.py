@@ -450,3 +450,50 @@ async def test_compact_disabled_when_zero(outbox, tmp_path):
     blobs_dir = tmp_path / "outbox" / "blobs"
     blob_count = len(list(blobs_dir.iterdir())) if blobs_dir.exists() else 0
     assert blob_count == 3
+
+
+async def test_observer_failures_do_not_change_delivery_semantics(outbox):
+    await outbox.append({"kind": "ingest", "client_record_id": "ok"})
+    stub = _StubSender()
+
+    def broken_success(entry):  # noqa: ANN001
+        raise RuntimeError("observer only")
+
+    sender = OutboxSender(
+        outbox,
+        stub,
+        on_send_success=broken_success,
+        idle_poll_interval_s=0.01,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+    assert len(stub.calls) == 1
+    assert await outbox.pending_count() == 0
+
+
+async def test_error_observer_failure_does_not_break_retry(outbox):
+    await outbox.append({"kind": "ingest", "client_record_id": "retry"})
+    stub = _StubSender(fail_first_n=1)
+
+    def broken_error(entry, error):  # noqa: ANN001
+        raise RuntimeError("observer only")
+
+    sender = OutboxSender(
+        outbox,
+        stub,
+        on_send_error=broken_error,
+        backoff_initial_s=0.01,
+        idle_poll_interval_s=0.01,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sender.run(stop))
+    while await outbox.pending_count() > 0:
+        await asyncio.sleep(0.01)
+    stop.set()
+    await task
+    assert len(stub.calls) == 2
+    assert await outbox.pending_count() == 0

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -30,6 +31,20 @@ HealthProbe = Callable[[str], Awaitable[bool]]
 # falsely marked down by a tight probe window.
 _PROBE_TIMEOUT_S = 8.0
 _DEFAULT_PROBE_INTERVAL_S = 30.0
+
+
+def redact_endpoint_url(url: str) -> str:
+    """Return only scheme + host + port for display/logging."""
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname or ""
+        port = parsed.port
+    except ValueError:
+        return "<invalid endpoint URL>"
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    netloc = f"{hostname}:{port}" if port is not None else hostname
+    return urlunsplit((parsed.scheme, netloc, "", "", ""))
 
 
 async def http_healthz_probe(url: str, *, timeout_s: float = _PROBE_TIMEOUT_S) -> bool:
@@ -121,9 +136,7 @@ class EndpointSelector:
             if chosen is not None:
                 self._current = chosen
                 if chosen.name != prev:
-                    logger.info(
-                        "endpoint.selected", name=chosen.name, url=chosen.url, previous=prev
-                    )
+                    logger.info("endpoint.selected", name=chosen.name, previous=prev)
             elif self._current is not None and self._current.name in {e.name for e in enabled}:
                 # Keep current. Silent during the periodic upgrade check (steady
                 # state); only warn on a full probe (a real send-failure probe).

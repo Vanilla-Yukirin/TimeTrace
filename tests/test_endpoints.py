@@ -8,7 +8,7 @@ import pytest
 
 from timetrace.client.core.backend import BackendError, HttpBackend
 from timetrace.client.core.config import ClientConfig, EndpointSection, ServerSection
-from timetrace.client.core.endpoints import EndpointSelector
+from timetrace.client.core.endpoints import EndpointSelector, redact_endpoint_url
 from timetrace.common.models import CaptureContext
 
 # --------------------------------------------------------------------------- #
@@ -220,3 +220,11 @@ async def test_backend_provider_none_raises_so_entry_stays_pending():
     with pytest.raises(BackendError, match="no healthy endpoint"):
         await backend.submit_record(_CTX, reason="t")
     await client.aclose()
+
+
+# Display/log output must never reproduce URL credentials or query tokens.
+def test_redact_endpoint_url_keeps_only_origin():
+    result = redact_endpoint_url(
+        "https://alice:password@example.test:9443/private/token?key=query#fragment"
+    )
+    assert result == "https://example.test:9443"

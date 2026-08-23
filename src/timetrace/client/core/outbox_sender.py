@@ -128,6 +128,8 @@ class OutboxSender:
         max_image_bytes: int = _MAX_IMAGE_BYTES,
         compact_every_n_acks: int = 200,
         on_send_failure: Callable[[], Awaitable[None]] | None = None,
+        on_send_success: Callable[[OutboxEntry], None] | None = None,
+        on_send_error: Callable[[OutboxEntry, Exception], None] | None = None,
         concurrency: int = 1,
     ) -> None:
         self._outbox = outbox
@@ -138,6 +140,8 @@ class OutboxSender:
         # Called after each failed send (before backoff). Used to trigger a fast
         # endpoint re-selection so the next retry can hit a different path.
         self._on_send_failure = on_send_failure
+        self._on_send_success = on_send_success
+        self._on_send_error = on_send_error
         self._backoff_initial = backoff_initial_s
         self._backoff_max = backoff_max_s
         self._idle_interval = idle_poll_interval_s
@@ -318,6 +322,11 @@ class OutboxSender:
         while True:
             try:
                 await self._send(entry)
+                if self._on_send_success is not None:
+                    try:
+                        self._on_send_success(entry)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("outbox_sender.success_observer_failed", exc_info=True)
                 if attempt > 0:
                     logger.info(
                         "outbox_sender.recovered",
@@ -326,6 +335,11 @@ class OutboxSender:
                     )
                 return
             except Exception as exc:  # noqa: BLE001
+                if self._on_send_error is not None:
+                    try:
+                        self._on_send_error(entry, exc)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("outbox_sender.error_observer_failed", exc_info=True)
                 attempt += 1
                 logger.warning(
                     "outbox_sender.send_failed",

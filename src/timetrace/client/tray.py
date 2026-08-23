@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 if TYPE_CHECKING:
+    from timetrace.client.controller import ClientController
     from timetrace.client.core.config import EndpointSection
     from timetrace.common.config import PrivacyConfig
 
@@ -43,6 +44,7 @@ class TrayIcon:
         endpoints: list[EndpointSection] | None = None,
         save_config: Callable[[], Any] | None = None,
         runtime: dict[str, Any] | None = None,
+        controller: ClientController | None = None,
     ) -> None:
         self._privacy = privacy_cfg
         self._on_quit = on_quit
@@ -54,6 +56,7 @@ class TrayIcon:
         # Holder set by the daemon once the EndpointSelector exists; used to show
         # live health (● active / ○ healthy / ✕ down) without a hard dependency.
         self._runtime = runtime if runtime is not None else {}
+        self._controller = controller
         self._icon = None
 
     # ------------------------------------------------------------------ #
@@ -75,7 +78,9 @@ class TrayIcon:
             # Windows pystray caches menu text at build time; refresh so the
             # endpoint health glyphs (●/○/✕) track the selector. Only needed
             # when we actually render the connection submenu.
-            if self._endpoints:
+            if self._endpoints or (
+                self._controller is not None and self._controller.cached_snapshot().endpoints
+            ):
                 threading.Thread(
                     target=self._refresh_menu_loop, name="tray-refresh", daemon=True
                 ).start()
@@ -91,6 +96,12 @@ class TrayIcon:
             if icon is None:
                 continue
             try:
+                if self._controller is not None:
+                    icon.title = (
+                        "TimeTrace（已暂停）"
+                        if self._controller.cached_snapshot().paused
+                        else "TimeTrace"
+                    )
                 icon.update_menu()
             except Exception:  # noqa: BLE001
                 pass
@@ -108,27 +119,49 @@ class TrayIcon:
 
     def _build_menu(self, pystray):
         def pause_label(icon) -> str:
-            return "继续采集" if self._privacy.paused else "暂停采集"
+            paused = (
+                self._controller.cached_snapshot().paused
+                if self._controller is not None
+                else self._privacy.paused
+            )
+            return "继续采集" if paused else "暂停采集"
 
         def on_pause(icon, item) -> None:  # noqa: ANN001
-            self._privacy.paused = not self._privacy.paused
-            status = "paused" if self._privacy.paused else "resumed"
+            if self._controller is not None:
+                paused = not self._controller.cached_snapshot().paused
+                self._controller.set_paused_from_thread(paused)
+            else:
+                self._privacy.paused = not self._privacy.paused
+                paused = self._privacy.paused
+            status = "paused" if paused else "resumed"
             logger.info("tray.capture_toggle", status=status)
-            icon.title = "TimeTrace（已暂停）" if self._privacy.paused else "TimeTrace"
 
         def on_quit(icon, item) -> None:  # noqa: ANN001
             logger.info("tray.quit_requested")
             icon.stop()
-            self._on_quit()
+            if self._controller is not None:
+                self._controller.request_shutdown_from_thread()
+            else:
+                self._on_quit()
 
         items = [pystray.MenuItem(pause_label, on_pause)]
-        if self._endpoints:
+        if self._controller is not None:
+            items.append(
+                pystray.MenuItem(
+                    "打开控制面板",
+                    lambda icon, item: self._controller.open_control_panel_from_thread(),
+                    enabled=lambda item: bool(self._controller.cached_snapshot().control_url),
+                )
+            )
+        if self._controller is not None and self._controller.cached_snapshot().endpoints:
+            items.append(pystray.MenuItem("连接", self._build_controller_endpoint_menu(pystray)))
+        elif self._endpoints:
             items.append(pystray.MenuItem("连接", self._build_endpoint_menu(pystray)))
         items.append(pystray.Menu.SEPARATOR)
         items.append(pystray.MenuItem("退出 TimeTrace", on_quit))
         return pystray.Menu(*items)
 
-    def _endpoint_glyph(self, ep: EndpointSection) -> str:
+    def _endpoint_glyph(self, ep: EndpointSection, index: int | None = None) -> str:
         """Live status glyph for an endpoint, read best-effort from the selector
         the daemon stashed in ``runtime``. ● active / ○ healthy / ✕ down / ? n/a."""
         selector = self._runtime.get("selector")
@@ -144,15 +177,65 @@ class TrayIcon:
             return "✕"
         return "?"
 
+    @staticmethod
+    def _snapshot_glyph(endpoint: Any) -> str:
+        if endpoint.active:
+            return "●"
+        if endpoint.healthy is True:
+            return "○"
+        if endpoint.healthy is False:
+            return "✕"
+        return "?"
+
+    def _build_controller_endpoint_menu(self, pystray):
+        """Build solely from immutable controller snapshots (tray thread-safe)."""
+
+        def current(index: int):
+            snapshot = self._controller.cached_snapshot()
+            return next(
+                (endpoint for endpoint in snapshot.endpoints if endpoint.index == index), None
+            )
+
+        def label(item, index: int) -> str:  # noqa: ANN001
+            endpoint = current(index)
+            if endpoint is None:
+                return "? 已移除的连接"
+            return f"{self._snapshot_glyph(endpoint)} {endpoint.name}  ({endpoint.url})"
+
+        def toggle(icon, item, index: int) -> None:  # noqa: ANN001
+            endpoint = current(index)
+            if endpoint is None:
+                return
+            logger.info(
+                "tray.endpoint_toggle",
+                name=endpoint.name,
+                enabled=not endpoint.enabled,
+            )
+            self._controller.set_endpoint_enabled_from_thread(index, not endpoint.enabled)
+
+        return pystray.Menu(
+            *[
+                pystray.MenuItem(
+                    lambda item, index=endpoint.index: label(item, index),
+                    lambda icon, item, index=endpoint.index: toggle(icon, item, index),
+                    checked=lambda item, index=endpoint.index: bool(
+                        current(index) and current(index).enabled
+                    ),
+                )
+                for endpoint in self._controller.cached_snapshot().endpoints
+            ]
+        )
+
     def _build_endpoint_menu(self, pystray):
         """One checkable item per endpoint: toggle enabled, persist, let the
         selector pick it up on its next re-probe. Order is config-only (not here)."""
 
-        def make_toggle(ep: EndpointSection):
+        def make_toggle(index: int, ep: EndpointSection):
             def _toggle(icon, item) -> None:  # noqa: ANN001
-                ep.enabled = not ep.enabled
-                logger.info("tray.endpoint_toggle", name=ep.name, enabled=ep.enabled)
+                enabled = not ep.enabled
+                logger.info("tray.endpoint_toggle", name=ep.name, enabled=enabled)
                 if self._save_config is not None:
+                    ep.enabled = enabled
                     try:
                         self._save_config()
                     except Exception:  # noqa: BLE001
@@ -161,11 +244,15 @@ class TrayIcon:
             return _toggle
 
         items = []
-        for ep in self._endpoints:
+        for index, ep in enumerate(self._endpoints):
             items.append(
                 pystray.MenuItem(
-                    (lambda item, ep=ep: f"{self._endpoint_glyph(ep)} {ep.name}  ({ep.url})"),
-                    make_toggle(ep),
+                    (
+                        lambda item, ep=ep, index=index: (
+                            f"{self._endpoint_glyph(ep, index)} {ep.name}  ({ep.url})"
+                        )
+                    ),
+                    make_toggle(index, ep),
                     checked=(lambda item, ep=ep: ep.enabled),
                 )
             )
@@ -173,20 +260,22 @@ class TrayIcon:
 
 
 def start_tray_thread(
-    privacy_cfg: PrivacyConfig,
-    on_quit: Callable[[], None],
+    privacy_cfg: PrivacyConfig | None = None,
+    on_quit: Callable[[], None] | None = None,
     *,
     endpoints: list[EndpointSection] | None = None,
     save_config: Callable[[], Any] | None = None,
     runtime: dict[str, Any] | None = None,
+    controller: ClientController | None = None,
 ) -> threading.Thread:
     """Start the tray icon in a daemon thread.  Returns the thread."""
     tray = TrayIcon(
-        privacy_cfg,
-        on_quit,
+        privacy_cfg or controller.config.privacy,
+        on_quit or (lambda: None),
         endpoints=endpoints,
         save_config=save_config,
         runtime=runtime,
+        controller=controller,
     )
     t = threading.Thread(target=tray.run, name="tray", daemon=True)
     t.start()
