@@ -47,6 +47,14 @@ log() {
   printf '==> %s\n' "$*"
 }
 
+cleanup_updater_staging() {
+  if [[ -n "${updater_staging}" && -f "${updater_staging}" ]]; then
+    case "${updater_staging}" in
+      "${install_target%/*}"/.timetrace-update.*) rm -f -- "${updater_staging}" ;;
+    esac
+  fi
+}
+
 compose() {
   TIMETRACE_IMAGE_REF="${image}:${ref}" \
     TIMETRACE_IMAGE="${image}" \
@@ -141,11 +149,7 @@ rollback() {
       "${data_dir}"/db/.pre-docker-*) rm -rf -- "${backup_staging}" ;;
     esac
   fi
-  if [[ -n "${updater_staging}" && -f "${updater_staging}" ]]; then
-    case "${updater_staging}" in
-      "${install_target%/*}"/.timetrace-update.*) rm -f -- "${updater_staging}" ;;
-    esac
-  fi
+  cleanup_updater_staging
 
   if [[ "${previous_mode}" == docker && -n "${previous_release}" ]]; then
     local previous_compose="${previous_release}/docker-compose.yml"
@@ -308,15 +312,20 @@ fi
 # retired rollback unit visible as inactive rather than leaving a false alarm.
 legacy_systemctl reset-failed "${service}" || true
 
-# Keep the stable host command synchronized only after the release has passed
-# every health check. A failed release therefore never replaces the updater.
+log "deployed ${image}:${ref} and published its bundled SPA"
+docker inspect --format 'container={{.Name}} image={{.Config.Image}} status={{.State.Status}} health={{.State.Health.Status}}' timetrace-server
+
+# The runtime transaction is now committed. Stop routing later publication
+# failures or signals into runtime rollback: the updater is a separate atomic
+# write, so failure leaves the previous recovery command intact while the
+# already healthy runtime remains active.
+trap - ERR HUP INT TERM
+trap cleanup_updater_staging EXIT
 updater_staging=$(mktemp "${install_target%/*}/.timetrace-update.XXXXXX")
 install -m 755 "${release_dir}/timetrace-update.sh" "${updater_staging}"
 mv -Tf "${updater_staging}" "${install_target}"
 updater_staging=
+trap - EXIT
 
-trap - ERR HUP INT TERM
-log "deployed ${image}:${ref} and published its bundled SPA"
 log "installed ${install_target} from ${ref}"
 log "update complete"
-docker inspect --format 'container={{.Name}} image={{.Config.Image}} status={{.State.Status}} health={{.State.Health.Status}}' timetrace-server
