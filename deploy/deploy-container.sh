@@ -87,7 +87,11 @@ wait_for_container_health() {
 
 rollback() {
   local status=$?
+  if (($# > 0)); then
+    status=$1
+  fi
   trap - ERR
+  trap '' HUP INT TERM
   if ((cutover_started == 0)); then
     exit "${status}"
   fi
@@ -137,6 +141,9 @@ rollback() {
   exit "${status}"
 }
 trap rollback ERR
+trap 'rollback 129' HUP
+trap 'rollback 130' INT
+trap 'rollback 143' TERM
 
 [[ "${ref}" =~ ^[0-9a-f]{40}$ ]] || {
   echo "ref must be a full 40-character Git SHA" >&2
@@ -247,6 +254,6 @@ fi
 # retired rollback unit visible as inactive rather than leaving a false alarm.
 legacy_systemctl reset-failed "${service}" || true
 
-trap - ERR
+trap - ERR HUP INT TERM
 log "deployed ${image}:${ref} and published its bundled SPA"
 docker inspect --format 'container={{.Name}} image={{.Config.Image}} status={{.State.Status}} health={{.State.Health.Status}}' timetrace-server
