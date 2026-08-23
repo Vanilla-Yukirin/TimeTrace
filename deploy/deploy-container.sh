@@ -12,6 +12,7 @@ image=${2:?usage: deploy-container.sh <git-sha> <image>}
 runtime_root=${TIMETRACE_RUNTIME_ROOT:-/srv/timetrace/runtime}
 release_dir="${runtime_root}/releases/${ref}"
 compose_file="${release_dir}/docker-compose.yml"
+rollback_compose_override="${release_dir}/docker-compose.rollback.yml"
 current_link="${runtime_root}/current"
 config_dir=/srv/timetrace/config
 env_file="${config_dir}/timetrace.env"
@@ -188,7 +189,10 @@ rollback() {
           TIMETRACE_TOKEN_DIR="${previous_token_dir}" \
           TIMETRACE_HOST_UID="${previous_host_uid}" \
           TIMETRACE_HOST_GID="${previous_host_gid}" \
-          docker compose -p timetrace -f "${previous_compose}" up -d --remove-orphans --pull never && \
+          docker compose -p timetrace \
+            -f "${previous_compose}" \
+            -f "${rollback_compose_override}" \
+            up -d --remove-orphans --pull never && \
         wait_for_health 24; then
         cleanup_previous_env_file
       else
@@ -228,6 +232,7 @@ trap 'rollback 143' TERM
 }
 
 test -f "${compose_file}"
+test -s "${rollback_compose_override}"
 test -s "${release_dir}/timetrace-update.sh"
 test -s "${frontend_source}/index.html"
 test -d "${data_dir}"

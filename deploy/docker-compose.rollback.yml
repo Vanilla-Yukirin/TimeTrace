@@ -1,0 +1,9 @@
+services:
+  server:
+    # Replace, rather than append to, the previous release's env_file list.
+    # This keeps Docker Config.Env snapshots byte-stable even when rolling
+    # back a release whose Compose file predates raw env parsing.
+    env_file: !override
+      - path: "${TIMETRACE_ENV_FILE:?TIMETRACE_ENV_FILE is required}"
+        required: true
+        format: raw

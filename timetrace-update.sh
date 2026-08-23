@@ -147,6 +147,7 @@ if [[ ! -d "${release_dir}" ]]; then
   extract_container=
 
   test -s "${staging_dir}/docker-compose.yml"
+  test -s "${staging_dir}/docker-compose.rollback.yml"
   test -s "${staging_dir}/deploy-container.sh"
   test -s "${staging_dir}/timetrace-update.sh"
   test -s "${staging_dir}/frontend-dist/index.html"
@@ -155,6 +156,7 @@ if [[ ! -d "${release_dir}" ]]; then
 fi
 
 test -s "${release_dir}/docker-compose.yml"
+test -s "${release_dir}/docker-compose.rollback.yml"
 test -s "${release_dir}/deploy-container.sh"
 test -s "${release_dir}/timetrace-update.sh"
 test -s "${release_dir}/frontend-dist/index.html"

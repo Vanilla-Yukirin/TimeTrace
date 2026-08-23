@@ -55,6 +55,7 @@ COPY --chown=timetrace:timetrace \
     /opt/timetrace/skills/timetrace/SKILL.md
 COPY --chown=timetrace:timetrace \
     deploy/docker-compose.yml \
+    deploy/docker-compose.rollback.yml \
     deploy/deploy-container.sh \
     timetrace-update.sh \
     /opt/timetrace/release/
