@@ -83,7 +83,32 @@ jobs:
           set -euo pipefail
           DATA_DIR="${RUNNER_TEMP}/timetrace-data"
           TOKEN_DIR="${RUNNER_TEMP}/timetrace-tokens"
+          LEGACY_ENV="${RUNNER_TEMP}/timetrace-legacy.env"
+          NORMALIZED_ENV="${RUNNER_TEMP}/timetrace-normalized.env"
           sudo install -d -o 1000 -g 1000 "${DATA_DIR}" "${TOKEN_DIR}"
+
+          cat >"${LEGACY_ENV}" <<'EOF'
+          TIMETRACE_VLM_API_KEY="abc$TOKEN"
+          TIMETRACE_TEST_PATH='C:\models\vlm'
+          EOF
+          docker run --rm \
+            --network none \
+            --read-only \
+            --user "$(id -u):$(id -g)" \
+            --mount type=bind,src="${LEGACY_ENV}",dst=/tmp/timetrace-legacy.env,readonly \
+            --entrypoint python \
+            timetrace-server:ci \
+            -m timetrace.common.dotenv_normalizer \
+            /tmp/timetrace-legacy.env >"${NORMALIZED_ENV}"
+          TIMETRACE_IMAGE_REF=timetrace-server:ci \
+            TIMETRACE_HOST_UID=1000 \
+            TIMETRACE_HOST_GID=1000 \
+            TIMETRACE_ENV_FILE="${NORMALIZED_ENV}" \
+            TIMETRACE_DATA_DIR="${DATA_DIR}" \
+            TIMETRACE_TOKEN_DIR="${TOKEN_DIR}" \
+            docker compose -p timetrace-env-ci -f deploy/docker-compose.yml \
+            run --rm --no-deps --entrypoint python server -c \
+            'import os; assert os.environ["TIMETRACE_VLM_API_KEY"] == "abc$TOKEN"; assert os.environ["TIMETRACE_TEST_PATH"] == r"C:\models\vlm"'
 
           cleanup() {
             docker logs timetrace-ci 2>&1 || true

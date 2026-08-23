@@ -243,10 +243,22 @@ install -d -m 755 "${web_root}/releases"
 if [[ ! -f "${env_file}" ]]; then
   env_staging=$(mktemp "${config_dir}/.timetrace.env.XXXXXX")
   if [[ -f "${legacy_env}" ]]; then
-    install -m 600 "${legacy_env}" "${env_staging}"
+    # The legacy systemd EnvironmentFile does not expand dollar expressions,
+    # while Compose expands them in unquoted and double-quoted dotenv values.
+    # Parse without interpolation and emit single-quoted canonical values so
+    # the migrated live file retains both dotenv quoting and literal dollars.
+    docker run --rm \
+      --network none \
+      --read-only \
+      --user "${host_uid}:${host_gid}" \
+      --mount "type=bind,src=${legacy_env},dst=/tmp/timetrace-legacy.env,readonly" \
+      --entrypoint python \
+      "${image}:${ref}" \
+      -m timetrace.common.dotenv_normalizer \
+      /tmp/timetrace-legacy.env >"${env_staging}"
     mv -Tf "${env_staging}" "${env_file}"
     env_staging=
-    log "copied the legacy environment file once to ${env_file}"
+    log "normalized the legacy environment file once to ${env_file}"
   else
     install -m 600 /dev/null "${env_staging}"
     mv -Tf "${env_staging}" "${env_file}"
