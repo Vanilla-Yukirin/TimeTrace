@@ -1,7 +1,7 @@
 # TimeTrace 滚动 TODO / Plan
 
-**最后更新：** 2026-07-31
-**验证基线：** `main` 为 `c6e498d`；main CI 537 passed / 5 skipped，前端 lint/build 通过
+**最后更新：** 2026-08-23
+**验证基线：** PR #4 最新 pull-based Docker HEAD 的 Windows 测试、前端与容器冒烟三项 CI 全绿；合并与正式 deploy 发布尚未执行
 
 > 本文是项目唯一的「现在做到哪、下一步做什么」入口，只保留未完成项、运行约束和近期顺序。
 > 已完成过程移到 [`devlogs/README.md`](./README.md)；架构入口看 [`infra/readme.md`](../infra/readme.md)。
@@ -14,7 +14,7 @@
 
 TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证：Windows 客户端采集活跃窗口与关键帧，服务端在本地完成存储、VLM 描述与分类、混合检索、分层摘要，并通过 Web、REST 和 MCP 对 AI 暴露上下文。
 
-> **当前运行态（2026-07-31 只读核验）：** 家中 `timetrace-server.service` active，`127.0.0.1:8765/healthz` 为 200；公网已由 Cloudflare Tunnel 直达该 FastAPI，因此 `/healthz` 为 200、根路径仍是 JSON 404。loopback nginx 已在 `127.0.0.1:8080` 就绪，API 反代正常，静态根采用 `/srv/timetrace/web/current → releases/bootstrap`，但当前仅有测试页。当前生产指针 `origin/deploy` 中的 Actions 仍把真实 SPA 发布到 xcy，Tunnel 仍指向 8765；在本机 SPA release 自动发布、验证和回滚链路完成前，不切 Tunnel、不推进 `deploy`。
+> **当前运行态（2026-08-23 核验）：** 服务端已由 Docker 容器运行，原数据/token 目录保持 bind mount；宿主机 loopback nginx 在 `127.0.0.1:8080` 同源提供真实 SPA 与 API，Cloudflare Tunnel 已切到该入口，公网首页、`/healthz` 与 API 路径验证正常。Puck/xcy 和旧 systemd 均不在当前正式流量链路中。PR #4 已把长期发布模型改为 Actions 只发布不可变 GHCR SHA 制品、部署机执行 `timetrace-update` 主动拉取；该最终版本仍待合并、推进 `deploy` 并在宿主机执行一次更新验收。
 
 | 子系统 | 当前状态 | 代码/运行事实 |
 |---|---|---|
@@ -26,7 +26,7 @@ TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证�
 | 记忆金字塔 | ✅ 上线 | `5min→1h→6h→day→week` 指标级联、source_hash 重发、LLM summary-of-summaries |
 | AI 上下文 | ✅ 上线 | Web Agent、报告、MCP 7 工具；`search_summaries` 支持粗→细下钻，`apply_label` 是唯一写工具 |
 | 可观测性 | 🟡 主链上线 | `/audit`、`/pyramid`、`/llm-log`；账本覆盖 worker/narrative/ask_agent，尚缺 report 与 Web Agent streaming |
-| 生产发布 | 🟢 Docker + 本机网关已上线，pull-based 更新器改造中 | 当前运行 server 容器与 nginx/Cloudflare Tunnel 已验证；目标模型改为 `deploy` 只发布 server + SPA 单一镜像，部署机执行 `timetrace-update` 主动拉取和原子切换，不再依赖 Actions 经 FRP SSH 入站 |
+| 生产发布 | 🟡 Docker + 本机网关已上线，pull-based PR 待发布 | 当前 server 容器与 nginx/Cloudflare Tunnel 已验证；PR #4 已实现 `deploy` 只发布 server + SPA 单一镜像、部署机以独占锁执行 `timetrace-update` 主动拉取、原子切换和完整回滚，不再依赖 Actions 经 FRP SSH 入站；尚待 merge/deploy/最终主机验收 |
 | 多设备 | ⚠️ 传输可用、身份缺失 | 两个客户端可向同一后端上传且各有 outbox；`X-Device-Id` 当前只写日志，未持久化、不可筛选，聚合统计也没有设备维度 |
 | 用户界面 | 🟡 Web 已有、原生客户端 GUI 缺失 | 服务端已经是 FastAPI；已有 React/Vite SPA（时间轴、搜索、设置、Agent、报告、审计等），但没有设备管理页，双进程客户端也没有完整桌面配置/诊断界面 |
 | Classifier V2 | ⚠️ 未实现 | 225 帧校准支持保守 KNN 加速器方向；正式设计、代码和生产验证均未开始 |
@@ -59,9 +59,9 @@ Windows PC B（独立 device_id / token / outbox）──┘
 #### A. 收口本机 Web gateway 与自动发布
 
 - **已核验**：canonical server 继续放在 `yukirin-server`；后端容器使用 host network 提供 8765，nginx 只听 8080 loopback；Cloudflare Tunnel 是正式 Web 运行入口，Puck/xcy 均退出运行拓扑。真实 SPA 与 API 已通过本机 nginx 和公网验证，旧源码仓库与数据目录保持原位。
-- **Next**：完成 pull-based 发布改造：Actions 只发布包含 server + SPA 的 GHCR SHA 镜像；部署机预装根目录的 `timetrace-update.sh`，由 owner SSH 后执行一句命令主动拉取、健康检查并切换。随后继续盘点数据库/截图体积、最后一条记录时间，以及两台电脑各自 outbox。
-- **Done when**：Actions 不再引用 `XCY_*` 或任何部署 SSH secret/job；`timetrace-update` 可从 `deploy` 解析镜像并同时切换后端与 SPA；本机和公网探针通过；故障演练能恢复上一套完整 release。
-- **Evidence**：Actions run、release SHA/current 链接、本机与公网探针写入新的 `devlogs/infra/archive-*.md`；不记录密钥、Tunnel token、截图内容或公网凭据。
+- **Next**：合并已完成 review 的 PR #4，把已审核 `main` fast-forward 到 `deploy`，等待不可变 GHCR SHA 镜像发布，再在部署机执行 `timetrace-update` 并核验 runtime/web 指针、容器、nginx 与公网。随后继续盘点数据库/截图体积、最后一条记录时间，以及两台电脑各自 outbox。
+- **Done when**：合并后的 Actions 不再引用 `XCY_*` 或任何部署 SSH secret/job；`timetrace-update` 可从 `deploy` 解析镜像并同时切换后端与 SPA；本机和公网探针通过；故障演练能恢复上一套完整 release。
+- **Evidence**：最终链路纠正见 [`archive-202608231819-pull-based-docker-release-correction.md`](infra/archive-202608231819-pull-based-docker-release-correction.md)；正式发布后再追加 Actions run、release SHA/current 链接与主机/公网探针，不记录密钥、Tunnel token、截图内容或公网凭据。
 - **Rollback**：更新器自动把 runtime/web 两个 `current` 指回上一 release 并恢复旧容器；不要手工修改生产 Git 仓库或直接操作 Compose。
 
 #### B. 第二台电脑接入前，先让设备身份成为数据
