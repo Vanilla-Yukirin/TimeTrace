@@ -111,6 +111,7 @@ devlogs/
 | [archive-202607302346-main-ci-topology.md](infra/archive-202607302346-main-ci-topology.md) | 审查前端改动并修复 5 类行为风险，分段 commit 后 fast-forward 合入 `main`；CI 537 passed，同时确认 SPA 发布到 xcy 但公网 Tunnel 直达家中 FastAPI 的拓扑错位 |
 | [archive-202607310055-home-web-gateway-deploy-workflow.md](infra/archive-202607310055-home-web-gateway-deploy-workflow.md) | 将 SPA 自动发布从 xcy 迁回家庭 nginx：复用 `DEPLOY_*` FRP SSH、后端健康后发布同 SHA 不可变 release、原子切换 `current` 且探针失败自动回滚；同步 loopback nginx 模板、前端 CI 与活文档，尚未切 Tunnel/推进 deploy |
 | [archive-202608230244-docker-production-deployment.md](infra/archive-202608230244-docker-production-deployment.md) | 生产后端正式 Docker 化并在 yukirin-server 切换成功：GHCR SHA 镜像 + host-network Compose，现有数据/token 原位挂载，首次 stopped-service SQLite 快照与 systemd 自动回滚；最终容器 healthy、LM Studio 直通、同 SHA SPA 发布、旧 unit inactive/disabled，公网 Tunnel 仍待从 8765 切到 nginx 8080 |
+| [archive-202608230250-timetrace-docker-rollout.md](infra/archive-202608230250-timetrace-docker-rollout.md) | 阶段性会话归档：厘清部署错位后转向 Docker；其中 Actions 入站 SSH/四 job 等结论已由下一条追加归档纠正 |
 | [archive-202608231819-pull-based-docker-release-correction.md](infra/archive-202608231819-pull-based-docker-release-correction.md) | 追加纠正最终发布模型：Actions 只发布不可变 GHCR 制品，部署机以独占锁主动拉取并完成原子切换与完整回滚，不再依赖 CI 入站 SSH |
 
 ---
