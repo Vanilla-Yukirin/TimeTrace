@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import signal
 
+import uvicorn
+
 from timetrace.server import cli
+from timetrace.server.bootstrap import (
+    _UVICORN_GRACEFUL_SHUTDOWN_S,
+    _CoordinatedServer,
+)
 
 
 def test_daemon_registers_sigint_and_sigterm(monkeypatch):
@@ -23,3 +30,21 @@ def test_daemon_registers_sigint_and_sigterm(monkeypatch):
     cli.main()
 
     assert registered == [signal.SIGINT, signal.SIGTERM]
+
+
+def test_uvicorn_signal_wakes_coordinated_shutdown_immediately():
+    quit_event = asyncio.Event()
+    config = uvicorn.Config(
+        object(),
+        timeout_graceful_shutdown=_UVICORN_GRACEFUL_SHUTDOWN_S,
+    )
+    server = _CoordinatedServer(config, quit_event)
+
+    # This is the handler Uvicorn installs inside Server.serve(), after the
+    # CLI-level handlers exercised above have been replaced.
+    server.handle_exit(signal.SIGTERM, None)
+
+    assert quit_event.is_set()
+    assert server.should_exit is True
+    assert server._captured_signals == [signal.SIGTERM]
+    assert server.config.timeout_graceful_shutdown == 30
