@@ -158,7 +158,7 @@ def run(
     out = out or _default_out
 
     try:
-        cfg = ClientConfig.load_or_default(args.config).apply_env_overrides()
+        cfg = ClientConfig.load_or_default(args.config)
     except ValueError as exc:
         out(f"Invalid client configuration: {exc}")
         return 2

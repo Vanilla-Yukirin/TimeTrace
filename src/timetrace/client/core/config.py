@@ -26,11 +26,13 @@ short and a human can hand-edit it without surprises.
 
 Env-var overrides
 -----------------
-`apply_env_overrides()` reads `TIMETRACE_SERVER_URL`, `TIMETRACE_AUTH_TOKEN`,
+`load_or_default()` reads the file, overlays `TIMETRACE_SERVER_URL`,
+`TIMETRACE_AUTH_TOKEN`,
 `TIMETRACE_DEVICE_ID`, `TIMETRACE_DEVICE_NAME`, `TIMETRACE_OUTBOX_DIR`,
 `TIMETRACE_UPLOAD_MAX_KBPS`, `TIMETRACE_DATA_DIR`, `TIMETRACE_PRIVACY_MODE`
-and overlays them on top of the loaded values. Useful for headless
-deployments that want to ship a baseline `client.toml` and tune via env.
+and the other supported environment variables, then validates the effective
+configuration. Useful for headless deployments that want to ship a baseline
+`client.toml` and tune via env.
 """
 
 from __future__ import annotations
@@ -138,12 +140,28 @@ class ClientConfig:
 
     @classmethod
     def load_or_default(cls, path: Path | None = None) -> ClientConfig:
-        """Read from disk, falling back to defaults for any missing field/section.
+        """Load and validate the effective file -> environment configuration.
 
         Missing file → returns the all-defaults config (caller decides whether
         to `.save()` it). Missing section → defaults for that section only.
+
+        File values are deliberately not validated before environment
+        overrides are applied: a deployment may keep a placeholder or stale
+        value in ``client.toml`` and supply the valid host identity through
+        ``TIMETRACE_DEVICE_*``. Ordinary callers use this method so they cannot
+        accidentally forget either the override layer or final validation.
         """
         path = path or _DEFAULT_PATH
+        config = cls._load_file_or_default(path)
+        config.apply_env_overrides(validate=False)
+        config.validate_device_identity(
+            source=f"effective client configuration ({path} + TIMETRACE_* environment)"
+        )
+        return config
+
+    @classmethod
+    def _load_file_or_default(cls, path: Path) -> ClientConfig:
+        """Parse only the file layer without validation (internal use only)."""
         if not path.exists():
             return cls()
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -171,7 +189,7 @@ class ClientConfig:
             for e in server_data.get("endpoints", [])
         ]
 
-        config = cls(
+        return cls(
             server=ServerSection(
                 url=server_data.get("url", ServerSection.url),
                 auth_token=server_data.get("auth_token", ServerSection.auth_token),
@@ -196,14 +214,12 @@ class ClientConfig:
             capture=_capture_from_toml(capture_data),
             privacy=_privacy_from_toml(privacy_data),
         )
-        config.validate_device_identity(source=str(path))
-        return config
 
     # ------------------------------------------------------------------ #
     # Env-var overrides                                                    #
     # ------------------------------------------------------------------ #
 
-    def apply_env_overrides(self) -> ClientConfig:
+    def apply_env_overrides(self, *, validate: bool = True) -> ClientConfig:
         """Overlay TIMETRACE_* env vars on top of current values, in place.
 
         Returns self so callers can chain. Env vars beat file values; absent
@@ -228,7 +244,8 @@ class ClientConfig:
             self.storage.data_dir = Path(v)
         if v := os.getenv("TIMETRACE_PRIVACY_MODE"):
             self.privacy.mode = v
-        self.validate_device_identity(source="TIMETRACE_DEVICE_* environment overrides")
+        if validate:
+            self.validate_device_identity(source="TIMETRACE_* environment overrides")
         return self
 
     def validate_device_identity(

@@ -218,7 +218,7 @@ def main() -> None:
     # Load order: file → env overrides. Env wins so headless deploys can ship
     # a baseline `client.toml` and tune per-host via systemd `Environment=`.
     try:
-        client_cfg = ClientConfig.load_or_default().apply_env_overrides()
+        client_cfg = ClientConfig.load_or_default()
         client_cfg.validate_device_identity(
             source="timetrace-client startup",
             client_version=__version__,
@@ -297,7 +297,7 @@ def _print_config() -> None:
     starting the heavy capture loop. Token is shown by length only — never
     the value — so the output can be safely pasted into a bug report.
     """
-    cfg = ClientConfig.load_or_default().apply_env_overrides()
+    cfg = ClientConfig.load_or_default()
     token_view = f"<{len(cfg.server.auth_token)} chars>" if cfg.server.auth_token else "<empty>"
     print(f"server.url            = {cfg.server.url}")
     print(f"server.auth_token     = {token_view}")

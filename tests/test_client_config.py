@@ -148,7 +148,7 @@ def test_apply_env_overrides_overlays_on_loaded(tmp_path, monkeypatch):
     monkeypatch.setenv("TIMETRACE_DATA_DIR", str(tmp_path / "envdata"))
     monkeypatch.setenv("TIMETRACE_PRIVACY_MODE", "full")
 
-    cfg = ClientConfig.load_or_default(path).apply_env_overrides()
+    cfg = ClientConfig.load_or_default(path)
     assert cfg.server.url == "http://from-env"
     assert cfg.server.auth_token == "tt_live_from_env"
     assert cfg.upload.max_kbps == 512
@@ -232,12 +232,48 @@ def test_device_metadata_exact_bounds_are_accepted(tmp_path):
         "{" + VALID_DEVICE_ID + "}",
     ],
 )
-def test_toml_rejects_invalid_or_noncanonical_device_id_without_rewriting(tmp_path, configured):
+def test_toml_rejects_invalid_or_noncanonical_device_id_without_rewriting(
+    tmp_path, monkeypatch, configured
+):
+    for key in ("TIMETRACE_DEVICE_ID", "TIMETRACE_DEVICE_NAME", "TIMETRACE_DEVICE_DESC"):
+        monkeypatch.delenv(key, raising=False)
     path = tmp_path / "client.toml"
     path.write_text(f'[device]\nid = "{configured}"\n', encoding="utf-8")
     with pytest.raises(ValueError, match=r"device\.id"):
         ClientConfig.load_or_default(path)
     assert configured in path.read_text(encoding="utf-8")
+
+
+def test_valid_env_identity_overrides_invalid_toml_before_effective_validation(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "client.toml"
+    path.write_text(
+        f'[device]\nid = "legacy-not-a-uuid"\nname = "{"n" * 129}"\ndescription = "{"d" * 513}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TIMETRACE_DEVICE_ID", VALID_DEVICE_ID)
+    monkeypatch.setenv("TIMETRACE_DEVICE_NAME", "Env Workstation")
+    monkeypatch.setenv("TIMETRACE_DEVICE_DESC", "Effective metadata from env")
+
+    loaded = ClientConfig.load_or_default(path)
+
+    assert loaded.device.id == VALID_DEVICE_ID
+    assert loaded.device.name == "Env Workstation"
+    assert loaded.device.description == "Effective metadata from env"
+    # Loading never rewrites the invalid lower-priority file layer.
+    assert "legacy-not-a-uuid" in path.read_text(encoding="utf-8")
+
+
+def test_invalid_env_override_does_not_hide_invalid_toml(tmp_path, monkeypatch):
+    path = tmp_path / "client.toml"
+    path.write_text('[device]\nid = "file-invalid"\n', encoding="utf-8")
+    monkeypatch.setenv("TIMETRACE_DEVICE_ID", VALID_DEVICE_ID.upper())
+
+    with pytest.raises(ValueError, match=VALID_DEVICE_ID):
+        ClientConfig.load_or_default(path)
+
+    assert "file-invalid" in path.read_text(encoding="utf-8")
 
 
 def test_noncanonical_env_device_id_reports_canonical_value(monkeypatch):
