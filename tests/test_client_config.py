@@ -189,3 +189,26 @@ def test_app_blacklist_with_special_chars_roundtrips(tmp_path):
         "C:\\Program Files\\App.exe",
         'has"quote.exe',
     ]
+
+
+def test_toml_rejects_device_name_that_server_would_reject(tmp_path):
+    path = tmp_path / "client.toml"
+    path.write_text(f'[device]\nname = "{"n" * 129}"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"device\.name.*128"):
+        ClientConfig.load_or_default(path)
+
+
+def test_env_rejects_device_description_that_server_would_reject(monkeypatch):
+    monkeypatch.setenv("TIMETRACE_DEVICE_DESC", "d" * 513)
+    with pytest.raises(ValueError, match=r"device\.description.*512"):
+        ClientConfig().apply_env_overrides()
+
+
+def test_device_metadata_exact_bounds_are_accepted(tmp_path):
+    cfg = ClientConfig()
+    cfg.device.name = "n" * 128
+    cfg.device.description = "d" * 512
+    path = cfg.save(tmp_path / "client.toml")
+    loaded = ClientConfig.load_or_default(path)
+    assert len(loaded.device.name) == 128
+    assert len(loaded.device.description) == 512

@@ -52,8 +52,8 @@ def fill_interactive(
     """Walk through fields and fill `cfg` from prompts. Returns the same `cfg`.
 
     Defaults shown are the values already on `cfg` (i.e., file + env layered).
-    Empty input keeps the default. Validation is minimal — typos surface as
-    runtime errors during real upload, not here.
+    Empty input keeps the default. Device metadata is validated against the
+    wire contract before asking for unrelated storage/upload settings.
     """
     cfg.server.url = ask("Server URL", cfg.server.url) or cfg.server.url
     cfg.server.auth_token = (
@@ -65,6 +65,10 @@ def fill_interactive(
     cfg.device.description = (
         ask("Device description", cfg.device.description) or cfg.device.description
     )
+    try:
+        cfg.validate_device_metadata(source="interactive device answers")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     new_outbox = ask("Outbox directory", str(cfg.outbox.root_dir))
     if new_outbox:
@@ -153,7 +157,11 @@ def run(
     confirm = confirm or _default_confirm
     out = out or _default_out
 
-    cfg = ClientConfig.load_or_default(args.config).apply_env_overrides()
+    try:
+        cfg = ClientConfig.load_or_default(args.config).apply_env_overrides()
+    except ValueError as exc:
+        out(f"Invalid client configuration: {exc}")
+        return 2
     target_path = args.config or _default_path()
 
     if target_path.exists() and not args.force:

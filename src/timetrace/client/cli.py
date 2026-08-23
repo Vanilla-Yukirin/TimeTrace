@@ -48,6 +48,8 @@ from timetrace.common.config import StorageConfig  # noqa: E402
 
 logger = structlog.get_logger(__name__)
 
+_CLIENT_CAPABILITIES = ("capture", "screenshots", "outbox")
+
 
 _HELP_TEXT = """\
 timetrace-client — capture-only client half of TimeTrace.
@@ -97,6 +99,11 @@ async def _run(
     quit_event: asyncio.Event,
     runtime: dict | None = None,
 ) -> None:
+    client_cfg.validate_device_metadata(
+        source="timetrace-client startup",
+        client_version=__version__,
+        capabilities=_CLIENT_CAPABILITIES,
+    )
     # AsyncExitStack guarantees HttpBackend (and any future async-cleanup
     # resource) is closed even if a constructor below it throws — without
     # the stack, an exception between HttpBackend(...) and the TaskGroup
@@ -130,7 +137,7 @@ async def _run(
             device_name=client_cfg.device.name,
             device_description=client_cfg.device.description,
             client_version=__version__,
-            capabilities=("capture", "screenshots", "outbox"),
+            capabilities=_CLIENT_CAPABILITIES,
             data_dir=client_cfg.storage.data_dir,
             # Screenshots can be a few hundred KB and the link to a remote
             # server may be slow (residential uplink); 30s was too tight and
@@ -210,7 +217,16 @@ def main() -> None:
 
     # Load order: file → env overrides. Env wins so headless deploys can ship
     # a baseline `client.toml` and tune per-host via systemd `Environment=`.
-    client_cfg = ClientConfig.load_or_default().apply_env_overrides()
+    try:
+        client_cfg = ClientConfig.load_or_default().apply_env_overrides()
+        client_cfg.validate_device_metadata(
+            source="timetrace-client startup",
+            client_version=__version__,
+            capabilities=_CLIENT_CAPABILITIES,
+        )
+    except ValueError as exc:
+        logger.error("client.config_invalid", error=str(exc))
+        sys.exit(2)
     # First-launch ergonomics: mint a device_id and persist client.toml so the
     # user can edit it instead of staring at "where do I put my token".
     if not client_cfg.device.id:

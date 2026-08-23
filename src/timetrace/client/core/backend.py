@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from timetrace.common.phash_hash import phash_to_blob
+from timetrace.common.protocol import DeviceMetadata
 
 if TYPE_CHECKING:
     from timetrace.common.models import CaptureContext
@@ -198,12 +199,18 @@ class HttpBackend:
         # baked in at construction) or borrowed (per-request _extra_headers).
         self._auth_token = auth_token or None
         self._device_id = device_id or None
-        self._device_metadata = {
-            "name": device_name,
-            "description": device_description,
-            "client_version": client_version,
-            "capabilities": list(capabilities),
-        }
+        try:
+            self._device_metadata = DeviceMetadata(
+                name=device_name,
+                description=device_description,
+                client_version=client_version,
+                capabilities=list(capabilities),
+            ).model_dump()
+        except ValueError as exc:
+            raise ValueError(
+                "invalid HttpBackend device metadata; correct client configuration before "
+                f"upload: {exc}"
+            ) from exc
         # data_dir lets submit_screenshot resolve paths relative to the client's
         # storage root (capture_active_window emits relative paths). Without it,
         # only absolute paths are accepted.

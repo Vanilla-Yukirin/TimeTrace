@@ -335,6 +335,24 @@ async def test_no_device_id_header_when_unset(db, blob_storage):
     assert all(h is None for h in captured)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "field"),
+    [
+        ({"device_name": "n" * 129}, "name"),
+        ({"device_description": "d" * 513}, "description"),
+        ({"client_version": "v" * 65}, "client_version"),
+        ({"capabilities": ("INVALID CAPABILITY",)}, "capabilities"),
+    ],
+)
+def test_http_backend_rejects_unsendable_device_metadata_before_network(kwargs, field):
+    with pytest.raises(ValueError, match="invalid HttpBackend device metadata") as exc_info:
+        HttpBackend(
+            base_url="http://test", device_id="57b81d95-8c0d-41d8-8e56-ef116904661c", **kwargs
+        )
+    assert exc_info.value.__cause__ is not None
+    assert field in str(exc_info.value.__cause__)
+
+
 async def test_borrowed_client_aclose_is_noop(backend):
     """When the AsyncClient comes from outside (test harness, app composer)
     HttpBackend must not close it on aclose() — that's the caller's job."""

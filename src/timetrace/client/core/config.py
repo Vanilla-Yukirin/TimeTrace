@@ -41,7 +41,10 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig
+from timetrace.common.protocol import DeviceMetadata
 
 _DEFAULT_PATH = Path.home() / "TimeTraceData" / "client.toml"
 _DEFAULT_OUTBOX_DIR = Path.home() / "TimeTraceData" / "outbox"
@@ -168,7 +171,7 @@ class ClientConfig:
             for e in server_data.get("endpoints", [])
         ]
 
-        return cls(
+        config = cls(
             server=ServerSection(
                 url=server_data.get("url", ServerSection.url),
                 auth_token=server_data.get("auth_token", ServerSection.auth_token),
@@ -193,6 +196,8 @@ class ClientConfig:
             capture=_capture_from_toml(capture_data),
             privacy=_privacy_from_toml(privacy_data),
         )
+        config.validate_device_metadata(source=str(path))
+        return config
 
     # ------------------------------------------------------------------ #
     # Env-var overrides                                                    #
@@ -223,7 +228,38 @@ class ClientConfig:
             self.storage.data_dir = Path(v)
         if v := os.getenv("TIMETRACE_PRIVACY_MODE"):
             self.privacy.mode = v
+        self.validate_device_metadata(source="TIMETRACE_DEVICE_* environment overrides")
         return self
+
+    def validate_device_metadata(
+        self,
+        *,
+        source: str = "client configuration",
+        client_version: str = "",
+        capabilities: tuple[str, ...] = (),
+    ) -> DeviceMetadata:
+        """Validate the exact metadata contract the server will receive.
+
+        This deliberately raises instead of truncating a user-provided label.
+        A strict-FIFO outbox cannot make progress past a server-side 422, so a
+        local, field-specific startup error is both safer and more actionable.
+        """
+        try:
+            return DeviceMetadata(
+                name=self.device.name,
+                description=self.device.description,
+                client_version=client_version,
+                capabilities=list(capabilities),
+            )
+        except ValidationError as exc:
+            details = "; ".join(
+                f"device.{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                for error in exc.errors()
+            )
+            raise ValueError(
+                f"{source} has invalid device metadata: {details}. "
+                "Correct client.toml or TIMETRACE_DEVICE_* and restart the client."
+            ) from exc
 
     # ------------------------------------------------------------------ #
     # Save                                                                 #
@@ -242,6 +278,7 @@ class ClientConfig:
         fixed schema — no tomli-w dependency.
         """
         path = path or _DEFAULT_PATH
+        self.validate_device_metadata(source=str(path))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self._render_toml(), encoding="utf-8")
         return path

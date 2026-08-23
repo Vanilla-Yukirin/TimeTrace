@@ -112,6 +112,14 @@ def test_fill_interactive_rejects_non_int_max_kbps():
         fill_interactive(cfg, scripted.ask, scripted.confirm)
 
 
+def test_fill_interactive_rejects_oversize_device_name_before_other_prompts():
+    cfg = ClientConfig()
+    scripted = _Scripted(["", "", "n" * 129, ""])
+    with pytest.raises(SystemExit, match=r"device\.name.*128"):
+        fill_interactive(cfg, scripted.ask, scripted.confirm)
+    assert len(scripted.prompts) == 4
+
+
 def test_fill_interactive_mints_device_id_once():
     cfg = ClientConfig()
     scripted = _Scripted(["", "", "", "", "", "", "", ""])
@@ -229,3 +237,13 @@ def test_run_writes_device_id_in_non_interactive(tmp_path):
     joined = "\n".join(out.lines)
     assert "device_id" in joined
     assert loaded.device.id in joined
+
+
+def test_run_non_interactive_reports_invalid_device_env_without_writing(tmp_path, monkeypatch):
+    monkeypatch.setenv("TIMETRACE_DEVICE_NAME", "n" * 129)
+    target = tmp_path / "client.toml"
+    out = _Capture()
+    rc = run(["--config", str(target), "--non-interactive"], out=out)
+    assert rc == 2
+    assert not target.exists()
+    assert "device.name" in "\n".join(out.lines)
