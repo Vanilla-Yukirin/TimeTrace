@@ -24,17 +24,26 @@ pull_attempts=${TIMETRACE_PULL_ATTEMPTS:-18}
 pull_interval=${TIMETRACE_PULL_INTERVAL:-10}
 install_dir=${TIMETRACE_INSTALL_DIR:-${HOME}/.local/bin}
 install_target="${install_dir}/timetrace-update"
+lock_file="${runtime_root}/.update.lock"
 
 log() {
   printf '==> %s\n' "$*"
 }
 
-for command in docker git getent; do
+for command in docker flock git getent; do
   command -v "${command}" >/dev/null || {
     echo "required command not found: ${command}" >&2
     exit 1
   }
 done
+
+install -d -m 700 "${runtime_root}"
+exec 9>"${lock_file}"
+chmod 600 "${lock_file}"
+if ! flock -n 9; then
+  echo "another timetrace-update process already holds ${lock_file}" >&2
+  exit 75
+fi
 
 [[ "${host_home}" == /* ]] || {
   echo "could not resolve an absolute home directory for ${host_user}" >&2
