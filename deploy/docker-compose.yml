@@ -9,7 +9,11 @@ services:
     init: true
     user: "${TIMETRACE_HOST_UID:?TIMETRACE_HOST_UID is required}:${TIMETRACE_HOST_GID:?TIMETRACE_HOST_GID is required}"
     env_file:
-      - "${TIMETRACE_ENV_FILE:-/srv/timetrace/config/timetrace.env}"
+      - path: "${TIMETRACE_ENV_FILE:-/srv/timetrace/config/timetrace.env}"
+        required: true
+        # Rollback snapshots come from Docker's Config.Env. Raw mode keeps
+        # literal $, quotes, and backslashes from being re-expanded by Compose.
+        format: raw
     environment:
       HOME: /home/timetrace
       TZ: "${TIMETRACE_TZ:-Asia/Shanghai}"
