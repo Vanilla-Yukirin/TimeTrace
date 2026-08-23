@@ -9,16 +9,16 @@ services:
     init: true
     user: "1000:1000"
     env_file:
-      - /srv/timetrace/config/timetrace.env
+      - "${TIMETRACE_ENV_FILE:-/srv/timetrace/config/timetrace.env}"
     environment:
       HOME: /home/timetrace
       TZ: "${TIMETRACE_TZ:-Asia/Shanghai}"
     volumes:
       - type: bind
-        source: /home/vanilla/TimeTraceData
+        source: "${TIMETRACE_DATA_DIR:-/home/vanilla/TimeTraceData}"
         target: /home/timetrace/TimeTraceData
       - type: bind
-        source: /home/vanilla/.config/timetrace-server
+        source: "${TIMETRACE_TOKEN_DIR:-/home/vanilla/.config/timetrace-server}"
         target: /home/timetrace/.config/timetrace-server
     read_only: true
     tmpfs:

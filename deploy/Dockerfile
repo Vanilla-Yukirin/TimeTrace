@@ -2,6 +2,15 @@
 
 FROM ghcr.io/astral-sh/uv:0.12.5 AS uv
 
+FROM node:22-bookworm-slim AS frontend-builder
+
+WORKDIR /src
+COPY frontend/package.json frontend/package-lock.json ./frontend/
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --prefix frontend
+COPY frontend ./frontend
+RUN npm run build --prefix frontend
+
 FROM python:3.12-slim-bookworm AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
@@ -39,6 +48,13 @@ RUN groupadd --gid 1000 timetrace \
 
 WORKDIR /app
 COPY --from=builder --chown=timetrace:timetrace /app/.venv /app/.venv
+COPY --from=frontend-builder --chown=timetrace:timetrace \
+    /src/frontend-dist /opt/timetrace/release/frontend-dist
+COPY --chown=timetrace:timetrace \
+    deploy/docker-compose.yml \
+    deploy/deploy-container.sh \
+    timetrace-update.sh \
+    /opt/timetrace/release/
 
 USER 1000:1000
 STOPSIGNAL SIGTERM

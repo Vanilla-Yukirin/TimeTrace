@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Production cutover for the TimeTrace server container.
+# Production cutover for the TimeTrace server container and bundled SPA.
 #
-# Usage (normally called by GitHub Actions):
+# Usage (normally called by the host-side timetrace-update command):
 #   bash deploy-container.sh <git-sha> <ghcr-image-without-tag>
 
 set -Eeuo pipefail
@@ -9,28 +9,51 @@ set -Eeuo pipefail
 ref=${1:?usage: deploy-container.sh <git-sha> <image>}
 image=${2:?usage: deploy-container.sh <git-sha> <image>}
 
-runtime_root=/srv/timetrace/runtime
+runtime_root=${TIMETRACE_RUNTIME_ROOT:-/srv/timetrace/runtime}
 release_dir="${runtime_root}/releases/${ref}"
 compose_file="${release_dir}/docker-compose.yml"
 current_link="${runtime_root}/current"
 config_dir=/srv/timetrace/config
 env_file="${config_dir}/timetrace.env"
-legacy_env="${HOME}/Github/TimeTrace/.env"
-data_dir="${HOME}/TimeTraceData"
-token_dir="${HOME}/.config/timetrace-server"
+host_user=${TIMETRACE_HOST_USER:-vanilla}
+host_home=${TIMETRACE_HOST_HOME:-/home/${host_user}}
+legacy_env="${host_home}/Github/TimeTrace/.env"
+data_dir="${host_home}/TimeTraceData"
+token_dir="${host_home}/.config/timetrace-server"
+web_root=/srv/timetrace/web
+web_release="${web_root}/releases/${ref}"
+frontend_source="${release_dir}/frontend-dist"
 service=timetrace-server.service
 
 previous_mode=none
 previous_release=
+previous_web_target=
 cutover_started=0
+web_switched=0
+web_staging=
 
 log() {
   printf '==> %s\n' "$*"
 }
 
 compose() {
-  TIMETRACE_IMAGE="${image}" TIMETRACE_IMAGE_TAG="${ref}" \
+  TIMETRACE_IMAGE="${image}" \
+    TIMETRACE_IMAGE_TAG="${ref}" \
+    TIMETRACE_ENV_FILE="${env_file}" \
+    TIMETRACE_DATA_DIR="${data_dir}" \
+    TIMETRACE_TOKEN_DIR="${token_dir}" \
     docker compose -p timetrace -f "${compose_file}" "$@"
+}
+
+legacy_systemctl() {
+  if [[ $(id -un) == "${host_user}" ]]; then
+    systemctl --user "$@"
+    return
+  fi
+  local host_uid
+  host_uid=$(id -u "${host_user}")
+  runuser -u "${host_user}" -- \
+    env XDG_RUNTIME_DIR="/run/user/${host_uid}" systemctl --user "$@"
 }
 
 wait_for_health() {
@@ -72,17 +95,36 @@ rollback() {
   docker logs --tail 200 timetrace-server 2>&1 || true
   compose down --remove-orphans || true
 
+  if ((web_switched == 1)); then
+    local rollback_link="${web_root}/.current-rollback-${ref}"
+    if [[ -n "${previous_web_target}" ]]; then
+      ln -sfn "${previous_web_target}" "${rollback_link}"
+      mv -Tf "${rollback_link}" "${web_root}/current"
+    else
+      rm -f -- "${web_root}/current"
+    fi
+  fi
+  if [[ -n "${web_staging}" && -d "${web_staging}" ]]; then
+    case "${web_staging}" in
+      "${web_root}"/releases/.staging-*) rm -rf -- "${web_staging}" ;;
+    esac
+  fi
+
   if [[ "${previous_mode}" == docker && -n "${previous_release}" ]]; then
     local previous_compose="${previous_release}/docker-compose.yml"
     local previous_ref
     previous_ref=$(basename "${previous_release}")
     if [[ -f "${previous_compose}" ]]; then
-      TIMETRACE_IMAGE="${image}" TIMETRACE_IMAGE_TAG="${previous_ref}" \
+      TIMETRACE_IMAGE="${image}" \
+        TIMETRACE_IMAGE_TAG="${previous_ref}" \
+        TIMETRACE_ENV_FILE="${env_file}" \
+        TIMETRACE_DATA_DIR="${data_dir}" \
+        TIMETRACE_TOKEN_DIR="${token_dir}" \
         docker compose -p timetrace -f "${previous_compose}" up -d --remove-orphans --pull never || true
       wait_for_health 24 || true
     fi
   elif [[ "${previous_mode}" == systemd ]]; then
-    systemctl --user start "${service}" || true
+    legacy_systemctl start "${service}" || true
     wait_for_health 24 || true
   fi
 
@@ -100,9 +142,11 @@ trap rollback ERR
 }
 
 test -f "${compose_file}"
+test -s "${frontend_source}/index.html"
 test -d "${data_dir}"
 test -d "${token_dir}"
 install -d -m 700 "${runtime_root}/releases" "${config_dir}"
+install -d -m 755 "${web_root}/releases"
 
 if [[ ! -f "${env_file}" ]]; then
   test -s "${legacy_env}"
@@ -114,10 +158,13 @@ chmod 600 "${env_file}"
 if [[ -L "${current_link}" ]]; then
   previous_release=$(readlink -f "${current_link}" || true)
 fi
+if [[ -L "${web_root}/current" ]]; then
+  previous_web_target=$(readlink "${web_root}/current" || true)
+fi
 if docker inspect timetrace-server >/dev/null 2>&1; then
   previous_mode=docker
-elif systemctl --user is-active --quiet "${service}" \
-  || systemctl --user is-enabled --quiet "${service}"; then
+elif legacy_systemctl is-active --quiet "${service}" \
+  || legacy_systemctl is-enabled --quiet "${service}"; then
   previous_mode=systemd
 fi
 
@@ -128,7 +175,7 @@ compose pull server
 
 if [[ "${previous_mode}" == systemd ]]; then
   log "stopping the legacy systemd service for the first container cutover"
-  systemctl --user stop "${service}"
+  legacy_systemctl stop "${service}"
   cutover_started=1
 
   backup_dir="${data_dir}/db/pre-docker-${ref}"
@@ -157,18 +204,37 @@ compose up -d --remove-orphans --pull never
 wait_for_health 36
 wait_for_container_health 24
 
-next_link="${runtime_root}/.current-${ref}"
-ln -sfn "releases/${ref}" "${next_link}"
-mv -Tf "${next_link}" "${current_link}"
+if [[ ! -d "${web_release}" ]]; then
+  web_staging=$(mktemp -d "${web_root}/releases/.staging-${ref}.XXXXXX")
+  cp -a "${frontend_source}/." "${web_staging}/"
+  mv "${web_staging}" "${web_release}"
+  web_staging=
+fi
+test -s "${web_release}/index.html"
+grep -F 'id="root"' "${web_release}/index.html" >/dev/null
+test -n "$(find "${web_release}/assets" -type f -print -quit)"
 
-if systemctl --user is-enabled --quiet "${service}"; then
-  systemctl --user disable "${service}"
+web_next_link="${web_root}/.current-${ref}"
+ln -sfn "releases/${ref}" "${web_next_link}"
+mv -Tf "${web_next_link}" "${web_root}/current"
+web_switched=1
+
+curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' http://127.0.0.1:8080/healthz >/dev/null
+curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' http://127.0.0.1:8080/ \
+  | grep -F 'id="root"' >/dev/null
+
+runtime_next_link="${runtime_root}/.current-${ref}"
+ln -sfn "releases/${ref}" "${runtime_next_link}"
+mv -Tf "${runtime_next_link}" "${current_link}"
+
+if legacy_systemctl is-enabled --quiet "${service}"; then
+  legacy_systemctl disable "${service}"
 fi
 # The legacy uv launcher exits 143 after its graceful SIGTERM path, which
 # systemd records as failed even though shutdown completed cleanly. Keep the
 # retired rollback unit visible as inactive rather than leaving a false alarm.
-systemctl --user reset-failed "${service}" || true
+legacy_systemctl reset-failed "${service}" || true
 
 trap - ERR
-log "deployed ${image}:${ref}"
+log "deployed ${image}:${ref} and published its bundled SPA"
 docker inspect --format 'container={{.Name}} image={{.Config.Image}} status={{.State.Status}} health={{.State.Health.Status}}' timetrace-server

@@ -1,17 +1,11 @@
-# Production deployment:
-#   GitHub Actions -> GHCR image -> FRP SSH -> yukirin-server Docker Compose
-#   Cloudflare Tunnel -> host nginx :8080 -> SPA or container API :8765
-#
-# Required repository secrets:
-#   DEPLOY_SSH_KEY
-#   DEPLOY_KNOWN_HOSTS
-#   DEPLOY_TARGET_USER_HOST
-#   DEPLOY_TARGET_PORT
+# Production artifact publication:
+#   deploy branch -> GitHub Actions -> immutable GHCR image
+#   deployment host -> timetrace-update -> pull, health-check, activate
 
 name: deploy
 
 concurrency:
-  group: timetrace-production
+  group: timetrace-production-image
   cancel-in-progress: false
 
 on:
@@ -66,7 +60,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push server image
+      - name: Build and push server plus SPA image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -81,204 +75,14 @@ jobs:
           provenance: mode=max
           sbom: true
 
-  deploy:
-    if: github.repository == 'Vanilla-Yukirin/TimeTrace'
-    needs: [resolve-ref, build-image]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      packages: read
-    env:
-      TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
-      TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
-      REF: ${{ needs.resolve-ref.outputs.sha }}
-      CONTROL_PATH: /tmp/timetrace-ssh-${{ github.run_id }}-${{ github.run_attempt }}-%C
-      REMOTE_DOCKER_CONFIG: /tmp/timetrace-ghcr-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - name: Checkout deployment files
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve-ref.outputs.sha }}
-
-      - name: Set up SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-
-      - name: Trust target host key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Open retryable SSH control connection
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3 4 5 6; do
-            if ssh -MNf \
-              -p "${TARGET_PORT}" \
-              -o ControlMaster=yes \
-              -o ControlPersist=15m \
-              -o ControlPath="${CONTROL_PATH}" \
-              -o ConnectTimeout=20 \
-              -o ServerAliveInterval=15 \
-              -o StrictHostKeyChecking=yes \
-              "${TARGET}"; then
-              exit 0
-            fi
-            sleep $((attempt * 10))
-          done
-          exit 1
-
-      - name: Upload immutable Compose release
-        run: |
-          set -euo pipefail
-          RELEASE="/srv/timetrace/runtime/releases/${REF}"
-          SSH=(ssh -p "${TARGET_PORT}" -o ControlPath="${CONTROL_PATH}" -o StrictHostKeyChecking=yes)
-          SCP=(scp -P "${TARGET_PORT}" -o ControlPath="${CONTROL_PATH}" -o StrictHostKeyChecking=yes)
-          "${SSH[@]}" "${TARGET}" install -d -m 700 "${RELEASE}"
-          "${SCP[@]}" deploy/docker-compose.yml "${TARGET}:${RELEASE}/docker-compose.yml"
-          "${SCP[@]}" deploy/deploy-container.sh "${TARGET}:${RELEASE}/deploy-container.sh"
-
-      - name: Deploy image with rollback
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USER: ${{ github.actor }}
-        run: |
-          set -euo pipefail
-          SSH=(ssh -p "${TARGET_PORT}" -o ControlPath="${CONTROL_PATH}" -o StrictHostKeyChecking=yes)
-          "${SSH[@]}" "${TARGET}" install -d -m 700 "${REMOTE_DOCKER_CONFIG}"
-          printf '%s' "${GHCR_TOKEN}" | \
-            "${SSH[@]}" "${TARGET}" env DOCKER_CONFIG="${REMOTE_DOCKER_CONFIG}" \
-              docker login ghcr.io --username "${GHCR_USER}" --password-stdin
-          "${SSH[@]}" "${TARGET}" env DOCKER_CONFIG="${REMOTE_DOCKER_CONFIG}" \
-            bash "/srv/timetrace/runtime/releases/${REF}/deploy-container.sh" "${REF}" "${IMAGE_NAME}"
-
-      - name: Remove temporary GHCR credentials and close SSH connection
-        if: always()
-        run: |
-          SSH=(ssh -p "${TARGET_PORT}" -o ControlPath="${CONTROL_PATH}" -o StrictHostKeyChecking=yes)
-          "${SSH[@]}" "${TARGET}" \
-            "rm -f -- '${REMOTE_DOCKER_CONFIG}/config.json' && rmdir -- '${REMOTE_DOCKER_CONFIG}'" || true
-          ssh -O exit -p "${TARGET_PORT}" -o ControlPath="${CONTROL_PATH}" "${TARGET}" || true
-
       - name: Summary
         if: always()
         run: |
           {
-            echo "## Container deploy summary"
+            echo "## Pull-based release artifact"
             echo "- Ref: ${{ needs.resolve-ref.outputs.sha }}"
             echo "- Image: \`${IMAGE_NAME}:${{ needs.resolve-ref.outputs.sha }}\`"
-            echo "- Outcome: ${{ job.status }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  publish-frontend:
-    if: github.repository == 'Vanilla-Yukirin/TimeTrace'
-    needs: [resolve-ref, deploy]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    env:
-      WEB_ROOT: /srv/timetrace/web
-      TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
-      TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
-      REF: ${{ needs.resolve-ref.outputs.sha }}
-      CONTROL_PATH: /tmp/timetrace-ssh-${{ github.run_id }}-${{ github.run_attempt }}-%C
-    steps:
-      - name: Checkout immutable release
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve-ref.outputs.sha }}
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Build SPA
-        run: |
-          npm ci --prefix frontend
-          npm run build --prefix frontend
-
-      - name: Set up SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-
-      - name: Trust target host key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Open retryable SSH control connection
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3 4 5 6; do
-            if ssh -MNf \
-              -p "${TARGET_PORT}" \
-              -o ControlMaster=yes \
-              -o ControlPersist=10m \
-              -o ControlPath="${CONTROL_PATH}" \
-              -o ConnectTimeout=20 \
-              -o ServerAliveInterval=15 \
-              -o StrictHostKeyChecking=yes \
-              "${TARGET}"; then
-              exit 0
-            fi
-            sleep $((attempt * 10))
-          done
-          exit 1
-
-      - name: Publish immutable SPA release
-        run: |
-          set -euo pipefail
-          RELEASE="${WEB_ROOT}/releases/${REF}"
-          SSH=(ssh -p "${TARGET_PORT}" -o ControlPath="${CONTROL_PATH}" -o StrictHostKeyChecking=yes)
-          RSH="ssh -p ${TARGET_PORT} -o ControlPath=${CONTROL_PATH} -o StrictHostKeyChecking=yes"
-
-          "${SSH[@]}" "${TARGET}" "set -e; test -d '${WEB_ROOT}/releases'; install -d -m 755 '${RELEASE}'"
-          rsync -rtz -e "${RSH}" frontend-dist/ "${TARGET}:${RELEASE}/"
-
-          "${SSH[@]}" "${TARGET}" bash -s -- "${WEB_ROOT}" "${REF}" <<'REMOTE'
-          set -euo pipefail
-          web_root=$1
-          ref=$2
-          release="${web_root}/releases/${ref}"
-          next_link="${web_root}/.current-${ref}"
-          previous=$(readlink "${web_root}/current")
-
-          test -s "${release}/index.html"
-          grep -F 'id="root"' "${release}/index.html" >/dev/null
-          test -n "$(find "${release}/assets" -type f -print -quit)"
-
-          ln -sfn "releases/${ref}" "${next_link}"
-          mv -Tf "${next_link}" "${web_root}/current"
-
-          if ! {
-            curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' http://127.0.0.1:8080/healthz >/dev/null &&
-            curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' http://127.0.0.1:8080/ | grep -F 'id="root"' >/dev/null
-          }; then
-            ln -sfn "${previous}" "${next_link}"
-            mv -Tf "${next_link}" "${web_root}/current"
-            exit 1
-          fi
-          REMOTE
-
-      - name: Close SSH connection
-        if: always()
-        run: ssh -O exit -p "${TARGET_PORT}" -o ControlPath="${CONTROL_PATH}" "${TARGET}" || true
-
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "## Frontend publish summary"
-            echo "- Ref: ${{ needs.resolve-ref.outputs.sha }}"
-            echo "- Target: \`${WEB_ROOT}/releases/${{ needs.resolve-ref.outputs.sha }}\`"
+            echo "- Contents: server + SPA + Compose deployment assets"
+            echo "- Activation: run \`timetrace-update\` on the deployment host"
             echo "- Outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -26,7 +26,7 @@ TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证�
 | 记忆金字塔 | ✅ 上线 | `5min→1h→6h→day→week` 指标级联、source_hash 重发、LLM summary-of-summaries |
 | AI 上下文 | ✅ 上线 | Web Agent、报告、MCP 7 工具；`search_summaries` 支持粗→细下钻，`apply_label` 是唯一写工具 |
 | 可观测性 | 🟡 主链上线 | `/audit`、`/pyramid`、`/llm-log`；账本覆盖 worker/narrative/ask_agent，尚缺 report 与 Web Agent streaming |
-| 生产发布 | 🟡 网关就绪、发布迁移待上线 | 目标模型：`deploy` push 先部署 box 后端，再经同一 FRP SSH 发布本机不可变 SPA release；Cloudflare Tunnel 最后从 8765 切到 nginx 8080 |
+| 生产发布 | 🟢 Docker + 本机网关已上线，pull-based 更新器改造中 | 当前运行 server 容器与 nginx/Cloudflare Tunnel 已验证；目标模型改为 `deploy` 只发布 server + SPA 单一镜像，部署机执行 `timetrace-update` 主动拉取和原子切换，不再依赖 Actions 经 FRP SSH 入站 |
 | 多设备 | ⚠️ 传输可用、身份缺失 | 两个客户端可向同一后端上传且各有 outbox；`X-Device-Id` 当前只写日志，未持久化、不可筛选，聚合统计也没有设备维度 |
 | 用户界面 | 🟡 Web 已有、原生客户端 GUI 缺失 | 服务端已经是 FastAPI；已有 React/Vite SPA（时间轴、搜索、设置、Agent、报告、审计等），但没有设备管理页，双进程客户端也没有完整桌面配置/诊断界面 |
 | Classifier V2 | ⚠️ 未实现 | 225 帧校准支持保守 KNN 加速器方向；正式设计、代码和生产验证均未开始 |
@@ -58,11 +58,11 @@ Windows PC B（独立 device_id / token / outbox）──┘
 
 #### A. 收口本机 Web gateway 与自动发布
 
-- **已核验**：canonical server 继续放在 `yukirin-server`；后端只听 8765 loopback，nginx 只听 8080 loopback；Cloudflare Tunnel 是正式 Web 运行入口，2v4G FRP SSH 是部署入口，Puck/xcy 均退出目标拓扑。运行仓库为生产镜像 `9060941`，未跟踪 `.env.bak.*` 不阻塞 reset，但后续应移出仓库目录妥善保管。
-- **Next**：在开发仓库迁移 `deploy.yml`：同一不可变 SHA 先部署后端，再发布 SPA 到 `/srv/timetrace/web/releases/<sha>` 并原子切换 `current`；本机 8080 冒烟通过后，才把 Tunnel 从 8765 切到 8080。随后继续盘点数据库/截图体积、最后一条记录时间，以及两台电脑各自 outbox。
-- **Done when**：Actions 不再引用 `XCY_*`；真实 SPA 与 API 经本机 nginx 全链路通过；公网首页、登录、MCP/流式接口通过；回滚 release 与 Tunnel 入口均有明确步骤。
+- **已核验**：canonical server 继续放在 `yukirin-server`；后端容器使用 host network 提供 8765，nginx 只听 8080 loopback；Cloudflare Tunnel 是正式 Web 运行入口，Puck/xcy 均退出运行拓扑。真实 SPA 与 API 已通过本机 nginx 和公网验证，旧源码仓库与数据目录保持原位。
+- **Next**：完成 pull-based 发布改造：Actions 只发布包含 server + SPA 的 GHCR SHA 镜像；部署机预装根目录的 `timetrace-update.sh`，由 owner SSH 后执行一句命令主动拉取、健康检查并切换。随后继续盘点数据库/截图体积、最后一条记录时间，以及两台电脑各自 outbox。
+- **Done when**：Actions 不再引用 `XCY_*` 或任何部署 SSH secret/job；`timetrace-update` 可从 `deploy` 解析镜像并同时切换后端与 SPA；本机和公网探针通过；故障演练能恢复上一套完整 release。
 - **Evidence**：Actions run、release SHA/current 链接、本机与公网探针写入新的 `devlogs/infra/archive-*.md`；不记录密钥、Tunnel token、截图内容或公网凭据。
-- **Rollback**：`current` 指回上一 release；Cloudflare Tunnel 指回 `http://localhost:8765`。不手工修改生产 Git 镜像或跳过工作流重启服务。
+- **Rollback**：更新器自动把 runtime/web 两个 `current` 指回上一 release 并恢复旧容器；不要手工修改生产 Git 仓库或直接操作 Compose。
 
 #### B. 第二台电脑接入前，先让设备身份成为数据
 
@@ -191,6 +191,7 @@ Windows PC B（独立 device_id / token / outbox）──┘
 | Medium | `capture_mode=fullscreen` | 配置存在但采集循环没有分支；要么实现，要么删除死配置 |
 | Low | 不可恢复图像错误 | image load 失败应直接 `error_final`，避免浪费 retry 配额 |
 | Low | 旧 MCP stub | `server/mcp_layer/tools.py` 无调用方，确认后删除，减少 agent 误读 |
+| Deferred | Windows client 安装包与自动更新 | 服务端 pull-based Docker 发布独立推进；客户端先保留手工源码更新，后续再设计同 SHA 安装包、兼容检查和更新器 |
 | Deferred | Postgres/Redis/S3、TUI、通用发行 | 当前个人本地部署没有证据需要；需求出现前不扩张 |
 
 ---
@@ -210,12 +211,12 @@ Windows PC B（独立 device_id / token / outbox）──┘
 
 1. 变更先进入 `main`，记录待发布 commit SHA。
 2. 等待**该 SHA** 的 main CI 全绿，不能 push main 后立即推进 deploy。
-3. 运行主机 readiness gate：确认小主机在线、FRP/SSH 可达、磁盘/备份/模型状态正常；任一不满足就停止，保持 `deploy` 不动。
-4. 确认 `origin/deploy` 是该 main SHA 的祖先，只做 fast-forward：`git push origin main:deploy`。
-5. deploy workflow 使用同一个不可变 SHA：后端部署与 healthz 先成功，`publish-frontend` 才上传不可变 release 并原子切换 `current`；任一步失败都保持上一套完整 SPA 可用。
+3. 确认 `origin/deploy` 是该 main SHA 的祖先，只做 fast-forward：`git push origin main:deploy`。
+4. deploy workflow 使用同一个不可变 SHA 构建并发布包含 server、SPA 和部署资产的 GHCR 镜像；它不通过 SSH 连接部署机。
+5. 镜像 job 成功后登录部署机执行 `timetrace-update`；更新器解析 `deploy` SHA、先拉镜像，再原子切换 Compose 与 SPA，任一步失败都恢复上一套。
 6. 验证 `/healthz`、公网首页和至少一个受鉴权 API，再宣布发布完成。
 
-部署机只是 `origin/deploy` 的镜像，不在部署机上手工 `pull/reset/restart`。生产发布统一走 `.github/workflows/deploy.yml`；LM Studio 模型装载是工作流之外的唯一运维例外。
+部署机不运行仓库源码，也不在部署机上手工 `git pull/reset` 或直接操作 Compose。生产制品统一走 `.github/workflows/deploy.yml`，生产激活统一走根目录维护并安装到主机的 `timetrace-update.sh`；LM Studio 模型装载继续独立管理。
 
 ---
 

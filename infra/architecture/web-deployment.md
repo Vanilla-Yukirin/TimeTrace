@@ -7,7 +7,7 @@
 
 TimeTrace 原本是纯本地工具（`127.0.0.1:8765`，靠 SSH `-L` 隧道按需访问）。引入[登录系统](auth-system.md)后，Web UI 可以在鉴权门后开放公网，让你从任何浏览器看自己的活动时间轴。本文讲这套公网拓扑、它的信任边界、以及出事时怎么止血。
 
-> 数据全程仍在自己的家用小主机上，不上任何云。公网链路只是把"你"接到"你的盒子"，云 VPS 只做 TLS 终结 + 反代，不存任何活动数据。
+> 数据全程仍在自己的家用小主机上，不上任何云。公网链路只是通过 Cloudflare Tunnel 把浏览器接到本机 loopback nginx，不保存活动数据库或截图。
 
 ---
 
@@ -17,28 +17,22 @@ TimeTrace 原本是纯本地工具（`127.0.0.1:8765`，靠 SSH `-L` 隧道按�
 浏览器
   │ HTTPS (timetrace.yukirin.me)
   ▼
-Cloudflare (DNS / 可选 CDN，子域 timetrace.yukirin.me)
-  │
-  ▼
-云 VPS xcy：nginx（TLS + SPA 静态文件 + API 反代）
-  ├── /var/www/timetrace.yukirin.me 直接提供前端
-  │
-  │ API 路径 proxy_pass http://127.0.0.1:18765
-  ▼
-frps (VPS 上的 FRP 服务端)
-  ╎ FRP 隧道（家里小主机在 NAT 后主动外连建立）
+Cloudflare Edge（DNS + TLS）
+  ╎ Cloudflare Tunnel（家里小主机主动外连建立）
   ▼
 家用小主机 (Ubuntu，NAT 后)：
-  ├── frpc → 把 127.0.0.1:8765 暴露到 VPS 的 127.0.0.1:18765
-  ├── timetrace-server.service   (API + worker + VLM，loopback 8765)
-  └── timetrace-embserver.service（可选，当前生产未启用；loopback 8766）
+  ├── nginx 127.0.0.1:8080
+  │   ├── / → /srv/timetrace/web/current
+  │   └── API/MCP/文件路径 → 127.0.0.1:8765
+  ├── timetrace-server Docker container（API + worker + VLM）
+  └── GPU / LM Studio / cloudflared（宿主机服务）
 ```
 
 关键事实：
 
-- **家用主机在 NAT 后，不开任何入站端口**。是它主动外连 VPS 建 FRP 隧道，所以家里路由器不用做端口映射，也没有暴露面
-- **VPS 保存构建后的 SPA 静态文件，但不保存活动数据库或截图**。它同时承担 TLS 终结与反代，能看到经过的流量，因此 VPS 本身要可信——这是这套架构的信任假设
-- nginx `proxy_pass` 到 `127.0.0.1:18765`（FRP 隧道在 VPS 侧的落地端口），FRP 再把它接到家里的 `127.0.0.1:8765`
+- **家用主机在 NAT 后，不开 Web 入站端口**。cloudflared 主动建立出站 Tunnel，路由器无需端口映射
+- **SPA、数据库和截图都留在家用主机**；Cloudflare Edge 负责公网 TLS，本机 nginx 统一分流静态页面与后端路径
+- nginx 只监听 `127.0.0.1:8080`，后端由 Docker host network 提供 `127.0.0.1:8765`
 - 配置文件：[`deploy/nginx-timetrace.yukirin.me.conf`](../../deploy/nginx-timetrace.yukirin.me.conf)、[`deploy/timetrace-server.service`](../../deploy/timetrace-server.service)、[`deploy/timetrace-embserver.service`](../../deploy/timetrace-embserver.service)
 - 完整部署架构归档：[`devlogs/infra/archive-202605161000-deployment-architecture.md`](../../devlogs/infra/archive-202605161000-deployment-architecture.md)
 
@@ -59,16 +53,12 @@ frps (VPS 上的 FRP 服务端)
 
 ## SSL / TLS
 
-nginx vhost（[`deploy/nginx-timetrace.yukirin.me.conf`](../../deploy/nginx-timetrace.yukirin.me.conf)）在 VPS 上终结 TLS：
+公网 TLS 由 Cloudflare Edge 终结。本机 nginx vhost（[`deploy/nginx-timetrace.yukirin.me.conf`](../../deploy/nginx-timetrace.yukirin.me.conf)）只监听 `127.0.0.1:8080`，不绑定宿主机 80/443，也不维护第二套证书：
 
-- 证书：Let's Encrypt（certbot）或 Cloudflare origin cert，`/etc/letsencrypt/live/timetrace.yukirin.me/`
-- 协议：TLSv1.2 + TLSv1.3，`ssl_ciphers HIGH:!aNULL:!MD5`
-- HTTP(:80) → HTTPS(:443) 永久跳转
-- 安全 header：**当前实配的 nginx 只对前端静态资源加了 `Cache-Control`**（`public, max-age=31536000, immutable`）；`X-Frame-Options` / `X-Content-Type-Options` / `Referrer-Policy` 等加固 header **尚未配置**，是可补的 TODO（实际访问控制落在应用层登录鉴权，见 [auth-system](auth-system.md)）
-- `client_max_body_size 50M`（multipart ingest 可能较大；见 `deploy/nginx-timetrace.yukirin.me.conf`）
-- MCP 的 SSE / streamable-HTTP：`proxy_buffering off` + `proxy_read_timeout 3600s`，否则分块不 flush
-
-前端 SPA 静态资源由 nginx 从 `/var/www/timetrace.yukirin.me` 提供，`try_files ... /index.html` 兜底 SPA 路由；hash 资产长期缓存，`index.html` 明确 `no-cache`。后端拥有的路径（`/v1` `/v1/agent`（SSE）`/v1/reports`（长阻塞）`/healthz` `/mcp` `/thumbs` `/blob` `/skill` `/docs` `/openapi.json`）才 `proxy_pass` 给隧道。
+- Cloudflare Tunnel 把公网 HTTPS 请求送到本机 loopback HTTP origin
+- nginx 设置 `client_max_body_size 50M`；MCP/SSE/长报告路径关闭 buffering 并使用长 timeout
+- 前端从 `/srv/timetrace/web/current` 提供，hash 资产长期缓存，`index.html` 明确 `no-cache`
+- `/v1`、`/healthz`、`/mcp`、`/thumbs`、`/blob`、`/skill`、`/docs` 与 `/openapi.json` 等后端路径反代到 `127.0.0.1:8765`
 
 ---
 
@@ -99,38 +89,32 @@ session cookie 默认 `Secure`（只在 HTTPS 下发送）——公网部署正�
 
 nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给上游做日志/通用语义），但 **server 端的限速逻辑刻意不读它**——这是有意为之，不是疏漏。
 
-> 信任边界一句话：**家用主机信任 nginx 设的 `X-Real-IP`**，因为流量只可能从 FRP 隧道（= nginx）进来。如果哪天家用主机的 8765 直接暴露（不经 nginx），这个假设就破了——所以 8765 必须保持 loopback-only。
+> 信任边界一句话：**应用只信任本机 nginx 覆盖写入的 `X-Real-IP`**；nginx 再只信 loopback cloudflared 提供的 `CF-Connecting-IP`。如果 8765 被直接暴露而绕过 nginx，这个假设就会破坏，因此后端不能映射到公网接口。
 
 ---
 
 ## CI/CD 与 fork 安全
 
-- **触发方式**：push `deploy` 分支自动发布；`workflow_dispatch` 通过 Actions 的 ref 选择器或 `gh workflow run deploy.yml --ref <branch|tag>` 手动发布。GitHub 在触发时记录不可变 `github.sha`，不会因生产队列等待而漂移
-- **fork 安全双保险**：
-  1. `if: github.repository == 'Vanilla-Yukirin/TimeTrace'` —— fork 跑不起来这个 job
-  2. GH secret 不被 fork 继承 —— 即便 fork 改了 guard 也拿不到 SSH key
-- 后端 job **不 checkout、不 pipe 远端脚本**：它经 FRP SSH 到 box，由 box 自己 `git fetch origin <SHA>` → 取该 SHA 的 `deploy.sh` → `git reset --hard <SHA>` → `uv sync` → restart → healthz。
-- `publish-frontend` job 与后端并行：runner checkout 同一 ref、`npm ci && npm run build`，再用 xcy 专用低权 `ghdeploy` 用户先 rsync hash 资产、最后替换 `index.html`。两个 job 故障域独立。
-- CI（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)）：`main` push/PR 触发，plain `uv sync` → `ruff check` → `ruff format --check` → `pytest`。`uv sync` 不带 `--extra embserver`，所以 CI 不拉 torch/transformers。
+- **触发方式**：push `deploy` 分支自动构建正式镜像；`workflow_dispatch` 可为指定 ref 构建。GitHub 在触发时记录不可变 `github.sha`
+- **fork 安全**：正式 job 有 `github.repository` guard；唯一写权限是当前仓库的 `packages: write`，workflow 不持有部署机 SSH 凭据
+- **制品**：Docker 多阶段构建 server + SPA，推送 `ghcr.io/.../timetrace-server:<sha>`；Compose 与更新脚本也打入该镜像
+- **激活**：owner SSH 登录部署机后执行 `timetrace-update`。部署机主动访问 GitHub/GHCR，不要求 GitHub Runner 能连入家庭网络
+- **CI**：main push/PR 都跑后端与前端检查；Docker 临时镜像只在 PR 构建和冒烟，合并到 main 后不重复构建，正式 deploy workflow 再构建可发布镜像
 
 ---
 
-## 分支与 deploy.sh 镜像语义
+## 分支与不可变镜像语义
 
-[`deploy/deploy.sh`](../../deploy/deploy.sh) 在家用主机上跑 `git reset --hard origin/<ref>`：
+- 长期分支只有 `main`（开发主干）和 `deploy`（生产制品指针）；已通过 CI 的 main 只以 fast-forward 推进到 deploy
+- 部署机不再镜像 Git 仓库。`timetrace-update` 只查询远端 `deploy` SHA，再拉取对应不可变 GHCR tag
+- `/srv/timetrace/runtime/current` 与 `/srv/timetrace/web/current` 分别指向同 SHA 的后端发布资产和 SPA；二者通过同一次健康检查后切换
+- 直接 `git pull/reset`、`docker compose up` 或重启旧 systemd unit都会绕过回滚，因此禁止；指定 `timetrace-update <sha>` 才是正式回滚入口
+- schema 无独立迁移步骤，应用首次访问数据库时幂等建表；数据与 token 不进入镜像
 
-- **镜像语义**：本地 git 状态是一次性的、可丢弃的，`origin` 才是真相
-- 长期分支模型只有 `main`（开发主干）和 `deploy`（生产指针）。发布时把已通过 CI 的 main fast-forward 到 deploy：`git push origin main:deploy`。历史 `feature/refactor-split` 不再作为默认部署源
-- **部署机本地分支可能指向 deploy ref 的提交链**——这是镜像语义，不是开发分支污染，不要在部署机上“整理分支”
-- 判断真实代码状态看 `origin/*`，不看部署机本地分支名
-- 部署一律走工作流，**禁止手动 ssh 改部署机 git / 重启 systemd**——那样没 CI 留痕、跳过 healthz 探针 / unit 同步 / 沙箱目录预建。唯一例外是 deploy.sh 不管的 LM Studio 模型加载（`lms load/unload`），本就在流程外
-- `uv sync`（plain）：deploy.sh 第 138 行实跑 plain `uv sync`（读 pyproject + uv.lock），不带 `--extra embserver`，所以部署机不拉 torch/transformers
-- schema 无显式迁移步骤：app 首次 touch DB 时幂等建表
-- `deploy.sh` 只管 `timetrace-server.service`（安装/更新 unit + restart）；embserver 完全在 deploy 流程之外——unit 文件存在但需手动 enable / 手动重启。torch/transformers 走 optional extra，`deploy.sh` 的 plain `uv sync` 不拉
-
-### systemd 用户单元
+### 退役 server unit 与可选 embserver unit
 
 - `systemctl --user`（非 root）+ `loginctl enable-linger`（survive logout / headless）
+- 主 server unit 已退役并保留作应急回滚；生产 server 由 Compose 容器运行
 - 模板：[`deploy/timetrace-server.service`](../../deploy/timetrace-server.service)、[`deploy/timetrace-embserver.service`](../../deploy/timetrace-embserver.service)
 - 秘密（VLM creds / `TIMETRACE_*`）走仓库根的 `.env`（chmod 600，**不进 git**），unit 文件用 `EnvironmentFile=-%h/Github/TimeTrace/.env`（`-` 前缀 = 文件缺失不阻止启动）
 - 加固：`NoNewPrivileges` / `PrivateTmp` / `ProtectSystem=strict` / `ProtectHome=read-only` + `ReadWritePaths=%h/Github/TimeTrace %h/TimeTraceData %h/.cache %h/.local %h/.config/timetrace-server`
@@ -139,16 +123,16 @@ nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给
 
 ## 数据泄露应急止血
 
-公网链路的"断路器"是 **frpc**：它一停，VPS 那侧的隧道落地端口就接不到家里，nginx `proxy_pass` 502，公网瞬间断到数据。家用主机仍能本地（loopback / SSH 隧道）访问。
+公网链路的"断路器"是 **TimeTrace 对应的 Cloudflare Tunnel published route / cloudflared 服务**：停用该 route 后，公网无法到达本机 nginx，但家用主机仍能通过 loopback 访问。
 
 止血优先级（从快到彻底）：
 
-1. **最快——掐 frpc**：停掉家用主机的 frpc（或在其配置里注释掉 timetrace 那段 proxy 再 reload）。隧道断 = 公网立即够不到 8765。数据仍在盒子里、本地仍可用
+1. **最快——停用 TimeTrace published route**：在 Cloudflare Tunnel 中禁用对应 hostname 路由；不要误停宿主机上其它 tunnel/process
 2. **轮换凭证**：怀疑 cookie/token 泄露 → Web UI 改密（顺手踢掉所有其它会话）+ `timetrace-server tokens revoke <label>` 吊销可疑 bearer token（CLI 改完**重启 server** 才生效；Web UI 的 `/v1/admin/tokens` DELETE 即时生效）
-3. **VPS 侧兜底**：停 nginx vhost / 停 frps，从云端切断
-4. **恢复**：威胁排除后，把 frpc 配置里注释掉的 proxy 段恢复 + reload，公网重新可达
+3. **宿主机兜底**：停用本机 TimeTrace nginx site 或对应 cloudflared user unit；操作前确认不会影响其它服务
+4. **恢复**：威胁排除后重新启用 published route，并验证公网 `/healthz`、首页与鉴权边界
 
-> 设计上 frpc 的那段 proxy 配置就是"应急开关"——平时启用，出事注释掉 reload，恢复时取消注释 reload。比改 nginx / 改 DNS 都快且可逆。
+> 优先在 Cloudflare 侧只停 TimeTrace hostname route，避免误伤同一主机上的其它 tunnel 或服务。
 
 记住数据从未上云，所以"泄露"的最坏情况是公网链路上的访问被滥用，而不是数据落到第三方存储——掐掉链路就回到纯本地状态。
 

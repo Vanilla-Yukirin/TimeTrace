@@ -56,6 +56,9 @@ jobs:
         run: npm run build --prefix frontend
 
   docker-image:
+    # The deploy workflow builds the production image. Keep this job on PRs so
+    # container changes are validated once, without rebuilding after merge.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 

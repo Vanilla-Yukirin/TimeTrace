@@ -20,8 +20,9 @@ htmlcov
 .DS_Store
 Thumbs.db
 
-# Frontend (the host nginx serves the separately published SPA)
-frontend
+# Frontend dependencies and local build output. Source is part of the image
+# build so the SPA and server always share one immutable SHA.
+frontend/node_modules
 frontend-dist
 node_modules
 
