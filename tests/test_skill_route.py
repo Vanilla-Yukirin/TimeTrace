@@ -54,3 +54,16 @@ async def test_skill_route_is_open_no_auth(client):
     # routes would. With users=None it's open anyway, but assert 200 (not 401/403).
     res = await client.get("/skill")
     assert res.status_code == 200
+
+
+async def test_skill_route_uses_packaged_runtime_path(client, tmp_path, monkeypatch):
+    runtime_skill = tmp_path / "SKILL.md"
+    runtime_skill.write_text("---\nname: packaged-timetrace\n---\n", encoding="utf-8")
+    missing_checkout_skill = tmp_path / "missing-SKILL.md"
+    monkeypatch.setattr("timetrace.server.api.routes.skill._SKILL_PATH", missing_checkout_skill)
+    monkeypatch.setattr("timetrace.server.api.routes.skill._PACKAGED_SKILL_PATH", runtime_skill)
+
+    res = await client.get("/skill")
+
+    assert res.status_code == 200
+    assert "name: packaged-timetrace" in res.text

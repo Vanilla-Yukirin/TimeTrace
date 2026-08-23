@@ -1,126 +1,32 @@
-# =============================================================================
-# deploy.yml — GitOps production deploy: backend + SPA over the same FRP SSH.
-# Companion docs:
-#
-#   devlogs/infra/archive-202605161000-deployment-architecture.md
-#   devlogs/infra/archive-202605161015-cicd-workflow.md
-#
-# === Topology =================================================================
-# Pure FRP, no ProxyJump:
-#
-#   GH runner ──── public internet ────► cloud:FRP_PORT
-#                                              │
-#                                              │ FRP reverse tunnel
-#                                              ▼
-#                                        home box's sshd:22
-#
-# `ssh -p FRP_PORT vanilla@cloud_ip` lands you straight on the home box.
-# The cloud server is a tunnel endpoint only — nothing runs there.
-#
-# Runtime web traffic is a separate outbound-only path:
-#
-#   browser ─► Cloudflare Edge ─► Cloudflare Tunnel ─► home nginx :8080
-#                                                        ├─ SPA release
-#                                                        └─ API :8765
-#
-# === Backend self-fetching deploy.sh (no backend checkout) ====================
-# A tiny resolver job exports the trigger's already-pinned commit SHA. The
-# backend deploy job itself does not clone the repo. It only:
-#   1) holds the SSH key,
-#   2) opens an ssh control channel to the home box,
-#   3) tells the home box to refresh deploy/deploy.sh from its OWN clone via
-#      git, then run it.
-#
-# The private repo must already be cloned and authenticated on the box. The
-# deploy job fetches the resolved SHA, checks out that SHA's deploy.sh, and
-# passes the same SHA into the script. After the backend health check passes,
-# the frontend job checks out that exact SHA, builds the SPA, uploads it to an
-# immutable release directory, and atomically flips nginx's `current` symlink.
-#
-# === Trigger ==================================================================
-# Two ways in:
-#   1. Push-to-deploy (GitOps): pushing to the `deploy` branch auto-deploys
-#      origin/deploy. Normal work lands on main (NO deploy); when you actually
-#      want to ship, one command does it:
-#          git push origin main:deploy
-#      (fast-forwards the remote `deploy` branch to main's HEAD → fires this
-#      workflow → box resets to origin/deploy). Only push `deploy` when you mean
-#      to deploy; WIP stays on a short-lived topic branch or local worktree.
-#   2. workflow_dispatch (manual escape hatch): choose the branch/tag in the
-#      GH Actions "Use workflow from" selector, or locally with --ref:
-#          gh workflow run deploy.yml --ref <branch|tag>
-#          gh run watch
-#      GitHub records that ref's commit as github.sha when dispatching, before
-#      this run can wait in the production concurrency queue.
-#
-# === Fork safety ==============================================================
-# Two layers prevent forks from accidentally deploying to MY machine:
-#
-#  1. `if: github.repository == '...'` skips the entire job in any fork.
-#  2. GitHub doesn't propagate repository secrets to forks, so even if
-#     someone removed the guard, all the SSH steps would fail with empty
-#     secrets.
-#
-# A fork user adapting this for their own deploy needs to:
-#   - change the repo string in `if:` below
-#   - configure the 4 secrets in their own repo settings
-#
-# === Required secrets (shared by backend + frontend) ==========================
-# Configure under repo Settings → Secrets and variables → Actions:
-#
-#   DEPLOY_SSH_KEY            ed25519 private key (no passphrase) whose .pub
-#                             is in the target box's ~/.ssh/authorized_keys.
-#   DEPLOY_KNOWN_HOSTS        Output of `ssh-keyscan -p <port> <host>` for
-#                             the single hop. Pre-populates known_hosts so we
-#                             never hit a "yes/no" prompt at runtime.
-#   DEPLOY_TARGET_USER_HOST   "vanilla@121.43.33.13" — the runner → FRP-public
-#                             hop's user@host. From the GH runner's viewpoint
-#                             this IS the target (FRP makes the home box
-#                             reachable directly).
-#   DEPLOY_TARGET_PORT        Public port the cloud-side FRP listener exposes,
-#                             reverse-tunneled to the home box's sshd:22
-#                             (e.g. 10089). This is what `-p` uses.
-#
-# The frontend job deliberately reuses these four secrets: it reaches the same
-# home deployment account and writes only below /srv/timetrace/web, which that
-# account owns. Build commands finish BEFORE the SSH key is loaded.
-#
-# === Env vars on target (NOT touched by this workflow) =======================
-# Server config like VLM API keys lives in ~/Github/TimeTrace/.env on the target.
-# That file is in .gitignore and the deploy script does `git reset --hard`
-# which only touches tracked files — so .env persists forever across deploys.
-# Provision it once outside git; after changing it, trigger the normal workflow
-# so restart + health check still have an Actions record:
-#
-#     scp -P 10089 .env vanilla@121.43.33.13:~/Github/TimeTrace/.env
-#     gh workflow run deploy.yml --ref main
-# =============================================================================
+# Production artifact publication:
+#   deploy branch -> GitHub Actions -> immutable GHCR image
+#   deployment host -> timetrace-update -> pull, health-check, activate
 
 name: deploy
 
-# Serialize production mutations. Do not cancel a run midway through an atomic
-# publish/deploy sequence; the queued run deploys its own immutable SHA next.
 concurrency:
-  group: timetrace-production
+  group: timetrace-production-image
   cancel-in-progress: false
 
 on:
-  # Push-to-deploy: a push to the `deploy` branch ships it. main is the only
-  # long-lived development branch; deploy is a production pointer to a tested
-  # main commit and must not receive direct development work.
   push:
     branches: [deploy]
   workflow_dispatch:
+
+env:
+  IMAGE_NAME: ghcr.io/vanilla-yukirin/timetrace-server
 
 jobs:
   resolve-ref:
     if: github.repository == 'Vanilla-Yukirin/TimeTrace'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      - name: Checkout trigger's immutable commit
+      - name: Checkout immutable trigger commit
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -130,201 +36,73 @@ jobs:
         id: resolve
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-  deploy:
-    # Double guard: fork-safe (repo check) + only our two intended triggers
-    # (manual dispatch or a push to `deploy`).
-    if: github.repository == 'Vanilla-Yukirin/TimeTrace' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+  build-image:
+    if: github.repository == 'Vanilla-Yukirin/TimeTrace'
     needs: resolve-ref
     runs-on: ubuntu-latest
-    # First deploy on a slow home upstream can take a while: pip wheels for
-    # numpy / Pillow / fastapi etc. add up. 30 min is generous; reduce later.
     timeout-minutes: 30
-
+    permissions:
+      contents: read
+      packages: write
     steps:
-      # No actions/checkout — runner holds zero source files. deploy.sh is
-      # fetched from GitHub raw by the target itself in the final step.
-
-      # webfactory/ssh-agent loads DEPLOY_SSH_KEY into an in-memory ssh-agent
-      # and exports SSH_AUTH_SOCK so subsequent ssh calls find it. Cleans up
-      # on job teardown — the private key never lands on the runner FS.
-      - name: Set up SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-
-      # known_hosts is plaintext (host pubkeys are not secret), but we keep
-      # it in a secret so updates go through repo settings rather than commits.
-      - name: Trust target host key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      # The one and only deploy step.
-      #
-      # The target box bootstraps deploy.sh from its own authenticated clone.
-      #
-      # On the remote bash:
-      #   1. set -o pipefail so a mid-pipe failure isn't masked.
-      #   2. cd into the existing clone (first-ever provisioning is separate).
-      #   3. git fetch the requested ref → checkout just deploy/deploy.sh from
-      #      it (so we run the ref's version of the script, not a stale local).
-      #   4. export TIMETRACE_BRANCH=<ref> + run deploy.sh (it does the real
-      #      fetch + reset --hard + uv sync + restart + healthz).
-      #
-      # `${REF}` is interpolated on the runner, so the box sees a substituted
-      # command string.
-      - name: Deploy via SSH (target self-fetches deploy.sh via git)
-        env:
-          TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
-          TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
-          REF: ${{ needs.resolve-ref.outputs.sha }}
-        run: |
-          set -euo pipefail
-          echo "Target  : ${TARGET}:${TARGET_PORT}"
-          echo "Ref     : ${REF}"
-          echo ""
-          ssh \
-            -p "${TARGET_PORT}" \
-            -o ServerAliveInterval=15 \
-            -o StrictHostKeyChecking=yes \
-            "${TARGET}" \
-            "set -o pipefail; cd \"\$HOME/Github/TimeTrace\" && git fetch origin '${REF}' && git checkout FETCH_HEAD -- deploy/deploy.sh && export TIMETRACE_BRANCH='${REF}' && bash deploy/deploy.sh"
-
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "## Deploy summary"
-            echo "- Repo: ${{ github.repository }}"
-            echo "- Trigger: ${{ github.event_name }}"
-            echo "- Ref: ${{ needs.resolve-ref.outputs.sha }}"
-            echo "- Outcome: ${{ job.status }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ---------------------------------------------------------------------------
-  # publish-frontend — build the SPA on the runner and publish an immutable
-  # release to the home nginx webroot.
-  #
-  # Exists because this used to be a MANUAL `npm run build && scp` step that
-  # nobody remembered to run — the public frontend once sat 3 weeks stale while
-  # the backend deployed on every push. Workflow-izing it turns "must remember"
-  # into "can't forget" (same discipline the backend job already follows).
-  #
-  # Runs AFTER the backend health check. A failed backend rollout therefore
-  # leaves the previous SPA release active instead of exposing a new UI against
-  # an old API. No path filter on purpose — build+rsync is minute-scale and
-  # idempotent; publishing every deploy beats guessing whether the diff touched
-  # frontend/.
-  #
-  # Each SHA gets /srv/timetrace/web/releases/<sha>. nginx serves only the
-  # `current` symlink. Upload + validation happen off-path; `mv -T` flips the
-  # symlink atomically, so visitors see either the complete old release or the
-  # complete new one. Old releases remain available for manual rollback.
-  #
-  # Emergency manual fallback (CI down): deploy/publish-frontend.sh.
-  # ---------------------------------------------------------------------------
-  publish-frontend:
-    if: github.repository == 'Vanilla-Yukirin/TimeTrace' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
-    needs: [resolve-ref, deploy]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      WEB_ROOT: /srv/timetrace/web
-
-    steps:
-      - name: Checkout
+      - name: Checkout immutable release
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve-ref.outputs.sha }}
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build SPA
-        run: |
-          npm ci --prefix frontend
-          npm run build --prefix frontend   # tsc -b && vite build → frontend-dist/
-
-      - name: Set up SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-
-      - name: Trust target host key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Publish immutable SPA release to home nginx
+      - name: Refuse to replace an immutable SHA tag
         env:
-          TARGET: ${{ secrets.DEPLOY_TARGET_USER_HOST }}
-          TARGET_PORT: ${{ secrets.DEPLOY_TARGET_PORT }}
-          REF: ${{ needs.resolve-ref.outputs.sha }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ needs.resolve-ref.outputs.sha }}
         run: |
           set -euo pipefail
-          RELEASE="${WEB_ROOT}/releases/${REF}"
-          RSH="ssh -p ${TARGET_PORT} -o StrictHostKeyChecking=yes"
+          set +e
+          inspect_output=$(docker buildx imagetools inspect "${IMAGE_REF}" 2>&1)
+          inspect_status=$?
+          set -e
 
-          # WEB_ROOT/releases is provisioned with nginx-readable ownership.
-          # New release dirs are 755 beneath that protected parent so nginx's
-          # www-data worker can traverse them without granting CI sudo.
-          ssh \
-            -p "${TARGET_PORT}" \
-            -o StrictHostKeyChecking=yes \
-            "${TARGET}" \
-            "set -e; test -d '${WEB_ROOT}/releases'; install -d -m 755 '${RELEASE}'"
-
-          rsync -rtz -e "$RSH" frontend-dist/ "${TARGET}:${RELEASE}/"
-
-          # Validate the uploaded release, then atomically replace `current`.
-          # If the nginx smoke test fails after the flip, restore the previous
-          # symlink before returning non-zero.
-          ssh \
-            -p "${TARGET_PORT}" \
-            -o StrictHostKeyChecking=yes \
-            "${TARGET}" \
-            bash -s -- "${WEB_ROOT}" "${REF}" <<'REMOTE'
-          set -euo pipefail
-          web_root=$1
-          ref=$2
-          release="${web_root}/releases/${ref}"
-          next_link="${web_root}/.current-${ref}"
-          previous=$(readlink "${web_root}/current")
-
-          test -s "${release}/index.html"
-          grep -F 'id="root"' "${release}/index.html" >/dev/null
-          test -n "$(find "${release}/assets" -type f -print -quit)"
-
-          ln -sfn "releases/${ref}" "${next_link}"
-          mv -Tf "${next_link}" "${web_root}/current"
-
-          if ! {
-            curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' \
-              'http://127.0.0.1:8080/healthz' >/dev/null &&
-            curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' \
-              'http://127.0.0.1:8080/' | grep -F 'id="root"' >/dev/null
-          }; then
-            echo "nginx smoke test failed; restoring ${previous}" >&2
-            ln -sfn "${previous}" "${next_link}"
-            mv -Tf "${next_link}" "${web_root}/current"
+          if ((inspect_status == 0)); then
+            echo "::error::Refusing to replace existing image ${IMAGE_REF}"
             exit 1
           fi
-          REMOTE
+          if ! grep -Eqi 'manifest unknown|not found' <<<"${inspect_output}"; then
+            printf '%s\n' "${inspect_output}" >&2
+            echo "::error::Could not verify that ${IMAGE_REF} is unused"
+            exit 1
+          fi
 
-          echo "Published bundle: $(grep -oE 'index-[A-Za-z0-9_-]+\.js' frontend-dist/index.html | head -1)"
+      - name: Build and push server plus SPA image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ needs.resolve-ref.outputs.sha }}
+          build-args: |
+            VCS_REF=${{ needs.resolve-ref.outputs.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
 
       - name: Summary
         if: always()
         run: |
           {
-            echo "## Frontend publish summary"
+            echo "## Pull-based release artifact"
             echo "- Ref: ${{ needs.resolve-ref.outputs.sha }}"
-            echo "- Target: \`${WEB_ROOT}/releases/${{ needs.resolve-ref.outputs.sha }}\`"
+            echo "- Image: \`${IMAGE_NAME}:${{ needs.resolve-ref.outputs.sha }}\`"
+            echo "- Contents: server + SPA + Compose deployment assets"
+            echo "- Activation: run \`timetrace-update\` on the deployment host"
             echo "- Outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -101,12 +101,13 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 ## 部署 / 运行环境
 
 - **GitHub identity**：仓库是 `Vanilla-Yukirin/TimeTrace`。本地 git config 的 `Yuki` 只是临时本地标签，不要混
-- **部署目标**：家里 Ubuntu 小主机（NAT 后），CI 经云服务器 FRP 隧道 SSH 进；详见 [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
+- **部署目标**：家里 Ubuntu 小主机（NAT 后）；GitHub Actions 只发布 GHCR 制品，主机通过出站 HTTPS 主动拉取，不再依赖 CI 经 FRP SSH 入站；历史拓扑见 [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
 - **公网入口**：Cloudflare Edge → outbound Cloudflare Tunnel → `yukirin-server` 的 `127.0.0.1:8080` nginx；nginx 从 `/srv/timetrace/web/current` 托管 SPA，并把 `/v1`、`/mcp`、`/healthz`、`/thumbs`、`/blob` 等路径反代到 `127.0.0.1:8765`。Puck/xcy 均不在 TimeTrace 正式运行链路中；敏感接口仍必须经过现有鉴权，MCP 不返回原始截图
-- **CI/CD 触发**：`push` 到 `deploy` 分支自动部署 + `workflow_dispatch` 手动兜底。手动部署用 `gh workflow run deploy.yml --ref <branch|tag>`；GitHub 在触发时把该 ref 固定为 `github.sha`，排队期间不会漂移。Fork 安全 = repo guard + secret 不被 fork 继承
-- **部署模型（唯一长期模型）**：`main` 是开发主干，`deploy` 是只接受 main fast-forward 的生产指针；发布命令是 `git push origin main:deploy`。deploy.yml 经 2v4G FRP SSH 先让 box 镜像同一不可变 SHA 并通过后端 healthz，再把该 SHA 的 SPA 发布到 `/srv/timetrace/web/releases/<sha>`，验证后原子切换 `current`。`feature/refactor-split` 是重构期历史长分支，main 追平后停止继续开发并进入退役。部署机是 deployment mirror 不是 dev box，本地分支名不代表开发分支；判断真实状态看 `origin/*`
-- **部署一律走工作流，禁止手动 ssh 改部署机 git/重启**：不要 `ssh <box> 'git reset/pull/checkout'` 或手动 `systemctl restart` —— 那样没 CI 留痕、跳过 healthz 探针 / systemd unit 同步 / 沙箱目录预建。唯一例外是 deploy.sh **不管的** LM Studio 模型加载（`lms load/unload/ps`），这个本就在部署流程之外，可手动。
-- **systemd 用户**：`systemctl --user`（不 root）+ `loginctl enable-linger`，service 模板在 `deploy/timetrace-server.service`
+- **CI/CD 触发**：`push` 到 `deploy` 分支或 `workflow_dispatch` 只构建并发布不可变 GHCR 镜像，不连接部署机。GitHub 在触发时把 ref 固定为 `github.sha`，排队期间不会漂移。PR 会构建临时镜像做容器冒烟；main push 不重复构建 Docker
+- **部署模型（唯一长期模型）**：`main` 是开发主干，`deploy` 是只接受 main fast-forward 的生产指针；发布制品命令是 `git push origin main:deploy`。`deploy.yml` 构建并推送同时包含 server、SPA 和部署资产的 `ghcr.io/vanilla-yukirin/timetrace-server:<sha>`；镜像就绪后，在部署机以 Docker 组用户执行 `timetrace-update`，由部署机通过出站 HTTPS 解析 `deploy` SHA、拉镜像并原子切换 `/srv/timetrace/runtime/releases/<sha>` 与 `/srv/timetrace/web/releases/<sha>`，失败自动恢复上一套
+- **容器边界**：只容器化 `timetrace-server`。生产 Compose 使用 Linux host network，使容器仍可访问宿主机 LM Studio `127.0.0.1:1234`；GPU、LM Studio、nginx、Cloudflare Tunnel 都留在宿主机。现有 `/home/vanilla/TimeTraceData` 与 `/home/vanilla/.config/timetrace-server` 原位 bind mount，不搬库、不复制截图；首次切换会无插值解析旧仓库 `.env`，再以 Compose 安全的单引号 dotenv 规范化到 `/srv/timetrace/config/timetrace.env`，保留引号、转义与字面 `$` 的原值
+- **旧源码部署已退役但保留回滚**：`~/Github/TimeTrace` 与 `timetrace-server.service` 不改名、不删除。首次容器切换会停旧 unit、做 stopped-service SQLite 快照并启动容器；失败则自动恢复旧 unit，成功才 disable 旧 unit。`deploy/deploy.sh` 与 unit 模板仅作历史/应急参考，不再是自动部署主路径
+- **发布制品走工作流，部署激活走主机更新器**：不要在部署机 `git reset/pull/checkout`、直接 `docker compose up` 或手动 `systemctl restart`。标准入口是 `timetrace-update [<sha>]`，它保留不可变 SHA、健康检查和自动回滚；容器不管理的 LM Studio 模型仍可用 `lms load/unload/ps` 操作
 
 ## 仍然存在的桩代码 / 已知 bug
 

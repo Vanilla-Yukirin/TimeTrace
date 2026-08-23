@@ -1,0 +1,32 @@
+name: timetrace
+
+services:
+  server:
+    image: "${TIMETRACE_IMAGE_REF:-${TIMETRACE_IMAGE:?TIMETRACE_IMAGE is required}:${TIMETRACE_IMAGE_TAG:?TIMETRACE_IMAGE_TAG is required}}"
+    container_name: timetrace-server
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    user: "${TIMETRACE_HOST_UID:?TIMETRACE_HOST_UID is required}:${TIMETRACE_HOST_GID:?TIMETRACE_HOST_GID is required}"
+    env_file:
+      - path: "${TIMETRACE_ENV_FILE:-/srv/timetrace/config/timetrace.env}"
+        required: true
+    environment:
+      HOME: /home/timetrace
+      TZ: "${TIMETRACE_TZ:-Asia/Shanghai}"
+    volumes:
+      - type: bind
+        source: "${TIMETRACE_DATA_DIR:-/home/vanilla/TimeTraceData}"
+        target: /home/timetrace/TimeTraceData
+      - type: bind
+        source: "${TIMETRACE_TOKEN_DIR:-/home/vanilla/.config/timetrace-server}"
+        target: /home/timetrace/.config/timetrace-server
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    stop_grace_period: 40s

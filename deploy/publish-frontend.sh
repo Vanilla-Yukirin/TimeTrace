@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # publish-frontend.sh — EMERGENCY manual SPA publish to the home nginx gateway.
 #
-# ⚠️ 正路是工作流：push 到 deploy 分支后，deploy.yml 的 publish-frontend job
-# 会自动 build + rsync 到 yukirin-server，再原子切换 current release。这个
-# 脚本只是 CI 挂掉 / 无法触发工作流时的手动兜底 —— 用它之前先想想为什么
-# 不能走工作流。
+# ⚠️ 正路是 pull-based 更新器：生产镜像内已经携带同 SHA 的 SPA，部署机
+# 执行 `timetrace-update` 会同时切换后端与前端。这个脚本只是在镜像
+# 发布或更新器无法使用时的手动兜底，使用前需要 owner 明确批准。
 #
 # Prereqs: local `ssh yukirin-server-2v4G` alias works; node + npm installed.
 #

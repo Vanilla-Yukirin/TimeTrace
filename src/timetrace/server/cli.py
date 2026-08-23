@@ -85,7 +85,8 @@ def main() -> None:
         except RuntimeError:
             pass
 
-    signal.signal(signal.SIGINT, lambda sig, frame: _request_quit())
+    for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(shutdown_signal, lambda sig, frame: _request_quit())
 
     try:
         loop.run_until_complete(_run(config, quit_event))

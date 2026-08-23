@@ -50,12 +50,13 @@ uv sync --extra embserver
 # 3.（可选，int8/int4 自量化）pip install bitsandbytes
 ```
 
-## systemd 部署单元（Linux 小主机）
+## 宿主机旁路服务与退役 systemd 单元
 
-两个 user 级 service 模板（`systemctl --user` + `loginctl enable-linger`，不 root）：
+仓库仍保留两个 user 级 service 模板，但主 server 已切换到 Docker；systemd server unit 只用于应急回滚。可选 embserver 仍可独立使用 systemd：
 
 ### `deploy/timetrace-server.service`
 
+- **已退役**：生产运行时由 `timetrace-server` 容器接管；该 unit 保留而不删除
 - `ExecStart=… uv run timetrace-server`（plain，不含 torch）
 - `Environment=TIMETRACE_DATA_DIR=/home/%u/TimeTraceData`
 - `.env` 在仓库根，dotenv 自动加载（VLM / embedding 端点配置）
@@ -71,39 +72,36 @@ uv sync --extra embserver
 
 ## 部署流程（CI/CD）
 
-- **触发**：push `deploy` 自动发布；手动兜底使用 `gh workflow run deploy.yml --ref <branch|tag>`（不传时默认分支为 `main`）。workflow 直接使用触发事件记录的 `github.sha`，因此即使排队，目标提交也不会随后续 push 漂移
-- **Fork 安全**：`if: github.repository == 'Vanilla-Yukirin/TimeTrace'` + secret 不被 fork 继承（双保险）
-- **路径**：后端 job 经 FRP SSH 进 box，让 box 自取 event SHA 对应的 `deploy.sh` 并镜像该 SHA；前端 job 在 runner checkout 同一 SHA 后发布到 xcy
-- **`deploy/deploy.sh` 做的事**：
-  1. `git fetch origin --prune` + `git reset --hard <pinned SHA>`（镜像状态，**不是污染**——见 CLAUDE.md「动态部署模型」）
-  2. `uv sync`（**plain，不含 embserver torch**）
-  3. schema 无独立 migration（`SqliteDatabase` 启动自建）
-  4. `systemctl --user daemon-reload` + `restart timetrace-server`（embserver 不在此列）
-  5. `curl /healthz`（8765）健康探针，失败则 `exit 1`
-- **健康检查**：`deploy.sh` 在 box 内完成 `/healthz` 探针；workflow 当前没有第二次 runner-side healthz
+- **构建触发**：push `deploy` 自动构建并发布；`workflow_dispatch` 可为指定 ref 生成镜像。workflow 使用触发事件记录的不可变 `github.sha`
+- **单一制品**：多阶段 Dockerfile 同时构建 Python server 与 React/Vite SPA，最终镜像携带 server runtime、`frontend-dist`、Compose 和部署脚本；Node 工具链不进入最终镜像
+- **无入站部署依赖**：workflow 只向 GHCR 写入 `<sha>` 镜像，不持有部署机 SSH key，也不经 FRP 连接部署机
+- **主机主动激活**：部署机的 Docker 组用户运行 `timetrace-update [<sha>]`，通过出站 HTTPS 解析 `deploy`、拉镜像、提取 release，随后进行后端/SPA 健康检查与原子切换；失败恢复上一套
+- **数据边界**：SQLite、截图和 token 目录继续原位 bind mount；GPU、LM Studio、nginx 和 Cloudflare Tunnel 留在宿主机
 
-**手工运维边界**：主 server 的代码部署与重启只走 workflow；LM Studio 模型可用 `lms load/unload/ps` 手工管理；可选 `timetrace-embserver` 当前不在主部署流程内，若启用则用它自己的 CLI/systemd 管理。禁止手工 SSH 修改主仓库 git 或重启 `timetrace-server`。
+**手工运维边界**：不要在部署机运行源码 `git pull/reset`、直接 `docker compose up` 或手动重启旧 systemd unit。主 server 的唯一激活入口是 `timetrace-update`；LM Studio 与可选 embserver 继续按各自宿主机入口管理。
 
 ## 公网拓扑
 
 ```
 浏览器 / MCP 客户端
-   │ HTTPS, timetrace.yukirin.me
+   │ HTTPS
    ▼
-Cloudflare ── 云 VPS nginx 反代 (deploy/nginx-timetrace.yukirin.me.conf)
-                  │ proxy_pass 127.0.0.1:18765 (VPS 侧 frp 隧道入口)
-                  ▼
-              frp 隧道 ──► 家里小主机 :8765 (timetrace-server)
-                                         │ 本地调
-                                         ▼
-                                   embserver :8766（可选；当前生产未接线）
+Cloudflare Edge
+   │ outbound Cloudflare Tunnel
+   ▼
+家里小主机 nginx 127.0.0.1:8080
+   ├── /                         → /srv/timetrace/web/current
+   └── API / MCP / 文件路径      → timetrace-server 127.0.0.1:8765
+                                                │ 本地调
+                                                ▼
+                                          LM Studio（宿主机）
 ```
 
 - MCP（streamable HTTP）的 nginx location 需长连接友好配置（`proxy_http_version 1.1` + 关 buffering + 长 timeout）
 - **Web UI / OpenAPI 鉴权后才开公网**；dev server 按需起 `ssh -L` 隧道访问
 - embserver（8766）仅本机回环，不经 nginx 暴露
 
-> 另有 `Dockerfile`（多阶段非 root）+ `docker-compose.yml`（loopback-only bind）随仓提供，作为容器化备选路径；当前生产部署走 systemd + deploy.sh，不走容器。
+生产 Compose 使用 host network，让容器可访问宿主机 LM Studio 的 loopback 端点；应用端口仍只由本机 nginx/Tunnel 使用，不通过路由器直接暴露。
 
 ## 数据 / 配置目录
 
@@ -112,7 +110,7 @@ Cloudflare ── 云 VPS nginx 反代 (deploy/nginx-timetrace.yukirin.me.conf)
 
 ## 当前分支与 Linux 部署
 
-`pywin32` 已带 `sys_platform == 'win32'` marker，Linux 可以 plain `uv sync`。长期分支模型为 `main`（唯一开发主干）+ `deploy`（生产指针）；发布使用 `git push origin main:deploy`，历史 `feature/refactor-split` 不再作为默认部署源。部署脚本仍只安装默认依赖，不会拉 `embserver` 的 torch/transformers optional extra。
+`pywin32` 已带 `sys_platform == 'win32'` marker。长期分支模型为 `main`（唯一开发主干）+ `deploy`（生产指针）；发布制品使用 `git push origin main:deploy`，镜像就绪后在 Linux 部署机执行 `timetrace-update` 激活。生产镜像只安装默认依赖，不会拉 `embserver` 的 torch/transformers optional extra。
 
 ---
 

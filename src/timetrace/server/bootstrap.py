@@ -22,6 +22,7 @@ import asyncio
 import time
 from collections.abc import Coroutine
 from dataclasses import asdict, dataclass
+from types import FrameType
 from typing import Any
 
 import structlog
@@ -47,6 +48,22 @@ _STALE_TASK_RECLAIM_INTERVAL_S = 60
 # 取 30min（用户要求的最短档）。
 _REPORT_INITIAL_DELAY_S = 30
 _REPORT_INTERVAL_S = 1800
+_UVICORN_GRACEFUL_SHUTDOWN_S = 30
+
+
+class _CoordinatedServer(uvicorn.Server):
+    """Make Uvicorn signals wake the shared application shutdown path."""
+
+    def __init__(self, config: uvicorn.Config, quit_event: asyncio.Event) -> None:
+        super().__init__(config)
+        self._quit_event = quit_event
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        # Uvicorn installs this bound method after the CLI's handlers. Wake the
+        # TaskGroup before Uvicorn begins waiting for active HTTP streams so
+        # workers and long-running LLM requests start unwinding immediately.
+        self._quit_event.set()
+        super().handle_exit(sig, frame)
 
 
 @dataclass
@@ -185,8 +202,11 @@ async def serve(
         host=config.api_host,
         port=config.api_port,
         log_level="warning",
+        # Compose allows 40 seconds. Bound Uvicorn's active-request wait so its
+        # lifespan and our DB/client cleanup still get time before SIGKILL.
+        timeout_graceful_shutdown=_UVICORN_GRACEFUL_SHUTDOWN_S,
     )
-    server = uvicorn.Server(server_config)
+    server = _CoordinatedServer(server_config, quit_event)
 
     extra_task_names: set[str] = set(extra_tasks.keys()) if extra_tasks else set()
 
