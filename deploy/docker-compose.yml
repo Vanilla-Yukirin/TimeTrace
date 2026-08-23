@@ -7,7 +7,7 @@ services:
     network_mode: host
     restart: unless-stopped
     init: true
-    user: "1000:1000"
+    user: "${TIMETRACE_HOST_UID:?TIMETRACE_HOST_UID is required}:${TIMETRACE_HOST_GID:?TIMETRACE_HOST_GID is required}"
     env_file:
       - "${TIMETRACE_ENV_FILE:-/srv/timetrace/config/timetrace.env}"
     environment:

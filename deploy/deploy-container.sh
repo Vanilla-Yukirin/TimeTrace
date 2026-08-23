@@ -17,6 +17,8 @@ config_dir=/srv/timetrace/config
 env_file="${config_dir}/timetrace.env"
 host_user=${TIMETRACE_HOST_USER:-vanilla}
 host_home=${TIMETRACE_HOST_HOME:-/home/${host_user}}
+host_uid=${TIMETRACE_HOST_UID:-$(id -u "${host_user}")}
+host_gid=${TIMETRACE_HOST_GID:-$(id -g "${host_user}")}
 install_target=${TIMETRACE_INSTALL_TARGET:-${host_home}/.local/bin/timetrace-update}
 legacy_env="${host_home}/Github/TimeTrace/.env"
 data_dir="${host_home}/TimeTraceData"
@@ -39,6 +41,7 @@ runtime_switched=0
 web_switched=0
 web_staging=
 backup_staging=
+updater_staging=
 
 log() {
   printf '==> %s\n' "$*"
@@ -51,6 +54,8 @@ compose() {
     TIMETRACE_ENV_FILE="${env_file}" \
     TIMETRACE_DATA_DIR="${data_dir}" \
     TIMETRACE_TOKEN_DIR="${token_dir}" \
+    TIMETRACE_HOST_UID="${host_uid}" \
+    TIMETRACE_HOST_GID="${host_gid}" \
     docker compose -p timetrace -f "${compose_file}" "$@"
 }
 
@@ -136,6 +141,11 @@ rollback() {
       "${data_dir}"/db/.pre-docker-*) rm -rf -- "${backup_staging}" ;;
     esac
   fi
+  if [[ -n "${updater_staging}" && -f "${updater_staging}" ]]; then
+    case "${updater_staging}" in
+      "${install_target%/*}"/.timetrace-update.*) rm -f -- "${updater_staging}" ;;
+    esac
+  fi
 
   if [[ "${previous_mode}" == docker && -n "${previous_release}" ]]; then
     local previous_compose="${previous_release}/docker-compose.yml"
@@ -146,6 +156,8 @@ rollback() {
         TIMETRACE_ENV_FILE="${env_file}" \
         TIMETRACE_DATA_DIR="${data_dir}" \
         TIMETRACE_TOKEN_DIR="${token_dir}" \
+        TIMETRACE_HOST_UID="${host_uid}" \
+        TIMETRACE_HOST_GID="${host_gid}" \
         docker compose -p timetrace -f "${previous_compose}" up -d --remove-orphans --pull never || true
       wait_for_health 24 || true
     fi
@@ -172,8 +184,17 @@ trap 'rollback 143' TERM
   echo "image must be hosted on ghcr.io" >&2
   exit 2
 }
+[[ "${host_uid}" =~ ^[0-9]+$ && "${host_gid}" =~ ^[0-9]+$ ]] || {
+  echo "host UID/GID must be numeric" >&2
+  exit 2
+}
+[[ "${install_target}" == /* ]] || {
+  echo "TIMETRACE_INSTALL_TARGET must be an absolute path" >&2
+  exit 2
+}
 
 test -f "${compose_file}"
+test -s "${release_dir}/timetrace-update.sh"
 test -s "${frontend_source}/index.html"
 test -d "${data_dir}"
 test -d "${token_dir}"
@@ -289,7 +310,10 @@ legacy_systemctl reset-failed "${service}" || true
 
 # Keep the stable host command synchronized only after the release has passed
 # every health check. A failed release therefore never replaces the updater.
-install -m 755 "${release_dir}/timetrace-update.sh" "${install_target}"
+updater_staging=$(mktemp "${install_target%/*}/.timetrace-update.XXXXXX")
+install -m 755 "${release_dir}/timetrace-update.sh" "${updater_staging}"
+mv -Tf "${updater_staging}" "${install_target}"
+updater_staging=
 
 trap - ERR HUP INT TERM
 log "deployed ${image}:${ref} and published its bundled SPA"

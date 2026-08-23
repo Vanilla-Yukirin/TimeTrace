@@ -20,6 +20,8 @@ runtime_root=${TIMETRACE_RUNTIME_ROOT:-/srv/timetrace/runtime}
 releases_dir="${runtime_root}/releases"
 host_user=${TIMETRACE_HOST_USER:-$(id -un)}
 host_home=${TIMETRACE_HOST_HOME:-$(getent passwd "${host_user}" | cut -d: -f6)}
+host_uid=$(id -u "${host_user}")
+host_gid=$(id -g "${host_user}")
 pull_attempts=${TIMETRACE_PULL_ATTEMPTS:-18}
 pull_interval=${TIMETRACE_PULL_INTERVAL:-10}
 install_dir=${TIMETRACE_INSTALL_DIR:-${HOME}/.local/bin}
@@ -30,7 +32,7 @@ log() {
   printf '==> %s\n' "$*"
 }
 
-for command in docker flock git getent; do
+for command in docker flock git getent id; do
   command -v "${command}" >/dev/null || {
     echo "required command not found: ${command}" >&2
     exit 1
@@ -48,6 +50,14 @@ fi
 [[ "${host_home}" == /* ]] || {
   echo "could not resolve an absolute home directory for ${host_user}" >&2
   exit 1
+}
+[[ "${host_uid}" =~ ^[0-9]+$ && "${host_gid}" =~ ^[0-9]+$ ]] || {
+  echo "could not resolve a numeric UID/GID for ${host_user}" >&2
+  exit 1
+}
+[[ "${install_dir}" == /* ]] || {
+  echo "TIMETRACE_INSTALL_DIR must be an absolute path" >&2
+  exit 2
 }
 
 if [[ "${requested_ref}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -157,6 +167,8 @@ log "activating ${ref}"
 exec env \
   TIMETRACE_HOST_USER="${host_user}" \
   TIMETRACE_HOST_HOME="${host_home}" \
+  TIMETRACE_HOST_UID="${host_uid}" \
+  TIMETRACE_HOST_GID="${host_gid}" \
   TIMETRACE_RUNTIME_ROOT="${runtime_root}" \
   TIMETRACE_INSTALL_TARGET="${install_target}" \
   bash "${release_dir}/deploy-container.sh" "${ref}" "${image}"
