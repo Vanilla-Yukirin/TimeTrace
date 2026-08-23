@@ -46,6 +46,25 @@ class CreateTokenRequest(BaseModel):
     label: str = Field(min_length=1, max_length=64)
 
 
+class DeviceSummary(BaseModel):
+    id: str
+    token_label: str | None
+    name: str
+    description: str
+    reported_name: str
+    reported_description: str
+    client_version: str
+    capabilities: list[str]
+    first_seen_at: int
+    last_seen_at: int
+    revoked_at: int | None
+
+
+class UpdateDeviceRequest(BaseModel):
+    name: str = Field(max_length=128)
+    description: str = Field(default="", max_length=512)
+
+
 def _auth(request: Request) -> ServerAuth:
     auth: ServerAuth | None = getattr(request.app.state, "auth", None)
     if auth is None:
@@ -86,6 +105,41 @@ async def revoke_token(
     auth = _auth(request)
     if not auth.revoke_token(label):
         raise HTTPException(status_code=404, detail=f"no token labelled {label!r}")
+    from fastapi import Response
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/devices", response_model=list[DeviceSummary])
+async def list_devices(
+    request: Request,
+    _user: CookiePrincipal = Depends(require_session_password_set),
+) -> list[DeviceSummary]:
+    return [DeviceSummary(**device) for device in await request.app.state.db.list_devices()]
+
+
+@router.patch("/devices/{device_id}", response_model=DeviceSummary)
+async def update_device(
+    device_id: str,
+    body: UpdateDeviceRequest,
+    request: Request,
+    _user: CookiePrincipal = Depends(require_session_password_set),
+) -> DeviceSummary:
+    db = request.app.state.db
+    if not await db.update_device(device_id, name=body.name, description=body.description):
+        raise HTTPException(status_code=404, detail=f"device not found: {device_id!r}")
+    device = next(d for d in await db.list_devices() if d["id"] == device_id)
+    return DeviceSummary(**device)
+
+
+@router.delete("/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_device(
+    device_id: str,
+    request: Request,
+    _user: CookiePrincipal = Depends(require_session_password_set),
+):
+    if not await request.app.state.db.set_device_revoked(device_id, revoked=True):
+        raise HTTPException(status_code=404, detail=f"device not found: {device_id!r}")
     from fastapi import Response
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

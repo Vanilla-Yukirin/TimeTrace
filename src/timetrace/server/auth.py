@@ -25,6 +25,7 @@ the 2026-05-16 schema-drift review note.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import sys
@@ -32,7 +33,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Request, status
 
 # Public — admin tooling reaches in for the same file location. Keeping
 # these public-by-name (no underscore) is intentional; if you want to
@@ -80,6 +81,7 @@ class BearerPrincipal:
     """
 
     token_label: str
+    token_fingerprint: str
 
 
 class ServerAuth:
@@ -186,6 +188,16 @@ class ServerAuth:
                 return t.label
         return None
 
+    def principal_for(self, token: str) -> BearerPrincipal | None:
+        """Resolve a token without exposing or persisting the secret itself."""
+        label = self.find_label(token)
+        if label is None:
+            return None
+        return BearerPrincipal(
+            token_label=label,
+            token_fingerprint=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        )
+
     @property
     def tokens(self) -> list[TokenEntry]:
         return list(self._tokens)
@@ -231,7 +243,10 @@ class ServerAuth:
 def make_bearer_dependency(auth: ServerAuth):
     """Build a FastAPI dependency that 401s requests without a valid bearer."""
 
-    async def require_bearer(authorization: str | None = Header(default=None)) -> None:
+    async def require_bearer(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> BearerPrincipal:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -239,11 +254,17 @@ def make_bearer_dependency(auth: ServerAuth):
                 headers={"WWW-Authenticate": "Bearer"},
             )
         token = authorization.removeprefix("Bearer ").strip()
-        if not auth.is_valid(token):
+        principal = auth.principal_for(token)
+        if principal is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid bearer token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        # Router-level dependencies discard return values. Put the verified
+        # principal on request.state so ingest can bind a device to the token
+        # fingerprint without parsing the Authorization header a second time.
+        request.state.bearer_principal = principal
+        return principal
 
     return require_bearer

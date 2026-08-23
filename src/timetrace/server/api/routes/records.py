@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(tags=["records"])
@@ -53,6 +55,7 @@ async def list_records(
     apps: str | None = None,
     categories: str | None = None,
     q: str | None = None,
+    device_id: str | None = None,
 ) -> dict:
     """Return records within a time range (epoch ms).
 
@@ -65,6 +68,13 @@ async def list_records(
     - **q**: keyword over window_title OR vlm_desc (LIKE %q%)
     """
     db = request.app.state.db
+    if device_id is not None and device_id != "_unknown_device":
+        try:
+            parsed = uuid.UUID(device_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="device_id must be a UUID") from exc
+        if str(parsed) != device_id:
+            raise HTTPException(status_code=422, detail="device_id must be canonical")
     limit = min(limit, 500)
     rows = await db.query_records(
         start,
@@ -75,6 +85,7 @@ async def list_records(
         apps=_parse_csv(apps),
         categories=_parse_csv(categories),
         keyword=q,
+        device_id=device_id,
     )
     next_cursor = rows[-1]["id"] if len(rows) == limit else None
     return {"items": [_strip_thumbs_prefix(r) for r in rows], "next_cursor": next_cursor}

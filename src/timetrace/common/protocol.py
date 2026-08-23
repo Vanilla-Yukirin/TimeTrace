@@ -10,6 +10,7 @@ IngestRecordPayload as the multipart `record` part. Keeping them both in
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,21 @@ class ScreenshotSubmission:
 # --------------------------------------------------------------------------- #
 # HTTP wire schema (POST /v1/ingest/record)                                    #
 # --------------------------------------------------------------------------- #
+
+
+Capability = Annotated[
+    str,
+    Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9._-]*$"),
+]
+
+
+class DeviceMetadata(BaseModel):
+    """Non-secret client facts refreshed whenever the device ingests data."""
+
+    name: str = Field(default="", max_length=128)
+    description: str = Field(default="", max_length=512)
+    client_version: str = Field(default="", max_length=64)
+    capabilities: list[Capability] = Field(default_factory=list, max_length=32)
 
 
 class IngestRecordPayload(BaseModel):
@@ -71,6 +87,7 @@ class IngestRecordPayload(BaseModel):
     thumb_format: str = "jpg"
 
     schema_version: int = 1
+    device: DeviceMetadata | None = None
 
 
 class IngestRecordResponse(BaseModel):

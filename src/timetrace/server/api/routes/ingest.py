@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+import uuid
 from datetime import datetime, timezone
 
 import structlog
@@ -30,6 +31,7 @@ from pydantic import BaseModel, ValidationError
 from timetrace.common.models import CaptureContext
 from timetrace.common.phash_hash import phash_to_blob
 from timetrace.common.protocol import IngestRecordPayload, IngestRecordResponse
+from timetrace.server.db import DeviceBindingError, DeviceRecordConflict
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["ingest"])
@@ -46,6 +48,31 @@ def _md5(data: bytes) -> str:
 def _date_path(ts_ms: int) -> str:
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
     return f"{dt.year}/{dt.month:02d}/{dt.day:02d}"
+
+
+def _device_id(request: Request) -> str | None:
+    raw = request.headers.get("X-Device-Id")
+    if raw is None:
+        return None
+    try:
+        parsed = uuid.UUID(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="X-Device-Id must be a UUID") from exc
+    canonical = str(parsed)
+    if raw != canonical:
+        raise HTTPException(
+            status_code=422,
+            detail="X-Device-Id must use canonical lowercase UUID form",
+        )
+    return canonical
+
+
+def _device_principal(request: Request) -> tuple[str | None, str | None]:
+    principal = getattr(request.state, "bearer_principal", None)
+    return (
+        principal.token_fingerprint if principal else None,
+        principal.token_label if principal else None,
+    )
 
 
 @router.post("/ingest/record", response_model=IngestRecordResponse)
@@ -86,23 +113,40 @@ async def ingest_record(
                     detail=f"thumb md5 mismatch: expected {payload.thumb_md5}, got {actual}",
                 )
 
+    device_id = _device_id(request)
+    token_fingerprint, token_label = _device_principal(request)
+
     ctx = CaptureContext(
         app_name=payload.app_name,
         process_name=payload.process_name,
         window_title=payload.window_title,
         url=payload.url,
     )
-    record_id, was_new = await db.ingest_or_get_record(
-        ctx,
-        reason=payload.capture_reason,
-        event_type=payload.event_type,
-        client_record_id=payload.client_record_id,
-        # Honour the client's capture clock (protocol contract: the server does
-        # not rewrite ts_start). Without this a backed-up outbox drain restamps
-        # records with the server-receive time, so ts_end (client close clock)
-        # lands *before* ts_start and durations go negative.
-        ts_start=payload.ts_start,
-    )
+    try:
+        if device_id is None:
+            record_id, was_new = await db.ingest_or_get_record(
+                ctx,
+                reason=payload.capture_reason,
+                event_type=payload.event_type,
+                client_record_id=payload.client_record_id,
+                ts_start=payload.ts_start,
+            )
+        else:
+            record_id, was_new = await db.ingest_device_or_get_record(
+                ctx,
+                reason=payload.capture_reason,
+                event_type=payload.event_type,
+                client_record_id=payload.client_record_id,
+                device_id=device_id,
+                token_fingerprint=token_fingerprint,
+                token_label=token_label,
+                # Honour the client's capture clock (protocol contract: the server
+                # does not rewrite it during a delayed outbox drain).
+                ts_start=payload.ts_start,
+            )
+    except (DeviceBindingError, DeviceRecordConflict) as exc:
+        status_code = 403 if isinstance(exc, DeviceBindingError) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     screenshot_id: str | None = None
     if image_bytes is not None:
@@ -152,13 +196,23 @@ async def ingest_record(
     # to call on every ingest, including replays where was_new=False.
     await db.mark_pending(record_id)
 
+    if device_id is not None:
+        metadata = payload.device
+        await db.touch_device(
+            device_id,
+            name=metadata.name if metadata else None,
+            description=metadata.description if metadata else None,
+            client_version=metadata.client_version if metadata else None,
+            capabilities=metadata.capabilities if metadata else None,
+        )
+
     logger.info(
         "ingest.record",
         record_id=record_id,
         was_new=was_new,
         has_image=image_bytes is not None,
         has_thumb=thumb_bytes is not None,
-        device_id=request.headers.get("X-Device-Id") or "",
+        device_id=device_id or "",
     )
 
     return IngestRecordResponse(
@@ -191,22 +245,22 @@ async def close_record(
     than network arrival time). When absent, server clock is used.
     """
     db = request.app.state.db
+    device_id = _device_id(request)
+    token_fingerprint, token_label = _device_principal(request)
     ts_end = body.ts_end if body is not None else None
     effective_ts_end = ts_end if ts_end is not None else _now_ms()
 
-    # Try server id first (the common case).
-    updated = await db.close_record(record_id, ts_end=effective_ts_end)
-    resolved_id = record_id
-
-    # Fall back to client_record_id lookup so a stale HttpBackend can still
-    # close legitimately existing records by the only id it kept.
-    if not updated:
-        existing = await db.find_record_by_client_id(record_id)
-        if existing is not None:
-            resolved_id = existing["id"]
-            updated = await db.close_record(resolved_id, ts_end=effective_ts_end)
-
-    if not updated:
+    try:
+        resolved_id = await db.close_device_record(
+            record_id,
+            device_id=device_id,
+            token_fingerprint=token_fingerprint,
+            token_label=token_label,
+            ts_end=effective_ts_end,
+        )
+    except DeviceBindingError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if resolved_id is None:
         raise HTTPException(status_code=404, detail=f"record not found: {record_id!r}")
 
     return {"record_id": resolved_id, "ts_end": effective_ts_end}

@@ -312,10 +312,10 @@ async def test_device_id_header_added_when_set(db, blob_storage):
 
     transport = httpx.ASGITransport(app=base_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw:
-        backend = HttpBackend(client=raw, device_id="dev-uuid-xyz")
+        backend = HttpBackend(client=raw, device_id="57b81d95-8c0d-41d8-8e56-ef116904661c")
         await backend.submit_record(_CTX, reason="heartbeat")
 
-    assert any(h == "dev-uuid-xyz" for h in captured)
+    assert any(h == "57b81d95-8c0d-41d8-8e56-ef116904661c" for h in captured)
 
 
 async def test_no_device_id_header_when_unset(db, blob_storage):

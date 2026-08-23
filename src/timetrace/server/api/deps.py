@@ -57,10 +57,7 @@ def _resolve_bearer(request: Request, token: str) -> BearerPrincipal | None:
     auth: ServerAuth | None = getattr(request.app.state, "auth", None)
     if auth is None:
         return None
-    label = auth.find_label(token)
-    if label is None:
-        return None
-    return BearerPrincipal(token_label=label)
+    return auth.principal_for(token)
 
 
 # Detail string returned (403) when a session whose user still has the forced

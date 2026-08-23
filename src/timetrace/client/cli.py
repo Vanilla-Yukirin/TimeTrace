@@ -34,6 +34,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from timetrace import __version__  # noqa: E402
 from timetrace.client.capture.service import CaptureService  # noqa: E402
 from timetrace.client.core.backend import HttpBackend  # noqa: E402
 from timetrace.client.core.config import ClientConfig  # noqa: E402
@@ -126,6 +127,10 @@ async def _run(
             base_url_provider=selector.current_url,
             auth_token=client_cfg.server.auth_token or None,
             device_id=client_cfg.device.id or None,
+            device_name=client_cfg.device.name,
+            device_description=client_cfg.device.description,
+            client_version=__version__,
+            capabilities=("capture", "screenshots", "outbox"),
             data_dir=client_cfg.storage.data_dir,
             # Screenshots can be a few hundred KB and the link to a remote
             # server may be slow (residential uplink); 30s was too tight and
