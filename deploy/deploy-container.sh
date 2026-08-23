@@ -222,18 +222,22 @@ if [[ "${previous_mode}" == systemd ]]; then
   legacy_systemctl stop "${service}"
 
   backup_dir="${data_dir}/db/pre-docker-${ref}"
-  if [[ ! -e "${backup_dir}" ]]; then
-    backup_staging=$(mktemp -d "${data_dir}/db/.pre-docker-${ref}.XXXXXX")
-    for name in timetrace.db timetrace.db-wal timetrace.db-shm; do
-      if [[ -f "${data_dir}/db/${name}" ]]; then
-        cp --reflink=auto --preserve=mode,timestamps \
-          "${data_dir}/db/${name}" "${backup_staging}/${name}"
-      fi
-    done
-    mv -T "${backup_staging}" "${backup_dir}"
-    backup_staging=
-    log "created a stopped-service SQLite snapshot at ${backup_dir}"
+  backup_staging=$(mktemp -d "${data_dir}/db/.pre-docker-${ref}.XXXXXX")
+  for name in timetrace.db timetrace.db-wal timetrace.db-shm; do
+    if [[ -f "${data_dir}/db/${name}" ]]; then
+      cp --reflink=auto --preserve=mode,timestamps \
+        "${data_dir}/db/${name}" "${backup_staging}/${name}"
+    fi
+  done
+  if [[ -e "${backup_dir}" || -L "${backup_dir}" ]]; then
+    superseded_backup=$(mktemp -d "${backup_dir}.superseded.XXXXXX")
+    rmdir "${superseded_backup}"
+    mv -T "${backup_dir}" "${superseded_backup}"
+    log "retained the prior attempt snapshot at ${superseded_backup}"
   fi
+  mv -T "${backup_staging}" "${backup_dir}"
+  backup_staging=
+  log "created a stopped-service SQLite snapshot at ${backup_dir}"
 elif [[ "${previous_mode}" == docker ]]; then
   cutover_started=1
 else
