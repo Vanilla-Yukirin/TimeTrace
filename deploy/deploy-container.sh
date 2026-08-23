@@ -258,7 +258,8 @@ fi
 if [[ -L "${web_root}/current" ]]; then
   previous_web_target=$(readlink "${web_root}/current" || true)
 fi
-if previous_image_ref=$(docker inspect --format '{{.Config.Image}}' timetrace-server 2>/dev/null); then
+if [[ $(docker inspect --format '{{.State.Running}}' timetrace-server 2>/dev/null || true) == true ]]; then
+  previous_image_ref=$(docker inspect --format '{{.Config.Image}}' timetrace-server)
   previous_mode=docker
   previous_image_repository=${previous_image_ref%:*}
   previous_image_tag=${previous_image_ref##*:}
