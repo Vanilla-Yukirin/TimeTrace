@@ -116,7 +116,7 @@ uv run timetrace-client print-config                # 看实际生效的配置�
 
 当前生产部署：server 以非 root Docker 容器跑在家里 Ubuntu 小主机（NAT 后）；公网由 Cloudflare Tunnel 出站接入本机 `127.0.0.1:8080` nginx，nginx 统一托管 SPA 并反代受鉴权保护的 API。推送 `deploy` 分支后，GitHub Actions 只构建并发布包含 server、SPA 与部署资产的不可变 GHCR 镜像；部署机再通过出站 HTTPS 主动拉取该 SHA，完成 Compose 与前端的原子切换，不依赖 GitHub Runner 经 FRP 反向 SSH。
 
-容器的运行进程仅有 TimeTrace server，但镜像也携带同 SHA 的 SPA 和部署资产供更新器提取。宿主机上的 GPU / LM Studio、nginx 与 Cloudflare Tunnel 不进容器；Compose 使用 host network 访问 LM Studio 的 `127.0.0.1:1234`。现有 `/home/vanilla/TimeTraceData` 和 token 配置目录原位挂载，旧源码仓库保留为首次切换的自动回滚目标。完整部署脚手架见：
+容器的运行进程仅有 TimeTrace server，但镜像也携带同 SHA 的 SPA 和部署资产供更新器提取。宿主机上的 GPU / LM Studio、nginx 与 Cloudflare Tunnel 不进容器；Compose 使用 host network 访问 LM Studio 的 `127.0.0.1:1234`。部署用户现有的 `$HOME/TimeTraceData` 和 `$HOME/.config/timetrace-server` 原位挂载，旧源码仓库只作为首次切换时的自动回滚目标。完整部署脚手架见：
 
 - [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
 - [devlogs/infra/archive-202605161015-cicd-workflow.md](devlogs/infra/archive-202605161015-cicd-workflow.md)
@@ -124,14 +124,33 @@ uv run timetrace-client print-config                # 看实际生效的配置�
 - [`deploy/docker-compose.yml`](deploy/docker-compose.yml) — 生产 host-network Compose 与原位数据挂载
 - [`timetrace-update.sh`](timetrace-update.sh) — 部署机主动解析 `deploy` SHA、拉镜像并执行发布的一键入口
 - [`deploy/deploy-container.sh`](deploy/deploy-container.sh) — SQLite 快照、后端/SPA 切换、健康检查和自动回滚
+- [`deploy/nginx-timetrace.yukirin.me.conf`](deploy/nginx-timetrace.yukirin.me.conf) — loopback nginx 的 SPA/API 同源入口模板
 - [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — 只构建并发布 GHCR 不可变镜像
 - [`deploy/deploy.sh`](deploy/deploy.sh) / [`deploy/timetrace-server.service`](deploy/timetrace-server.service) — 已退役的源码部署路径，仅保留作应急参考
 
-部署机首次安装命令后，日常手动更新只有一句：
+首次安装必须先由有 sudo 权限的操作者创建宿主机目录并安装 nginx 配置；以下命令在仓库检出目录中以未来执行更新的部署用户运行：
 
 ```bash
+sudo install -d -m 755 /srv/timetrace
+sudo install -d -o "$USER" -g "$(id -gn)" -m 700 \
+  /srv/timetrace/runtime /srv/timetrace/config
+sudo install -d -o "$USER" -g "$(id -gn)" -m 755 /srv/timetrace/web
+install -d -m 700 "$HOME/TimeTraceData" "$HOME/.config/timetrace-server"
+
+sudo install -m 644 deploy/nginx-timetrace.yukirin.me.conf \
+  /etc/nginx/sites-available/timetrace
+sudo ln -sfn /etc/nginx/sites-available/timetrace \
+  /etc/nginx/sites-enabled/timetrace
+sudo nginx -t
+sudo systemctl reload nginx
+
 install -d "$HOME/.local/bin"
 install -m 755 timetrace-update.sh "$HOME/.local/bin/timetrace-update"
+```
+
+确认该用户可执行 `docker version`，并按实际部署补齐环境文件、token 与数据目录；不要把凭据提交进仓库。完成一次性 bootstrap 后，日常手动更新只有一句：
+
+```bash
 timetrace-update
 ```
 

@@ -19,7 +19,7 @@
 - **分层记忆金字塔**：固定时间窗 `5min→1h→6h→day→week` 自底向上级联；指标层纯 SQL、叙述层为 summary-of-summaries；`source_hash` 驱动重发，后台 rollup/narrate 默认关闭、生产通过 env 开启；`search_summaries` 支持粗粒度总览后按时间窗下钻。
 - **可观测性与页面**：LLM 请求账本已覆盖 worker VLM、narrative 与 MCP `ask_agent`，记录 caller/模型/耗时/token/字符数/错误；report 与 Web Agent streaming 尚未接入。Web 已有 `/audit`、`/pyramid`、`/llm-log` 页面。
 - **embserver**：本地 Qwen3-VL 多模态 embedding 守护服务（独立第四入口 + systemd unit），**未接进主 worker/检索**。详见 [embserver](architecture/embserver.md)。
-- **公网部署**：家里 box（NAT 后）+ frp 隧道承载 API，xcy nginx VPS 托管公网 SPA；`deploy.yml` 在 `deploy` push 时并行发布后端和前端，前端用低权 `ghdeploy` 用户并保证 hash 资产先于 `index.html`。详见 [web-deployment](architecture/web-deployment.md)。
+- **公网部署**：生产入口为 Cloudflare Tunnel 出站到部署机 loopback nginx；nginx 同源托管 SPA 并反代 host-network 容器 API。`deploy.yml` 只发布包含 server、SPA 与部署资产的不可变 GHCR SHA 镜像，部署机再主动运行 `timetrace-update` 原子激活或完整回滚，不再依赖 FRP/SSH 入站部署或 xcy。现行入口见 [根 README](../README.md#部署到家里小主机) 与 [滚动 PLAN](../devlogs/PLAN.md)，旧 [web-deployment](architecture/web-deployment.md) 仅保留为历史设计。
 
 ### 重构阶段状态
 
@@ -31,11 +31,11 @@
 | P3a HTTP + Outbox | ✅ | ingest 路由幂等、HttpBackend、Outbox 严格 FIFO | kickoff devlog |
 | P3a-5b 双入口接线 | ✅ | OutboxBackend（client 默认 backend）+ 三入口 + bootstrap 共享装配 | kickoff devlog |
 | P3b Auth + Init | ✅ | tokens.json 体系 / chmod 600 / init/admin CLI | [p3b3-cli-design](../devlogs/infra/archive-202605171500-p3b3-cli-design.md) |
-| P3c 部署设施 | ✅ | deploy.sh / systemd unit / GH Actions（workflow_dispatch）+ nginx VPS + frp 公网链路 | [deployment-architecture](../devlogs/infra/archive-202605161000-deployment-architecture.md)、[cicd-workflow](../devlogs/infra/archive-202605161015-cicd-workflow.md) |
+| P3c 部署设施 | ✅ 历史基线 | deploy.sh / systemd / nginx VPS / frp 是早期已落地但现已退役的链路 | [deployment-architecture（历史）](../devlogs/infra/archive-202605161000-deployment-architecture.md)、[cicd-workflow（历史）](../devlogs/infra/archive-202605161015-cicd-workflow.md) |
 | P4 客户端隐私管线 | ⚠️ 仅周边硬化 | Outbox compaction / _safe_close_record / ctypes 长路径完成；**OCR + 区域检测 + 模糊重编码未启**（隐私层仍是 v1 黑名单） | [outbox-compaction](../devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md) |
 | P5 容器化 + 适配器 | ⚠️ 容器完成 | Dockerfile / docker-compose / pyproject 平台标记；**PostgresDatabase / RedisQueue / S3BlobStorage 未启** | [packaging-and-container](../devlogs/infra/archive-202605171502-packaging-and-container.md) |
 | P6 Headless TUI | ❌ 未启动 | — | — |
-| P7 分发自动化 | 🟡 部分完成 | `deploy` push 自动发布后端 + SPA；通用 release/安装包/ghcr 尚未做 | [frontend-publish](../devlogs/infra/archive-202607200155-frontend-publish-workflow.md) |
+| P7 分发自动化 | 🟡 部分完成 | `deploy` push 已发布 server + SPA 单一 GHCR SHA 制品；部署机主动拉取已实现，Windows 客户端安装包/自动更新仍待做 | [pull-based release correction](../devlogs/infra/archive-202608231819-pull-based-docker-release-correction.md) |
 
 ### 阅读约定
 
@@ -54,7 +54,7 @@
 | **新开发者 / 新 agent** | [根 README](../README.md) → 本页「当前状态」→ [滚动 PLAN](../devlogs/PLAN.md) → 再按任务进入下方专题页 |
 | **存储 / 数据库** | [存储策略](storage/overview.md) → [数据库 Schema](storage/schema.md) → [相似检索层](storage/vector-search.md) |
 | **AI 接入 / MCP** | [MCP Layer](architecture/mcp-layer.md) → [Local API Server](architecture/api-server.md) → [隐私策略](privacy/strategy.md) |
-| **鉴权 / 部署** | [登录鉴权系统](architecture/auth-system.md) → [公网部署](architecture/web-deployment.md) → [客户端/服务端拆分](architecture/client-server-split.md) |
+| **鉴权 / 部署** | [登录鉴权系统](architecture/auth-system.md) → [根 README 当前部署](../README.md#部署到家里小主机) → [滚动 PLAN](../devlogs/PLAN.md)；[公网部署旧页](architecture/web-deployment.md) 仅供历史追溯 |
 | **Agent / 记忆架构（已部分上线）** | [分层 schema](storage/pyramid-schema.md) → [写时管线](architecture/episode-and-rollup-pipeline.md) → [薄路由器](architecture/thin-router-agent.md) → [最新叙述层 devlog](../devlogs/backend/archive-202606270722-narrative-loop-search-golive.md) |
 
 ---
@@ -99,9 +99,9 @@
 | [architecture/mcp-layer.md](architecture/mcp-layer.md) | MCP Layer：工具清单、bearer 鉴权、隐私边界；若冲突以 `mcp_layer/server.py` 为准 |
 | [architecture/auth-system.md](architecture/auth-system.md) | 登录鉴权系统：cookie session + bearer 双通道、admin seed、token CRUD |
 | [architecture/client-server-split.md](architecture/client-server-split.md) | 客户端/服务端三层拆分：common/client/server 职责、wire 协议、backend 实现 |
-| [architecture/web-deployment.md](architecture/web-deployment.md) | 公网部署：家里 box + frp 隧道 + nginx VPS + deploy.yml + 安全论证 |
+| [architecture/web-deployment.md](architecture/web-deployment.md) | **历史部署设计**：家里 box + frp + nginx VPS；现行 GHCR/pull-based 模型见根 README 与滚动 PLAN |
 | [architecture/embserver.md](architecture/embserver.md) | embserver 子包：本地 Qwen3-VL embedding 守护服务（端口 8766、systemd unit） |
-| [architecture/packaging.md](architecture/packaging.md) | 打包部署：四入口、optional-deps 桶、systemd unit、deploy.sh 五步 |
+| [architecture/packaging.md](architecture/packaging.md) | 包结构与历史 systemd/deploy.sh 说明；当前生产容器入口见 `deploy/Dockerfile`、`deploy/docker-compose.yml` 与根 README |
 
 ### 存储
 
