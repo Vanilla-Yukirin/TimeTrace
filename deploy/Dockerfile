@@ -51,6 +51,9 @@ COPY --from=builder --chown=timetrace:timetrace /app/.venv /app/.venv
 COPY --from=frontend-builder --chown=timetrace:timetrace \
     /src/frontend-dist /opt/timetrace/release/frontend-dist
 COPY --chown=timetrace:timetrace \
+    skills/timetrace/SKILL.md \
+    /opt/timetrace/skills/timetrace/SKILL.md
+COPY --chown=timetrace:timetrace \
     deploy/docker-compose.yml \
     deploy/deploy-container.sh \
     timetrace-update.sh \

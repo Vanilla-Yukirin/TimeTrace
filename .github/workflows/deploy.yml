@@ -60,6 +60,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Refuse to replace an immutable SHA tag
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ needs.resolve-ref.outputs.sha }}
+        run: |
+          set -euo pipefail
+          set +e
+          inspect_output=$(docker buildx imagetools inspect "${IMAGE_REF}" 2>&1)
+          inspect_status=$?
+          set -e
+
+          if ((inspect_status == 0)); then
+            echo "::error::Refusing to replace existing image ${IMAGE_REF}"
+            exit 1
+          fi
+          if ! grep -Eqi 'manifest unknown|not found' <<<"${inspect_output}"; then
+            printf '%s\n' "${inspect_output}" >&2
+            echo "::error::Could not verify that ${IMAGE_REF} is unused"
+            exit 1
+          fi
+
       - name: Build and push server plus SPA image
         uses: docker/build-push-action@v6
         with:
