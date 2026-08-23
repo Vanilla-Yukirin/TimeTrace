@@ -36,7 +36,8 @@ LABEL org.opencontainers.image.title="TimeTrace Server" \
       org.opencontainers.image.description="TimeTrace API, MCP, database worker, and memory pipeline" \
       org.opencontainers.image.source="https://github.com/Vanilla-Yukirin/TimeTrace" \
       org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.created="${BUILD_DATE}"
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      io.yukirin.timetrace.database.device-identity="1"
 
 ENV HOME=/home/timetrace \
     PATH=/app/.venv/bin:$PATH \
@@ -57,6 +58,7 @@ COPY --chown=timetrace:timetrace \
     deploy/docker-compose.yml \
     deploy/docker-compose.rollback.yml \
     deploy/deploy-container.sh \
+    deploy/compatibility-guard.sh \
     timetrace-update.sh \
     /opt/timetrace/release/
 

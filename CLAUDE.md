@@ -108,6 +108,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - **容器边界**：只容器化 `timetrace-server`。生产 Compose 使用 Linux host network，使容器仍可访问宿主机 LM Studio `127.0.0.1:1234`；GPU、LM Studio、nginx、Cloudflare Tunnel 都留在宿主机。现有 `/home/vanilla/TimeTraceData` 与 `/home/vanilla/.config/timetrace-server` 原位 bind mount，不搬库、不复制截图；首次切换会无插值解析旧仓库 `.env`，再以 Compose 安全的单引号 dotenv 规范化到 `/srv/timetrace/config/timetrace.env`，保留引号、转义与字面 `$` 的原值
 - **旧源码部署已退役但保留回滚**：`~/Github/TimeTrace` 与 `timetrace-server.service` 不改名、不删除。首次容器切换会停旧 unit、做 stopped-service SQLite 快照并启动容器；失败则自动恢复旧 unit，成功才 disable 旧 unit。`deploy/deploy.sh` 与 unit 模板仅作历史/应急参考，不再是自动部署主路径
 - **发布制品走工作流，部署激活走主机更新器**：不要在部署机 `git reset/pull/checkout`、直接 `docker compose up` 或手动 `systemctl restart`。标准入口是 `timetrace-update [<sha>]`，它保留不可变 SHA、健康检查和自动回滚；容器不管理的 LM Studio 模型仍可用 `lms load/unload/ps` 操作
+- **数据库降级门禁只保证标准入口**：成功的 device-aware release 会安装 guard-aware `timetrace-update` 并提交最低数据库兼容标记；标准入口会拒绝让旧镜像读取已有设备归属的数据。具备 trusted-shell/root 权限的操作者仍能手工执行历史 helper 绕过门禁，这属于显式 break-glass，不是受支持的部署路径
 
 ## 仍然存在的桩代码 / 已知 bug
 

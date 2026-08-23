@@ -3,6 +3,8 @@
 #
 # Install once on the deployment host:
 #   install -d "$HOME/.local/bin"
+#   install -m 644 deploy/compatibility-guard.sh \
+#     "$HOME/.local/bin/timetrace-compatibility-guard.sh"
 #   install -m 755 timetrace-update.sh "$HOME/.local/bin/timetrace-update"
 #
 # Update to the current deploy branch (default):
@@ -27,6 +29,18 @@ pull_interval=${TIMETRACE_PULL_INTERVAL:-10}
 install_dir=${TIMETRACE_INSTALL_DIR:-${HOME}/.local/bin}
 install_target="${install_dir}/timetrace-update"
 lock_file="${runtime_root}/.update.lock"
+minimum_compatibility_file="${runtime_root}/minimum-database-compatibility"
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+compatibility_guard=${TIMETRACE_COMPATIBILITY_GUARD:-${script_dir}/timetrace-compatibility-guard.sh}
+if [[ ! -f "${compatibility_guard}" && -f "${script_dir}/deploy/compatibility-guard.sh" ]]; then
+  compatibility_guard="${script_dir}/deploy/compatibility-guard.sh"
+fi
+[[ -s "${compatibility_guard}" ]] || {
+  echo "compatibility guard not found: ${compatibility_guard}" >&2
+  exit 1
+}
+# shellcheck source=deploy/compatibility-guard.sh
+source "${compatibility_guard}"
 
 log() {
   printf '==> %s\n' "$*"
@@ -119,6 +133,15 @@ done
   echo "image did not become available: ${image_ref}" >&2
   exit 1
 }
+
+# This check belongs in the currently installed host wrapper, not only in the
+# target release helper: an explicit downgrade extracts and executes the old
+# target's helper, which cannot be trusted to know about a newer DB feature.
+# It runs before release extraction or any service change, so failure leaves
+# the currently running version untouched.
+timetrace_assert_image_for_database \
+  "${image_ref}" "${host_home}/TimeTraceData" "${host_uid}" "${host_gid}" \
+  "activation of ${image_ref}" "${minimum_compatibility_file}"
 
 install -d -m 700 "${releases_dir}"
 release_dir="${releases_dir}/${ref}"

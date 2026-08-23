@@ -65,6 +65,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test deployment compatibility guard
+        run: bash deploy/tests/test-compatibility-guard.sh
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -86,6 +89,11 @@ jobs:
           LEGACY_ENV="${RUNNER_TEMP}/timetrace-legacy.env"
           NORMALIZED_ENV="${RUNNER_TEMP}/timetrace-normalized.env"
           sudo install -d -o 1000 -g 1000 "${DATA_DIR}" "${TOKEN_DIR}"
+
+          # Validate the real OCI label and a row visible only through an open
+          # SQLite WAL using the exact production guard/container path.
+          TIMETRACE_TEST_IMAGE=timetrace-server:ci \
+            bash deploy/tests/test-compatibility-guard.sh
 
           cat >"${LEGACY_ENV}" <<'EOF'
           TIMETRACE_VLM_API_KEY="abc$TOKEN"
