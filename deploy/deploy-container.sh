@@ -245,10 +245,12 @@ wait_for_container_health 24
 
 if [[ ! -d "${web_release}" ]]; then
   web_staging=$(mktemp -d "${web_root}/releases/.staging-${ref}.XXXXXX")
+  chmod 755 "${web_staging}"
   cp -a "${frontend_source}/." "${web_staging}/"
   mv "${web_staging}" "${web_release}"
   web_staging=
 fi
+chmod 755 "${web_release}"
 test -s "${web_release}/index.html"
 grep -F 'id="root"' "${web_release}/index.html" >/dev/null
 test -n "$(find "${web_release}/assets" -type f -print -quit)"
