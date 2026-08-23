@@ -37,6 +37,7 @@ previous_data_dir=
 previous_token_dir=
 previous_host_uid=
 previous_host_gid=
+previous_env_file=
 previous_runtime_target=
 previous_web_target=
 legacy_was_enabled=0
@@ -57,6 +58,15 @@ cleanup_updater_staging() {
       "${install_target%/*}"/.timetrace-update.*) rm -f -- "${updater_staging}" ;;
     esac
   fi
+}
+
+cleanup_previous_env_file() {
+  if [[ -n "${previous_env_file}" && -f "${previous_env_file}" ]]; then
+    case "${previous_env_file}" in
+      "${runtime_root}"/.rollback-env-*) rm -f -- "${previous_env_file}" ;;
+    esac
+  fi
+  previous_env_file=
 }
 
 compose() {
@@ -118,6 +128,7 @@ rollback() {
   trap - ERR
   trap '' HUP INT TERM
   if ((cutover_started == 0)); then
+    cleanup_previous_env_file
     exit "${status}"
   fi
 
@@ -158,16 +169,20 @@ rollback() {
   if [[ "${previous_mode}" == docker && -n "${previous_release}" ]]; then
     local previous_compose="${previous_release}/docker-compose.yml"
     if [[ -f "${previous_compose}" ]]; then
-      TIMETRACE_IMAGE_REF="${previous_image_ref}" \
-        TIMETRACE_IMAGE="${previous_image_repository}" \
-        TIMETRACE_IMAGE_TAG="${previous_image_tag}" \
-        TIMETRACE_ENV_FILE="${env_file}" \
-        TIMETRACE_DATA_DIR="${previous_data_dir}" \
-        TIMETRACE_TOKEN_DIR="${previous_token_dir}" \
-        TIMETRACE_HOST_UID="${previous_host_uid}" \
-        TIMETRACE_HOST_GID="${previous_host_gid}" \
-        docker compose -p timetrace -f "${previous_compose}" up -d --remove-orphans --pull never || true
-      wait_for_health 24 || true
+      if TIMETRACE_IMAGE_REF="${previous_image_ref}" \
+          TIMETRACE_IMAGE="${previous_image_repository}" \
+          TIMETRACE_IMAGE_TAG="${previous_image_tag}" \
+          TIMETRACE_ENV_FILE="${previous_env_file}" \
+          TIMETRACE_DATA_DIR="${previous_data_dir}" \
+          TIMETRACE_TOKEN_DIR="${previous_token_dir}" \
+          TIMETRACE_HOST_UID="${previous_host_uid}" \
+          TIMETRACE_HOST_GID="${previous_host_gid}" \
+          docker compose -p timetrace -f "${previous_compose}" up -d --remove-orphans --pull never && \
+        wait_for_health 24; then
+        cleanup_previous_env_file
+      else
+        log "automatic Docker rollback failed; retained environment snapshot at ${previous_env_file}"
+      fi
     fi
   elif [[ "${previous_mode}" == systemd ]]; then
     if ((legacy_was_enabled == 1)); then
@@ -245,6 +260,15 @@ if previous_image_ref=$(docker inspect --format '{{.Config.Image}}' timetrace-se
     echo "could not capture the running container data/token bind sources" >&2
     exit 1
   }
+  [[ -n "${previous_release}" && -f "${previous_release}/docker-compose.yml" ]] || {
+    echo "running timetrace-server has no usable runtime/current rollback release" >&2
+    exit 1
+  }
+  previous_env_file=$(mktemp "${runtime_root}/.rollback-env-${ref}.XXXXXX")
+  chmod 600 "${previous_env_file}"
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' timetrace-server \
+    >"${previous_env_file}"
+  test -s "${previous_env_file}"
 else
   if legacy_systemctl is-enabled --quiet "${service}"; then
     legacy_was_enabled=1
@@ -338,6 +362,7 @@ docker inspect --format 'container={{.Name}} image={{.Config.Image}} status={{.S
 # write, so failure leaves the previous recovery command intact while the
 # already healthy runtime remains active.
 trap - ERR HUP INT TERM
+cleanup_previous_env_file
 trap cleanup_updater_staging EXIT
 updater_staging=$(mktemp "${install_target%/*}/.timetrace-update.XXXXXX")
 install -m 755 "${release_dir}/timetrace-update.sh" "${updater_staging}"
