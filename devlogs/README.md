@@ -113,6 +113,7 @@ devlogs/
 | [archive-202608230244-docker-production-deployment.md](infra/archive-202608230244-docker-production-deployment.md) | 生产后端正式 Docker 化并在 yukirin-server 切换成功：GHCR SHA 镜像 + host-network Compose，现有数据/token 原位挂载，首次 stopped-service SQLite 快照与 systemd 自动回滚；最终容器 healthy、LM Studio 直通、同 SHA SPA 发布、旧 unit inactive/disabled，公网 Tunnel 仍待从 8765 切到 nginx 8080 |
 | [archive-202608230250-timetrace-docker-rollout.md](infra/archive-202608230250-timetrace-docker-rollout.md) | 阶段性会话归档：厘清部署错位后转向 Docker；其中 Actions 入站 SSH/四 job 等结论已由下一条追加归档纠正 |
 | [archive-202608231819-pull-based-docker-release-correction.md](infra/archive-202608231819-pull-based-docker-release-correction.md) | 追加纠正最终发布模型：Actions 只发布不可变 GHCR 制品，部署机以独占锁主动拉取并完成原子切换与完整回滚，不再依赖 CI 入站 SSH |
+| [archive-202608232320-pull-based-docker-production-acceptance.md](infra/archive-202608232320-pull-based-docker-production-acceptance.md) | PR #4 合并后的首次正式 pull-based 发布验收：main/deploy 同指 `e8b2cae`，GHCR 制品发布、主机主动更新、同 SHA server+SPA、本机 nginx、公网与 LM Studio 链路全部通过；生产故障注入单独延期 |
 
 ---
 
