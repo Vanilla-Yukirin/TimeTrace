@@ -27,8 +27,11 @@ service=timetrace-server.service
 
 previous_mode=none
 previous_release=
+previous_runtime_target=
 previous_web_target=
+legacy_was_enabled=0
 cutover_started=0
+runtime_switched=0
 web_switched=0
 web_staging=
 backup_staging=
@@ -100,6 +103,15 @@ rollback() {
   docker logs --tail 200 timetrace-server 2>&1 || true
   compose down --remove-orphans || true
 
+  if ((runtime_switched == 1)); then
+    local runtime_rollback_link="${runtime_root}/.current-rollback-${ref}"
+    if [[ -n "${previous_runtime_target}" ]]; then
+      ln -sfn "${previous_runtime_target}" "${runtime_rollback_link}"
+      mv -Tf "${runtime_rollback_link}" "${current_link}"
+    else
+      rm -f -- "${current_link}"
+    fi
+  fi
   if ((web_switched == 1)); then
     local rollback_link="${web_root}/.current-rollback-${ref}"
     if [[ -n "${previous_web_target}" ]]; then
@@ -134,6 +146,9 @@ rollback() {
       wait_for_health 24 || true
     fi
   elif [[ "${previous_mode}" == systemd ]]; then
+    if ((legacy_was_enabled == 1)); then
+      legacy_systemctl enable "${service}" || true
+    fi
     legacy_systemctl start "${service}" || true
     wait_for_health 24 || true
   fi
@@ -173,6 +188,7 @@ fi
 chmod 600 "${env_file}"
 
 if [[ -L "${current_link}" ]]; then
+  previous_runtime_target=$(readlink "${current_link}" || true)
   previous_release=$(readlink -f "${current_link}" || true)
 fi
 if [[ -L "${web_root}/current" ]]; then
@@ -180,9 +196,13 @@ if [[ -L "${web_root}/current" ]]; then
 fi
 if docker inspect timetrace-server >/dev/null 2>&1; then
   previous_mode=docker
-elif legacy_systemctl is-active --quiet "${service}" \
-  || legacy_systemctl is-enabled --quiet "${service}"; then
-  previous_mode=systemd
+else
+  if legacy_systemctl is-enabled --quiet "${service}"; then
+    legacy_was_enabled=1
+  fi
+  if legacy_systemctl is-active --quiet "${service}" || ((legacy_was_enabled == 1)); then
+    previous_mode=systemd
+  fi
 fi
 
 log "validating Compose release ${ref}"
@@ -192,8 +212,8 @@ compose pull server
 
 if [[ "${previous_mode}" == systemd ]]; then
   log "stopping the legacy systemd service for the first container cutover"
-  legacy_systemctl stop "${service}"
   cutover_started=1
+  legacy_systemctl stop "${service}"
 
   backup_dir="${data_dir}/db/pre-docker-${ref}"
   if [[ ! -e "${backup_dir}" ]]; then
@@ -235,8 +255,8 @@ test -n "$(find "${web_release}/assets" -type f -print -quit)"
 
 web_next_link="${web_root}/.current-${ref}"
 ln -sfn "releases/${ref}" "${web_next_link}"
-mv -Tf "${web_next_link}" "${web_root}/current"
 web_switched=1
+mv -Tf "${web_next_link}" "${web_root}/current"
 
 curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' http://127.0.0.1:8080/healthz >/dev/null
 curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' http://127.0.0.1:8080/ \
@@ -244,6 +264,7 @@ curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' http://127.0.0.1:8080/ \
 
 runtime_next_link="${runtime_root}/.current-${ref}"
 ln -sfn "releases/${ref}" "${runtime_next_link}"
+runtime_switched=1
 mv -Tf "${runtime_next_link}" "${current_link}"
 
 if legacy_systemctl is-enabled --quiet "${service}"; then
