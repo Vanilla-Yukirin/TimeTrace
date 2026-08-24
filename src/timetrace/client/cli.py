@@ -1,4 +1,4 @@
-"""``timetrace-client`` entry point — client half only (no API, no DB, no worker).
+"""``timetrace-client`` entry point — capture client + loopback control UI.
 
 Composition:
   - ClientConfig (server URL + auth token + device_id + outbox dir + upload cap)
@@ -36,13 +36,15 @@ load_dotenv()
 
 from timetrace import __version__  # noqa: E402
 from timetrace.client.capture.service import CaptureService  # noqa: E402
+from timetrace.client.controller import ClientController  # noqa: E402
 from timetrace.client.core.backend import HttpBackend  # noqa: E402
 from timetrace.client.core.config import ClientConfig  # noqa: E402
-from timetrace.client.core.endpoints import EndpointSelector  # noqa: E402
+from timetrace.client.core.endpoints import EndpointSelector, redact_endpoint_url  # noqa: E402
 from timetrace.client.core.outbox import Outbox  # noqa: E402
 from timetrace.client.core.outbox_backend import OutboxBackend, make_http_sender  # noqa: E402
 from timetrace.client.core.outbox_sender import OutboxSender  # noqa: E402
 from timetrace.client.core.ssh_tunnel import SshTunnelManager  # noqa: E402
+from timetrace.client.local_api import serve_local_control  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
 from timetrace.common.config import StorageConfig  # noqa: E402
 
@@ -124,6 +126,16 @@ async def _run(
             runtime["selector"] = selector  # let the tray read live health
         await selector.select()
 
+        controller = ClientController(
+            client_cfg,
+            outbox,
+            selector,
+            quit_event,
+            loop=asyncio.get_running_loop(),
+        )
+        if runtime is not None:
+            runtime["controller"] = controller
+
         async def _on_send_failure() -> None:
             # Fast failover: a failed send re-probes + may switch the active path.
             await selector.select()
@@ -155,6 +167,7 @@ async def _run(
             client_cfg.privacy,
             backend,
             storage_cfg=client_cfg.storage,
+            on_capture=controller.record_capture,
         )
 
         # 5) Sender drains outbox → HTTP
@@ -164,6 +177,8 @@ async def _run(
             max_kbps=client_cfg.upload.max_kbps,
             max_image_bytes=int(client_cfg.upload.max_image_mb * 1024 * 1024),
             on_send_failure=_on_send_failure,
+            on_send_success=controller.record_upload,
+            on_send_error=controller.record_send_error,
             concurrency=client_cfg.upload.concurrency,
         )
         sender_stop = asyncio.Event()
@@ -171,19 +186,50 @@ async def _run(
         # 6) SSH tunnels for any type=ssh endpoints — started up front so the
         # selector's healthz probe can succeed against the local forward.
         tunnels = SshTunnelManager(client_cfg.server.enabled_endpoints())
+        capture_task: asyncio.Task | None = None
+        sender_task: asyncio.Task | None = None
 
         async def _watch_quit() -> None:
             await quit_event.wait()
             logger.info("client.stop_requested")
             sender_stop.set()
-            for task in asyncio.all_tasks():
-                if task.get_name() == "capture":
-                    task.cancel()
+            if capture_task is not None:
+                capture_task.cancel()
+            if sender_task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(sender_task), timeout=3.0)
+                except asyncio.TimeoutError:
+                    # A cancelled in-flight upload remains unacked and safely
+                    # replays from the outbox on next startup.
+                    logger.warning("client.sender_shutdown_timeout")
+                    sender_task.cancel()
+
+        async def _run_capture() -> None:
+            try:
+                await capture_svc.run()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                controller.record_error("capture", exc)
+                raise
+
+        # The tray starts only after the controller exists, so its background
+        # thread can never mutate config directly or race daemon composition.
+        try:
+            start_tray_thread(controller=controller)
+        except Exception:  # noqa: BLE001
+            logger.warning("client.tray_start_failed", exc_info=True)
 
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(capture_svc.run(), name="capture")
-            tg.create_task(sender.run(sender_stop), name="sender")
+            capture_task = tg.create_task(_run_capture(), name="capture")
+            sender_task = tg.create_task(sender.run(sender_stop), name="sender")
             tg.create_task(selector.run(sender_stop), name="endpoints")
+            tg.create_task(controller.refresh_loop(sender_stop), name="client_status")
+            if client_cfg.control.enabled:
+                tg.create_task(
+                    serve_local_control(controller, quit_event, port=client_cfg.control.port),
+                    name="local_control",
+                )
             if tunnels.count:
                 tg.create_task(tunnels.run(sender_stop), name="ssh_tunnels")
             tg.create_task(_watch_quit(), name="quit_watcher")
@@ -231,13 +277,12 @@ def main() -> None:
     # user can edit it instead of staring at "where do I put my token".
     if not client_cfg.device.id:
         client_cfg.ensure_device_id()
-        path = client_cfg.save()
+        path = client_cfg.save_seeded_device()
         logger.info("client.config_seeded", path=str(path), device_id=client_cfg.device.id)
 
     # Materialize the endpoint list in-memory (legacy single `url` → one entry)
-    # so the tray + EndpointSelector share the same EndpointSection objects:
-    # toggling .enabled in the tray is then seen by the selector and persisted
-    # via client_cfg.save. Does NOT rewrite client.toml unless the user toggles.
+    # so EndpointSelector and ClientController share the same loop-owned
+    # EndpointSection objects. The tray only reads immutable controller snapshots.
     if not client_cfg.server.endpoints:
         client_cfg.server.endpoints = client_cfg.server.all_endpoints()
 
@@ -255,22 +300,11 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, lambda sig, frame: _request_quit())
 
-    # Tray is optional — only meaningful on a Windows desktop. The thread
-    # daemonizes so a headless future variant (no display) can simply skip it.
-    try:
-        start_tray_thread(
-            client_cfg.privacy,
-            _request_quit,
-            endpoints=client_cfg.server.endpoints,
-            save_config=client_cfg.save,
-            runtime=runtime,
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning("client.tray_start_failed", exc_info=True)
-
     logger.info(
         "client.starting",
-        endpoints=[f"{e.name}={e.url}" for e in client_cfg.server.enabled_endpoints()],
+        endpoints=[
+            f"{e.name}={redact_endpoint_url(e.url)}" for e in client_cfg.server.enabled_endpoints()
+        ],
         device_id=client_cfg.device.id,
     )
 
@@ -319,6 +353,8 @@ def _print_config() -> None:
     print(f"upload.max_kbps       = {cfg.upload.max_kbps}")
     print(f"upload.max_image_mb   = {cfg.upload.max_image_mb}")
     print(f"upload.concurrency    = {cfg.upload.concurrency}")
+    print(f"control.enabled       = {cfg.control.enabled}")
+    print(f"control.port          = {cfg.control.port}")
     print(f"storage.data_dir      = {cfg.storage.data_dir}")
     print(f"capture.min_interval  = {cfg.capture.min_capture_interval_s}s")
     print(f"capture.max_interval  = {cfg.capture.max_capture_interval_s}s")

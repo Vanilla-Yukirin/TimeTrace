@@ -296,3 +296,102 @@ def test_save_rejects_invalid_device_id_before_writing(tmp_path):
     with pytest.raises(ValueError, match=r"device\.id"):
         cfg.save(path)
     assert not path.exists()
+
+
+def test_control_settings_roundtrip_and_validate_port(tmp_path):
+    cfg = ClientConfig()
+    cfg.control.enabled = False
+    cfg.control.port = 9123
+    path = cfg.save(tmp_path / "client.toml")
+    loaded = ClientConfig.load_or_default(path)
+    assert loaded.control.enabled is False
+    assert loaded.control.port == 9123
+
+    path.write_text("[control]\nport = 70000\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"control\.port"):
+        ClientConfig.load_or_default(path)
+
+
+def test_control_save_does_not_persist_env_auth_token(tmp_path, monkeypatch):
+    path = tmp_path / "client.toml"
+    path.write_text(
+        '[server]\nauth_token = "file-token"\n'
+        '[[server.endpoints]]\nname = "one"\nurl = "https://one.test"\nenabled = true\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TIMETRACE_AUTH_TOKEN", "env-only-super-secret")
+    cfg = ClientConfig.load_or_default(path)
+    cfg.server.endpoints[0].enabled = True
+    cfg.save_control_state(path, paused=True, endpoint_enabled=(True,))
+    content = path.read_text(encoding="utf-8")
+    assert "env-only-super-secret" not in content
+    assert "file-token" in content
+    assert "paused = true" in content
+
+
+def test_control_save_preserves_stale_device_file_repaired_by_env(tmp_path, monkeypatch):
+    path = tmp_path / "client.toml"
+    stale_name = "n" * 129
+    path.write_text(
+        f'[server]\nauth_token = "file-token"\n'
+        f'[device]\nid = "stale-invalid-id"\nname = "{stale_name}"\n'
+        '[[server.endpoints]]\nname = "one"\nurl = "https://one.test"\nenabled = true\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TIMETRACE_DEVICE_ID", VALID_DEVICE_ID)
+    monkeypatch.setenv("TIMETRACE_DEVICE_NAME", "valid env name")
+    monkeypatch.setenv("TIMETRACE_AUTH_TOKEN", "env-only-super-secret")
+
+    cfg = ClientConfig.load_or_default(path)
+    cfg.save_control_state(path, paused=True, endpoint_enabled=(True,))
+
+    content = path.read_text(encoding="utf-8")
+    assert 'id = "stale-invalid-id"' in content
+    assert stale_name in content
+    assert "valid env name" not in content
+    assert "env-only-super-secret" not in content
+    assert "paused = true" in content
+
+
+def test_seeded_device_save_does_not_persist_env_auth_token(tmp_path, monkeypatch):
+    path = tmp_path / "client.toml"
+    monkeypatch.setenv("TIMETRACE_AUTH_TOKEN", "env-only-super-secret")
+    cfg = ClientConfig.load_or_default(path)
+    device_id = cfg.ensure_device_id()
+    cfg.save_seeded_device(path)
+    content = path.read_text(encoding="utf-8")
+    assert device_id in content
+    assert "env-only-super-secret" not in content
+
+
+def test_seeded_device_preserves_stale_name_repaired_by_env(tmp_path, monkeypatch):
+    path = tmp_path / "client.toml"
+    stale_name = "n" * 129
+    path.write_text(f'[device]\nid = ""\nname = "{stale_name}"\n', encoding="utf-8")
+    monkeypatch.setenv("TIMETRACE_DEVICE_NAME", "valid env name")
+    cfg = ClientConfig.load_or_default(path)
+    device_id = cfg.ensure_device_id()
+
+    cfg.save_seeded_device(path)
+
+    content = path.read_text(encoding="utf-8")
+    assert device_id in content
+    assert stale_name in content
+    assert "valid env name" not in content
+
+
+def test_atomic_save_replace_failure_preserves_original_and_cleans_temp(tmp_path, monkeypatch):
+    path = tmp_path / "client.toml"
+    original = b"[privacy]\npaused = false\n"
+    path.write_bytes(original)
+    cfg = ClientConfig.load_or_default(path)
+    cfg.privacy.paused = True
+
+    def fail_replace(source, destination):  # noqa: ANN001
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("timetrace.client.core.config.os.replace", fail_replace)
+    with pytest.raises(OSError, match="replace failure"):
+        cfg.save(path)
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob(".client.toml.*.tmp")) == []

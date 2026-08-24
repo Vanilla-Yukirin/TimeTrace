@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import structlog
@@ -32,11 +33,13 @@ class CaptureService:
         privacy_cfg: PrivacyConfig,
         backend: BackendClient,
         storage_cfg: StorageConfig | None = None,
+        on_capture: Callable[[str], None] | None = None,
     ) -> None:
         self._cfg = capture_cfg
         self._privacy = privacy_cfg
         self._backend = backend
         self._storage_cfg = storage_cfg
+        self._on_capture = on_capture
 
         self._idle = IdleDetector()
 
@@ -135,6 +138,7 @@ class CaptureService:
             record_id = await self._backend.submit_record(
                 ctx, reason="switch", event_type="window_switch"
             )
+            self._notify_capture("window_switch")
 
             # Cancel any pending screenshot task and start a new delayed one
             logger.info(
@@ -160,6 +164,7 @@ class CaptureService:
             record_id = await self._backend.submit_record(
                 ctx, reason="heartbeat", event_type="heartbeat"
             )
+            self._notify_capture("heartbeat")
             await self._save_screenshot(record_id, win.hwnd, now)
             self._last_record_id = record_id
             logger.debug("capture.heartbeat", app=win.app_name)
@@ -252,5 +257,13 @@ class CaptureService:
                     phash=phash,
                 )
             )
-
         await self._backend.mark_pending(record_id)
+
+    def _notify_capture(self, reason: str) -> None:
+        """Report a durable activity record without changing capture semantics."""
+        if self._on_capture is None:
+            return
+        try:
+            self._on_capture(reason)
+        except Exception:  # noqa: BLE001
+            logger.warning("capture.observer_failed", exc_info=True)

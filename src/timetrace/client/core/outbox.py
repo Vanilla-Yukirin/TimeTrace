@@ -48,6 +48,15 @@ class OutboxEntry:
     thumb_bytes: bytes | None
 
 
+@dataclass(frozen=True)
+class OutboxStats:
+    """Filesystem-backed backlog metrics safe to expose to the controller."""
+
+    pending_count: int
+    pending_bytes: int
+    oldest_timestamp_ms: int | None
+
+
 class Outbox:
     """Append-only file-backed queue rooted at ``root_dir``."""
 
@@ -134,6 +143,18 @@ class Outbox:
             entries = await asyncio.to_thread(self._read_log)
             acked = await asyncio.to_thread(self._read_acked)
         return len(entries) - acked
+
+    async def stats(self) -> OutboxStats:
+        """Return a best-effort pending-count/bytes/oldest snapshot.
+
+        The log/cursor view is captured under the outbox lock; filesystem stat
+        calls happen after release so UI polling never blocks append/ack for a
+        large backlog.
+        """
+        async with self._lock:
+            entries = await asyncio.to_thread(self._read_log)
+            acked = await asyncio.to_thread(self._read_acked)
+        return await asyncio.to_thread(self._stats_for, entries[acked:])
 
     async def compact(self, *, min_acked: int = 1) -> int:
         """Reclaim acked entries: rewrite log to keep only un-acked, drop blobs.
@@ -257,6 +278,28 @@ class Outbox:
         if not self._state_path.exists():
             return 0
         return int(json.loads(self._state_path.read_text("utf-8"))["acked"])
+
+    def _stats_for(self, entries: list[dict]) -> OutboxStats:
+        pending_bytes = 0
+        for entry in entries:
+            pending_bytes += (
+                len(json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+                + 1
+            )
+            entry_id = entry.get("entry_id", "")
+            for kind in ("image", "thumb"):
+                if not entry.get(f"has_{kind}"):
+                    continue
+                try:
+                    pending_bytes += (self._blobs_dir / f"{entry_id}-{kind}").stat().st_size
+                except OSError:
+                    pass
+        oldest = int(entries[0]["timestamp_ms"]) if entries else None
+        return OutboxStats(
+            pending_count=len(entries),
+            pending_bytes=pending_bytes,
+            oldest_timestamp_ms=oldest,
+        )
 
     def _write_acked(self, value: int) -> None:
         # Write to a tmp file then rename so we never have a half-written state.json

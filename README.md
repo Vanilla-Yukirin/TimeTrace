@@ -95,6 +95,16 @@ uv run timetrace-client                  # 起采集
 
 `init` 把配置写到 `%USERPROFILE%/TimeTraceData/client.toml`。每个字段都显示当前值作为默认，按 Enter 接受。
 
+客户端启动后会在 `http://127.0.0.1:8764` 提供本机控制面板，也可以从托盘选择“打开控制面板”。页面只展示采集、连接和 outbox 状态，可安全暂停/恢复采集以及启停已配置的 HTTP 连接；它不会返回 bearer token、截图或本地文件路径。控制服务固定绑定 IPv4 loopback，不开放 CORS，写操作同时校验 Host、同源 Origin、会话 cookie 和 CSRF token。
+
+端口可在 `client.toml` 调整；端口被占用时仅控制面板不可用，采集和上传继续运行：
+
+```toml
+[control]
+enabled = true
+port = 8764
+```
+
 **非交互（CI / Ansible / Docker / systemd 首启）**：
 
 ```bash
