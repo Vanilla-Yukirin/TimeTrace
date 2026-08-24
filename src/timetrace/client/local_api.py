@@ -191,6 +191,12 @@ async def serve_local_control(
             port=actual_port,
             access_log=False,
             log_level="warning",
+            # PyInstaller's windowed bootloader intentionally sets stderr to
+            # None. Uvicorn's default formatter calls stderr.isatty() while
+            # constructing Config, which would crash the whole TaskGroup.
+            # The client already owns rotating-file logging, so do not let
+            # Uvicorn replace it.
+            log_config=None,
         )
     )
     server.install_signal_handlers = lambda: None

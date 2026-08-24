@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import signal
 import sys
 
@@ -46,6 +45,11 @@ from timetrace.client.core.outbox_sender import OutboxSender  # noqa: E402
 from timetrace.client.core.ssh_tunnel import SshTunnelManager  # noqa: E402
 from timetrace.client.local_api import serve_local_control  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
+from timetrace.client.windows_runtime import (  # noqa: E402
+    ClientInstance,
+    configure_client_logging,
+    notify_already_running,
+)
 from timetrace.common.config import StorageConfig  # noqa: E402
 
 logger = structlog.get_logger(__name__)
@@ -256,11 +260,6 @@ def main() -> None:
         print(_HELP_TEXT, file=sys.stderr)
         sys.exit(2)
 
-    logging.basicConfig(level=logging.WARNING)
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-    )
-
     # Load order: file → env overrides. Env wins so headless deploys can ship
     # a baseline `client.toml` and tune per-host via systemd `Environment=`.
     try:
@@ -273,6 +272,13 @@ def main() -> None:
     except ValueError as exc:
         logger.error("client.config_invalid", error=str(exc))
         sys.exit(2)
+
+    configure_client_logging(client_cfg.storage.logs_dir)
+    instance = ClientInstance.acquire()
+    if not instance.acquired:
+        logger.warning("client.already_running")
+        notify_already_running()
+        return
     # First-launch ergonomics: mint a device_id and persist client.toml so the
     # user can edit it instead of staring at "where do I put my token".
     if not client_cfg.device.id:
@@ -309,19 +315,22 @@ def main() -> None:
     )
 
     try:
-        loop.run_until_complete(_run(client_cfg, quit_event, runtime))
-    except (KeyboardInterrupt, SystemExit):
-        pass
+        try:
+            loop.run_until_complete(_run(client_cfg, quit_event, runtime))
+        except (KeyboardInterrupt, SystemExit):
+            pass
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for t in pending:
+                t.cancel()
+            if pending:
+                try:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                except (KeyboardInterrupt, SystemExit, Exception):
+                    pass
+            loop.close()
     finally:
-        pending = asyncio.all_tasks(loop)
-        for t in pending:
-            t.cancel()
-        if pending:
-            try:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            except (KeyboardInterrupt, SystemExit, Exception):
-                pass
-        loop.close()
+        instance.close()
 
 
 def _print_config() -> None:

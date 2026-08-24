@@ -192,7 +192,7 @@ Windows PC B（独立 device_id / token / outbox）──┘
 | Medium | `capture_mode=fullscreen` | 配置存在但采集循环没有分支；要么实现，要么删除死配置 |
 | Low | 不可恢复图像错误 | image load 失败应直接 `error_final`，避免浪费 retry 配额 |
 | Low | 旧 MCP stub | `server/mcp_layer/tools.py` 无调用方，确认后删除，减少 agent 误读 |
-| Deferred | Windows client 安装包与自动更新 | 服务端 pull-based Docker 发布独立推进；客户端先保留手工源码更新，后续再设计同 SHA 安装包、兼容检查和更新器 |
+| Medium | Windows client 发布自动化 | 已有 PyInstaller 当前用户级手工安装/原子更新/卸载、固定应用身份、单实例与文件日志；仍缺代码签名、GitHub Release 制品、同 SHA 兼容检查和自动更新器 |
 | Deferred | Postgres/Redis/S3、TUI、通用发行 | 当前个人本地部署没有证据需要；需求出现前不扩张 |
 
 ---
