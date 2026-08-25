@@ -2,6 +2,7 @@
 param(
     [string]$SourcePath = '',
     [string]$InstallPath = (Join-Path $env:LOCALAPPDATA 'Programs\TimeTrace'),
+    [switch]$NoAutostart,
     [switch]$NoLaunch
 )
 
@@ -86,6 +87,23 @@ try {
     $Shortcut.Description = 'TimeTrace Windows capture client'
     $Shortcut.Save()
 
+    $Startup = [Environment]::GetFolderPath('Startup')
+    $StartupShortcut = Join-Path $Startup 'TimeTrace Client.lnk'
+    if ($NoAutostart) {
+        if (Test-Path -LiteralPath $StartupShortcut) {
+            Remove-Item -LiteralPath $StartupShortcut -Force
+        }
+    }
+    else {
+        [System.IO.Directory]::CreateDirectory($Startup) | Out-Null
+        $Autostart = $Shell.CreateShortcut($StartupShortcut)
+        $Autostart.TargetPath = Join-Path $Target 'TimeTrace Client.exe'
+        $Autostart.WorkingDirectory = $Target
+        $Autostart.IconLocation = (Join-Path $Target 'TimeTrace Client.exe') + ',0'
+        $Autostart.Description = 'Start TimeTrace when this user signs in'
+        $Autostart.Save()
+    }
+
     $Uninstall = $Shell.CreateShortcut((Join-Path $StartMenu 'Uninstall TimeTrace.lnk'))
     $PowerShell = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
     if (-not $PowerShell) { $PowerShell = (Get-Command powershell).Source }
@@ -114,3 +132,9 @@ if (-not $NoLaunch) {
 
 Write-Host "Installed TimeTrace Client to $Target"
 Write-Host 'Existing configuration, Outbox, and screenshots under TimeTraceData were preserved.'
+if ($NoAutostart) {
+    Write-Host 'Automatic startup is disabled for this installation.'
+}
+else {
+    Write-Host 'TimeTrace Client will start automatically when this user signs in.'
+}

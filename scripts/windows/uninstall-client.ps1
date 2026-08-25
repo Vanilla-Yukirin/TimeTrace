@@ -18,6 +18,8 @@ while ((Get-Process -Name 'TimeTrace Client' -ErrorAction SilentlyContinue) -and
 
 $StartMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\TimeTrace'
 if (Test-Path -LiteralPath $StartMenu) { Remove-Item -LiteralPath $StartMenu -Recurse -Force }
+$StartupShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'TimeTrace Client.lnk'
+if (Test-Path -LiteralPath $StartupShortcut) { Remove-Item -LiteralPath $StartupShortcut -Force }
 if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse -Force }
 
 Write-Host 'TimeTrace Client was uninstalled.'
