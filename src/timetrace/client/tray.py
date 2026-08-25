@@ -22,15 +22,10 @@ logger = structlog.get_logger(__name__)
 
 
 def _make_icon():
-    """Create a minimal 16x16 PIL image for the tray icon."""
-    from PIL import Image, ImageDraw
+    """Create the same high-contrast clock used by the packaged executable."""
+    from timetrace.client.windows_runtime import create_app_icon
 
-    img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([1, 1, 14, 14], outline=(80, 160, 255), width=2)
-    draw.line([8, 8, 8, 4], fill=(80, 160, 255), width=1)
-    draw.line([8, 8, 11, 8], fill=(80, 160, 255), width=1)
-    return img
+    return create_app_icon(64)
 
 
 class TrayIcon:
@@ -213,14 +208,31 @@ class TrayIcon:
             )
             self._controller.set_endpoint_enabled_from_thread(index, not endpoint.enabled)
 
+        def make_label(index: int):
+            def endpoint_label(item) -> str:  # noqa: ANN001
+                return label(item, index)
+
+            return endpoint_label
+
+        def make_toggle(index: int):
+            def endpoint_toggle(icon, item) -> None:  # noqa: ANN001
+                toggle(icon, item, index)
+
+            return endpoint_toggle
+
+        def make_checked(index: int):
+            def endpoint_checked(item) -> bool:  # noqa: ANN001
+                endpoint = current(index)
+                return bool(endpoint and endpoint.enabled)
+
+            return endpoint_checked
+
         return pystray.Menu(
             *[
                 pystray.MenuItem(
-                    lambda item, index=endpoint.index: label(item, index),
-                    lambda icon, item, index=endpoint.index: toggle(icon, item, index),
-                    checked=lambda item, index=endpoint.index: bool(
-                        current(index) and current(index).enabled
-                    ),
+                    make_label(endpoint.index),
+                    make_toggle(endpoint.index),
+                    checked=make_checked(endpoint.index),
                 )
                 for endpoint in self._controller.cached_snapshot().endpoints
             ]

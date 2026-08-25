@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import signal
 import sys
+import tempfile
+from pathlib import Path
 
 import structlog
 from dotenv import load_dotenv
@@ -46,11 +47,18 @@ from timetrace.client.core.outbox_sender import OutboxSender  # noqa: E402
 from timetrace.client.core.ssh_tunnel import SshTunnelManager  # noqa: E402
 from timetrace.client.local_api import serve_local_control  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
+from timetrace.client.windows_runtime import (  # noqa: E402
+    ClientInstance,
+    configure_client_logging,
+    notify_already_running,
+)
 from timetrace.common.config import StorageConfig  # noqa: E402
 
 logger = structlog.get_logger(__name__)
 
 _CLIENT_CAPABILITIES = ("capture", "screenshots", "outbox")
+_DEFAULT_STARTUP_LOGS_DIR = StorageConfig().logs_dir
+_FALLBACK_STARTUP_LOGS_DIR = Path(tempfile.gettempdir()) / "TimeTrace" / "logs"
 
 
 _HELP_TEXT = """\
@@ -66,6 +74,18 @@ Usage:
 Configuration: %USERPROFILE%/TimeTraceData/client.toml (override via env vars
 listed in `timetrace.client.core.config`).
 """
+
+
+def _configure_startup_logging() -> Path:
+    """Create file logging before parsing configuration in a windowless build."""
+    first_error: OSError | None = None
+    for logs_dir in dict.fromkeys((_DEFAULT_STARTUP_LOGS_DIR, _FALLBACK_STARTUP_LOGS_DIR)):
+        try:
+            return configure_client_logging(logs_dir)
+        except OSError as exc:
+            first_error = first_error or exc
+    assert first_error is not None
+    raise first_error
 
 
 def _warn_if_shares_data_dir_with_server(storage_cfg: StorageConfig) -> None:
@@ -256,10 +276,10 @@ def main() -> None:
         print(_HELP_TEXT, file=sys.stderr)
         sys.exit(2)
 
-    logging.basicConfig(level=logging.WARNING)
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-    )
+    # The packaged executable has no stderr. Establish a safe file logger before
+    # configuration parsing so malformed TOML and invalid identity errors remain
+    # diagnosable instead of becoming a silent startup failure.
+    startup_log = _configure_startup_logging()
 
     # Load order: file → env overrides. Env wins so headless deploys can ship
     # a baseline `client.toml` and tune per-host via systemd `Environment=`.
@@ -273,6 +293,21 @@ def main() -> None:
     except ValueError as exc:
         logger.error("client.config_invalid", error=str(exc))
         sys.exit(2)
+
+    if client_cfg.storage.logs_dir != startup_log.parent:
+        try:
+            configure_client_logging(client_cfg.storage.logs_dir)
+        except OSError as exc:
+            logger.error(
+                "client.logging_reconfigure_failed",
+                logs_dir=str(client_cfg.storage.logs_dir),
+                error=type(exc).__name__,
+            )
+    instance = ClientInstance.acquire()
+    if not instance.acquired:
+        logger.warning("client.already_running")
+        notify_already_running()
+        return
     # First-launch ergonomics: mint a device_id and persist client.toml so the
     # user can edit it instead of staring at "where do I put my token".
     if not client_cfg.device.id:
@@ -309,19 +344,22 @@ def main() -> None:
     )
 
     try:
-        loop.run_until_complete(_run(client_cfg, quit_event, runtime))
-    except (KeyboardInterrupt, SystemExit):
-        pass
+        try:
+            loop.run_until_complete(_run(client_cfg, quit_event, runtime))
+        except (KeyboardInterrupt, SystemExit):
+            pass
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for t in pending:
+                t.cancel()
+            if pending:
+                try:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                except (KeyboardInterrupt, SystemExit, Exception):
+                    pass
+            loop.close()
     finally:
-        pending = asyncio.all_tasks(loop)
-        for t in pending:
-            t.cancel()
-        if pending:
-            try:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            except (KeyboardInterrupt, SystemExit, Exception):
-                pass
-        loop.close()
+        instance.close()
 
 
 def _print_config() -> None:

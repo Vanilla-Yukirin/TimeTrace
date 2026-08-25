@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 
 import httpx
 import pytest
@@ -146,6 +147,22 @@ async def test_real_loopback_socket_starts_and_stops(tmp_path):
     stop.set()
     await asyncio.wait_for(task, timeout=5)
     assert controller.cached_snapshot().control_url is None
+
+
+async def test_windowless_client_starts_local_api_without_stderr(tmp_path, monkeypatch):
+    controller, stop = await _make_controller(tmp_path)
+    monkeypatch.setattr(sys, "stderr", None)
+    task = asyncio.create_task(serve_local_control(controller, stop, port=0))
+    for _ in range(100):
+        url = controller.cached_snapshot().control_url
+        if url:
+            break
+        await asyncio.sleep(0.01)
+    assert url.startswith("http://127.0.0.1:")
+    async with httpx.AsyncClient(base_url=url) as client:
+        assert (await client.get("/healthz")).json() == {"status": "ok"}
+    stop.set()
+    await asyncio.wait_for(task, timeout=5)
 
 
 async def test_port_conflict_degrades_only_local_ui(tmp_path):

@@ -35,7 +35,7 @@
 | P4 客户端隐私管线 | ⚠️ 仅周边硬化 | Outbox compaction / _safe_close_record / ctypes 长路径完成；**OCR + 区域检测 + 模糊重编码未启**（隐私层仍是 v1 黑名单） | [outbox-compaction](../devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md) |
 | P5 容器化 + 适配器 | ⚠️ 容器完成 | Dockerfile / docker-compose / pyproject 平台标记；**PostgresDatabase / RedisQueue / S3BlobStorage 未启** | [packaging-and-container](../devlogs/infra/archive-202605171502-packaging-and-container.md) |
 | P6 Headless TUI | ❌ 未启动 | — | — |
-| P7 分发自动化 | 🟡 部分完成 | `deploy` push 已发布 server + SPA 单一 GHCR SHA 制品；部署机主动拉取已实现，Windows 客户端安装包/自动更新仍待做 | [pull-based release correction](../devlogs/infra/archive-202608231819-pull-based-docker-release-correction.md) |
+| P7 分发自动化 | 🟡 部分完成 | `deploy` push 已发布 server + SPA 单一 GHCR SHA 制品，部署机主动拉取已实现；Windows 客户端已有当前用户级手工安装包，仍缺签名、Release 发布与自动更新 | [pull-based release correction](../devlogs/infra/archive-202608231819-pull-based-docker-release-correction.md)、[Windows package](../packaging/windows/README.md) |
 
 ### 阅读约定
 

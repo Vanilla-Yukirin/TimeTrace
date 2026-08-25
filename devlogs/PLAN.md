@@ -1,6 +1,6 @@
 # TimeTrace 滚动 TODO / Plan
 
-**最后更新：** 2026-08-23
+**最后更新：** 2026-08-26
 **验证基线：** PR #4 已合并为 `e8b2cae`；main CI 与 deploy 镜像发布均成功，部署机已用 `timetrace-update` 激活同一 SHA，主机与公网探针通过
 
 > 本文是项目唯一的「现在做到哪、下一步做什么」入口，只保留未完成项、运行约束和近期顺序。
@@ -153,10 +153,10 @@ Windows PC B（独立 device_id / token / outbox）──┘
 
 #### 2. Windows 客户端 GUI
 
-- **Next**：先做薄 GUI 技术 spike，只包裹现有 capture/outbox/sender 核心：设备名、服务端地址、连接状态、暂停/恢复、最后上传、backlog、诊断导出和安全退出；不要重写采集链路。
-- **Done when**：普通用户无需命令行即可完成首次注册、启动/暂停、确认上传状态和导出脱敏诊断；关闭窗口与“停止采集/退出进程”的语义明确。
-- **技术决策 gate**：比较“沿用 Python 的轻量 GUI”与“Tauri 等原生壳”在安装体积、系统托盘、权限、崩溃隔离和复用现有 Python core 上的成本，做小原型后再定，不现在锁框架。
-- **明确延期**：安装器、自动更新、代码拉取和多机版本编排暂不设计；第一阶段仍允许每台电脑手动拉取代码并自行启动。
+- **已完成**：选择“现有 Python core + 仅回环 Web 控制台 + 系统托盘”，没有引入 Electron/Tauri 或第二套本地后端。控制台提供运行/连接、暂停恢复、最近采集上传、Outbox、脱敏错误、endpoint 开关和安全退出。
+- **已完成**：PyInstaller onedir windowless EXE 与当前用户安装器支持原子安装/更新、Start Menu、登录自启动、单实例、文件日志和保留 `TimeTraceData`；卸载只删除程序和快捷方式。真实构建、覆盖安装、短暂公网故障后的 Outbox 自动排空及服务端截图落库均已验收。
+- **Next**：补首次注册/配置向导和脱敏诊断导出；确认另一台 Windows 机器安装流程。随后再决定代码签名、GitHub Release 制品、同 SHA 兼容检查和自动更新器。
+- **Evidence**：[`archive-202608260230-windows-client-release-acceptance.md`](infra/archive-202608260230-windows-client-release-acceptance.md) 与 [`packaging/windows/README.md`](../packaging/windows/README.md)。
 
 #### 3. 客户端/服务端契约
 
@@ -192,7 +192,7 @@ Windows PC B（独立 device_id / token / outbox）──┘
 | Medium | `capture_mode=fullscreen` | 配置存在但采集循环没有分支；要么实现，要么删除死配置 |
 | Low | 不可恢复图像错误 | image load 失败应直接 `error_final`，避免浪费 retry 配额 |
 | Low | 旧 MCP stub | `server/mcp_layer/tools.py` 无调用方，确认后删除，减少 agent 误读 |
-| Deferred | Windows client 安装包与自动更新 | 服务端 pull-based Docker 发布独立推进；客户端先保留手工源码更新，后续再设计同 SHA 安装包、兼容检查和更新器 |
+| Medium | Windows client 发布自动化 | 已有 PyInstaller 当前用户级手工安装/原子更新/卸载、固定应用身份、单实例与文件日志；仍缺代码签名、GitHub Release 制品、同 SHA 兼容检查和自动更新器 |
 | Deferred | Postgres/Redis/S3、TUI、通用发行 | 当前个人本地部署没有证据需要；需求出现前不扩张 |
 
 ---
@@ -237,7 +237,7 @@ Windows PC B（独立 device_id / token / outbox）──┘
 2. **Runtime Recovery**：只读盘点小主机、现有数据与两台电脑的 outbox，选定唯一 canonical server，恢复健康检查但不顺手发布新版本。
 3. **Device Identity**：持久化设备身份、补齐筛选与统计语义，再把第二台 Windows 客户端正式注册进来。
 4. **Reliability Gate**：先完成 endpoint failover；再依次推进隐私不落原图、截图配额与迁移恢复，每项都提供上述证据和回滚记录。
-5. **UI Productization**：在既有 FastAPI + React/Vite 上补设备管理页，再为 Windows client 做薄 GUI；自动更新继续延期。
+5. **UI Productization**：Windows client 的托盘、仅回环 Web 控制台与手工安装包已落地；下一步补首次配置/诊断和服务端设备管理页，自动更新继续延期。
 6. **Classifier V2 Go/No-Go**：先 shadow 评估，再决定是否让 KNN 跳过 VLM；若收益或可靠性不足，明确关闭该方向。
 
 ---

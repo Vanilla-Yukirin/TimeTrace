@@ -18,6 +18,8 @@ def test_daemon_rejects_invalid_effective_identity_before_runtime_or_network(tmp
     monkeypatch.delenv("TIMETRACE_DEVICE_NAME", raising=False)
     monkeypatch.delenv("TIMETRACE_DEVICE_DESC", raising=False)
     monkeypatch.setattr(sys, "argv", ["timetrace-client"])
+    startup_logs = tmp_path / "logs"
+    monkeypatch.setattr(cli, "_DEFAULT_STARTUP_LOGS_DIR", startup_logs)
 
     def must_not_start_runtime():
         pytest.fail("invalid effective configuration must fail before daemon/network startup")
@@ -28,3 +30,4 @@ def test_daemon_rejects_invalid_effective_identity_before_runtime_or_network(tmp
         cli.main()
 
     assert exc_info.value.code == 2
+    assert "client.config_invalid" in (startup_logs / "client.log").read_text(encoding="utf-8")
