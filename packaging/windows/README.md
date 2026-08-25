@@ -35,6 +35,12 @@ the new version. Existing configuration, Outbox entries, and screenshots are
 preserved. It also creates a current-user Startup shortcut so capture resumes
 after sign-in. Pass `-NoAutostart` when running the installer to opt out.
 
+Updates discover a non-default loopback control port from the running client
+process before requesting graceful shutdown. If the control UI is disabled or
+unreachable, the installer waits for the grace period and only then uses a
+bounded process-stop fallback so manual updates cannot become permanently
+blocked.
+
 ## Uninstall
 
 Use **Start Menu → TimeTrace → Uninstall TimeTrace**. Uninstall removes only the
