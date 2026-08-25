@@ -23,32 +23,64 @@ function Resolve-FullPath([string]$Path) {
 }
 
 function Stop-TimeTraceClient {
+    $Live = @(Get-Process -Name 'TimeTrace Client','timetrace-client' -ErrorAction SilentlyContinue)
+    if (-not $Live) { return }
+
+    $Ports = [System.Collections.Generic.HashSet[int]]::new()
+    [void]$Ports.Add(8764)
     try {
-        $Session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
-        $Page = Invoke-WebRequest -Uri 'http://127.0.0.1:8764/' -WebSession $Session -TimeoutSec 3
-        $Match = [regex]::Match($Page.Content, 'name="timetrace-csrf" content="([^"]+)"')
-        if ($Match.Success) {
-            $Headers = @{
-                Origin = 'http://127.0.0.1:8764'
-                'X-TimeTrace-CSRF' = $Match.Groups[1].Value
-            }
-            Invoke-RestMethod -Uri 'http://127.0.0.1:8764/api/shutdown' -Method Post `
-                -WebSession $Session -Headers $Headers -ContentType 'application/json' -Body '{}' `
-                -TimeoutSec 3 | Out-Null
-        }
+        $ProcessIds = @($Live | Select-Object -ExpandProperty Id)
+        Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object {
+                $_.OwningProcess -in $ProcessIds -and
+                $_.LocalAddress -in @('127.0.0.1', '::1')
+            } |
+            ForEach-Object { [void]$Ports.Add([int]$_.LocalPort) }
     }
     catch {
-        # A missing control panel means there is nothing to stop, or an old client
-        # is still running. The file replacement check below remains authoritative.
+        # Get-NetTCPConnection can be unavailable on older Windows builds.
+        # The documented default port remains the first graceful attempt.
+    }
+
+    foreach ($Port in $Ports) {
+        try {
+            $Origin = "http://127.0.0.1:$Port"
+            $Session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
+            $Page = Invoke-WebRequest -Uri "$Origin/" -WebSession $Session -TimeoutSec 2
+            $Match = [regex]::Match($Page.Content, 'name="timetrace-csrf" content="([^"]+)"')
+            if (-not $Match.Success) { continue }
+            $Headers = @{
+                Origin = $Origin
+                'X-TimeTrace-CSRF' = $Match.Groups[1].Value
+            }
+            Invoke-RestMethod -Uri "$Origin/api/shutdown" -Method Post `
+                -WebSession $Session -Headers $Headers -ContentType 'application/json' -Body '{}' `
+                -TimeoutSec 2 | Out-Null
+            break
+        }
+        catch {
+            # Try the next loopback listener owned by this client process.
+        }
     }
 
     $Deadline = [DateTime]::UtcNow.AddSeconds(12)
     do {
-        $Live = Get-Process -Name 'TimeTrace Client','timetrace-client' -ErrorAction SilentlyContinue
+        $Live = @(Get-Process -Name 'TimeTrace Client','timetrace-client' -ErrorAction SilentlyContinue)
         if (-not $Live) { return }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $Deadline)
-    throw 'TimeTrace is still running. Exit it from the control panel and retry the installer.'
+
+    # A disabled/broken local UI must not make in-place updates impossible.
+    # Force-stop only after every graceful loopback endpoint and the shutdown
+    # grace period have failed; the durable Outbox preserves queued work.
+    $Live | Stop-Process -Force
+    $ForceDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $Live = @(Get-Process -Name 'TimeTrace Client','timetrace-client' -ErrorAction SilentlyContinue)
+        if (-not $Live) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $ForceDeadline)
+    throw 'TimeTrace is still running after graceful and forced shutdown attempts.'
 }
 
 $Source = Resolve-FullPath $SourcePath
@@ -110,7 +142,7 @@ try {
     $Uninstall.TargetPath = $PowerShell
     $Uninstall.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + `
         (Join-Path $Target 'Uninstall TimeTrace.ps1') + '"'
-    $Uninstall.WorkingDirectory = $Target
+    $Uninstall.WorkingDirectory = $Parent
     $Uninstall.IconLocation = (Join-Path $Target 'TimeTrace Client.exe') + ',0'
     $Uninstall.Save()
 

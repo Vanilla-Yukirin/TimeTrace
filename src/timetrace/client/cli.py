@@ -27,6 +27,8 @@ import asyncio
 import contextlib
 import signal
 import sys
+import tempfile
+from pathlib import Path
 
 import structlog
 from dotenv import load_dotenv
@@ -55,6 +57,8 @@ from timetrace.common.config import StorageConfig  # noqa: E402
 logger = structlog.get_logger(__name__)
 
 _CLIENT_CAPABILITIES = ("capture", "screenshots", "outbox")
+_DEFAULT_STARTUP_LOGS_DIR = StorageConfig().logs_dir
+_FALLBACK_STARTUP_LOGS_DIR = Path(tempfile.gettempdir()) / "TimeTrace" / "logs"
 
 
 _HELP_TEXT = """\
@@ -70,6 +74,18 @@ Usage:
 Configuration: %USERPROFILE%/TimeTraceData/client.toml (override via env vars
 listed in `timetrace.client.core.config`).
 """
+
+
+def _configure_startup_logging() -> Path:
+    """Create file logging before parsing configuration in a windowless build."""
+    first_error: OSError | None = None
+    for logs_dir in dict.fromkeys((_DEFAULT_STARTUP_LOGS_DIR, _FALLBACK_STARTUP_LOGS_DIR)):
+        try:
+            return configure_client_logging(logs_dir)
+        except OSError as exc:
+            first_error = first_error or exc
+    assert first_error is not None
+    raise first_error
 
 
 def _warn_if_shares_data_dir_with_server(storage_cfg: StorageConfig) -> None:
@@ -260,6 +276,11 @@ def main() -> None:
         print(_HELP_TEXT, file=sys.stderr)
         sys.exit(2)
 
+    # The packaged executable has no stderr. Establish a safe file logger before
+    # configuration parsing so malformed TOML and invalid identity errors remain
+    # diagnosable instead of becoming a silent startup failure.
+    startup_log = _configure_startup_logging()
+
     # Load order: file → env overrides. Env wins so headless deploys can ship
     # a baseline `client.toml` and tune per-host via systemd `Environment=`.
     try:
@@ -273,7 +294,15 @@ def main() -> None:
         logger.error("client.config_invalid", error=str(exc))
         sys.exit(2)
 
-    configure_client_logging(client_cfg.storage.logs_dir)
+    if client_cfg.storage.logs_dir != startup_log.parent:
+        try:
+            configure_client_logging(client_cfg.storage.logs_dir)
+        except OSError as exc:
+            logger.error(
+                "client.logging_reconfigure_failed",
+                logs_dir=str(client_cfg.storage.logs_dir),
+                error=type(exc).__name__,
+            )
     instance = ClientInstance.acquire()
     if not instance.acquired:
         logger.warning("client.already_running")
