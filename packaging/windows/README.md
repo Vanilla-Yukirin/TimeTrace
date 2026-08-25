@@ -32,12 +32,14 @@ pwsh -File scripts/windows/install-client.ps1
 The script gracefully stops a running client, atomically replaces
 `%LOCALAPPDATA%\Programs\TimeTrace`, creates Start Menu shortcuts, and launches
 the new version. Existing configuration, Outbox entries, and screenshots are
-preserved. It deliberately does not enable autostart.
+preserved. It also creates a current-user Startup shortcut so capture resumes
+after sign-in. Pass `-NoAutostart` when running the installer to opt out.
 
 ## Uninstall
 
 Use **Start Menu → TimeTrace → Uninstall TimeTrace**. Uninstall removes only the
-program directory and shortcuts; it never removes `TimeTraceData`.
+program directory, Start Menu shortcuts, and Startup shortcut; it never removes
+`TimeTraceData`.
 
 ## Current distribution boundary
 
