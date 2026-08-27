@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   lint-and-test:
     runs-on: windows-latest
@@ -32,6 +35,18 @@ jobs:
 
       - name: Run tests
         run: uv run pytest --tb=short
+
+      - name: Build Windows client package
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: ./scripts/windows/build-client.ps1
+
+      - name: Verify Windows client package
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          $version = (uv run python -c "from timetrace import __version__; print(__version__)").Trim()
+          ./scripts/windows/verify-client-package.ps1 -ExpectedVersion $version
 
   frontend:
     runs-on: ubuntu-latest
