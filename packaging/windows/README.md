@@ -47,9 +47,41 @@ Use **Start Menu → TimeTrace → Uninstall TimeTrace**. Uninstall removes only
 program directory, Start Menu shortcuts, and Startup shortcut; it never removes
 `TimeTraceData`.
 
+## GitHub Releases
+
+Pushing a semantic version tag automatically builds the client on GitHub's
+Windows runner and publishes a GitHub Release containing:
+
+- `TimeTrace-Client-windows-x64.zip`;
+- `TimeTrace-Client-windows-x64.zip.sha256`.
+
+The tag must be exactly `vX.Y.Z`, must point to a commit in `main`, and must
+match both `[project].version` in `pyproject.toml` and `timetrace.__version__`.
+For example, after merging version `0.1.0` to `main`:
+
+```powershell
+git switch main
+git pull --ff-only
+git tag -a v0.1.0 -m "TimeTrace Client v0.1.0"
+git push origin v0.1.0
+```
+
+Normal pushes to `main` do not publish a client release. Pull requests build
+and verify the Windows package in CI so the tag workflow is not the first time
+the installer path runs.
+
+On another authorized machine, download both release assets and verify the ZIP
+before extracting it:
+
+```powershell
+$expected = (Get-Content .\TimeTrace-Client-windows-x64.zip.sha256).Split()[0]
+$actual = (Get-FileHash .\TimeTrace-Client-windows-x64.zip -Algorithm SHA256).Hash
+if ($actual -ne $expected) { throw 'TimeTrace client checksum mismatch' }
+```
+
 ## Current distribution boundary
 
-This package is suitable for local/manual installation. It is not code-signed,
-not yet attached to GitHub Releases, and has no automatic updater. Those are
-separate release-engineering steps rather than prerequisites for running the
-installed client on this machine.
+GitHub Releases automate packaging and distribution, but the executable is not
+code-signed and the installed client has no automatic updater. Users still
+download a release and run the bundled atomic installer manually. Code signing
+and in-app update checks remain separate release-engineering steps.

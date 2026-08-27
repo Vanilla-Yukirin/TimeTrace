@@ -1,0 +1,119 @@
+name: Windows client release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: windows-client-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package-and-release:
+    if: github.repository == 'Vanilla-Yukirin/TimeTrace'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install locked build dependencies
+        run: uv sync --locked --group dev
+
+      - name: Validate release tag and source version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
+            throw "Release tag must be vX.Y.Z, got $env:GITHUB_REF_NAME"
+          }
+          $tagVersion = $Matches.version
+          $projectVersion = (uv run --no-sync python -c "import tomllib; from pathlib import Path; print(tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
+          $sourceVersion = (uv run --no-sync python -c "from timetrace import __version__; print(__version__)").Trim()
+          if ($projectVersion -ne $sourceVersion) {
+            throw "pyproject.toml version $projectVersion does not match timetrace.__version__ $sourceVersion"
+          }
+          if ($tagVersion -ne $projectVersion) {
+            throw "Tag version $tagVersion does not match project version $projectVersion"
+          }
+
+          git fetch origin main --no-tags
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch origin/main' }
+          $releaseCommit = (git rev-list -n 1 $env:GITHUB_REF_NAME).Trim()
+          git merge-base --is-ancestor $releaseCommit origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tagged commit $releaseCommit is not part of origin/main"
+          }
+
+          "TIMETRACE_RELEASE_VERSION=$projectVersion" >> $env:GITHUB_ENV
+          "TIMETRACE_RELEASE_COMMIT=$releaseCommit" >> $env:GITHUB_ENV
+
+      - name: Build Windows client package
+        shell: pwsh
+        run: ./scripts/windows/build-client.ps1
+
+      - name: Verify package and write checksum
+        shell: pwsh
+        run: |
+          ./scripts/windows/verify-client-package.ps1 `
+            -ExpectedVersion $env:TIMETRACE_RELEASE_VERSION `
+            -WriteChecksum
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $zip = (Resolve-Path 'dist/windows/TimeTrace-Client-windows-x64.zip').Path
+          $checksum = (Resolve-Path 'dist/windows/TimeTrace-Client-windows-x64.zip.sha256').Path
+          $zipAsset = "$zip#Windows x64 installer"
+          $checksumAsset = "$checksum#SHA-256 checksum"
+
+          $existingDraft = gh release view $tag --json isDraft --jq '.isDraft' 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if ($existingDraft.Trim() -ne 'true') {
+              throw "Release $tag already exists and is published; refusing to replace immutable assets"
+            }
+            gh release upload $tag $zipAsset $checksumAsset --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Could not resume asset upload for draft $tag" }
+            gh release edit $tag --draft=false --latest
+            if ($LASTEXITCODE -ne 0) { throw "Could not publish resumed draft $tag" }
+          }
+          else {
+            gh release create $tag $zipAsset $checksumAsset `
+              --verify-tag `
+              --generate-notes `
+              --title "TimeTrace Client $tag" `
+              --latest
+            if ($LASTEXITCODE -ne 0) { throw "Could not create release $tag" }
+          }
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          @"
+          ## Windows client release
+          - Tag: ``$env:GITHUB_REF_NAME``
+          - Commit: ``$env:TIMETRACE_RELEASE_COMMIT``
+          - Version: ``$env:TIMETRACE_RELEASE_VERSION``
+          - Assets: Windows x64 ZIP + SHA-256 checksum
+          - Outcome: ``${{ job.status }}``
+          "@ >> $env:GITHUB_STEP_SUMMARY
