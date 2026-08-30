@@ -81,6 +81,8 @@ uv run timetrace-server tokens add Yuki-Laptop   # 给新设备发 token，完�
 uv run timetrace-server tokens revoke Yuki-Laptop  # 吊销
 uv run timetrace-server backfill <start> <end>      # 历史指标级联回填
 uv run timetrace-server narrate <start> <end>       # 生成待处理分层叙述；重跑需加 --force
+uv run timetrace-server repair-data-quality          # 只读审计确定性数据质量问题
+uv run timetrace-server repair-data-quality --apply  # 先在线备份 SQLite，再单事务修复
 ```
 
 `tokens add/revoke` 后**重启服务端**，新 token 才生效。
