@@ -30,7 +30,7 @@
 - `vlm_done` 会清空旧 retry/error/lock 元数据。
 - claim 时把历史开始证据写入 `started_at`，终态清理 `locked_at` 这个 live lease 后，审计页仍能计算真实 queue wait；repair 会先迁移旧锁时间再清锁。
 - VLM 返回结构化 JSON 但所有描述字段为空时视为失败并重试，不再写成成功。
-- 审计明确区分“无截图而正常 skip”和“有截图但描述为空”；显式 repair 只重排队后一类。
+- 审计明确区分“无截图而正常 skip”和“有截图但描述为空”；显式 repair 只重排队后者中的模型空结果，并排除无 `vlm_model` 的手工权威标签，避免模型覆盖人工分类。
 - summary 叙述保存采用 FTS delete+insert，强制重叙述不会累积重复索引行；显式 repair 可幂等重建全部 summary FTS。
 
 ## 历史修复入口

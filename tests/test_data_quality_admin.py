@@ -48,8 +48,8 @@ def _read_end(cfg: StorageConfig, record_id: str) -> tuple[int, int]:
     return asyncio.run(_run())
 
 
-def _seed_empty_vlm_results(cfg: StorageConfig) -> tuple[str, str]:
-    async def _run() -> tuple[str, str]:
+def _seed_empty_vlm_results(cfg: StorageConfig) -> tuple[str, str, str]:
+    async def _run() -> tuple[str, str, str]:
         db = Database(cfg)
         await db.init()
         try:
@@ -61,6 +61,10 @@ def _seed_empty_vlm_results(cfg: StorageConfig) -> tuple[str, str]:
                 CaptureContext(app_name="A", process_name="a", window_title="without-image"),
                 reason="heartbeat",
             )
+            manual_label = await db.insert_record(
+                CaptureContext(app_name="A", process_name="a", window_title="manual-label"),
+                reason="heartbeat",
+            )
             await db.insert_screenshot(
                 record_id=with_image,
                 path="screenshots/a.png",
@@ -69,10 +73,21 @@ def _seed_empty_vlm_results(cfg: StorageConfig) -> tuple[str, str]:
                 height=1,
                 hash_sha256="hash",
             )
+            await db.insert_screenshot(
+                record_id=manual_label,
+                path="screenshots/manual.png",
+                thumb_path=None,
+                width=1,
+                height=1,
+                hash_sha256="manual-hash",
+            )
             for record_id in (with_image, without_image):
                 await db.mark_pending(record_id)
                 await db.transition(record_id, "vlm_done")
-            return with_image, without_image
+            # Agent/user labels intentionally create a terminal row without a
+            # VLM model or description. Repair must not let VLM overwrite it.
+            await db.set_category_final(manual_label, "work")
+            return with_image, without_image, manual_label
         finally:
             await db.close()
 
@@ -108,7 +123,7 @@ def test_repair_data_quality_apply_backs_up_and_repairs(tmp_path, monkeypatch):
 
 def test_repair_requeues_only_empty_results_that_have_images(tmp_path, monkeypatch):
     cfg = StorageConfig(data_dir=tmp_path)
-    with_image, without_image = _seed_empty_vlm_results(cfg)
+    with_image, without_image, manual_label = _seed_empty_vlm_results(cfg)
     monkeypatch.setattr(admin_cmd, "AppConfig", lambda: SimpleNamespace(storage=cfg))
 
     async def _inspect() -> dict[str, int]:
@@ -125,18 +140,25 @@ def test_repair_requeues_only_empty_results_that_have_images(tmp_path, monkeypat
 
     assert admin_cmd.run(["repair-data-quality", "--apply"], out=lambda _line: None) == 0
 
-    async def _read() -> tuple[str, str]:
+    async def _read() -> tuple[str, str, str, str]:
         db = Database(cfg)
         await db.init()
         try:
             rows = {}
-            for record_id in (with_image, without_image):
+            for record_id in (with_image, without_image, manual_label):
                 async with db.conn.execute(
-                    "SELECT status FROM analysis_results WHERE record_id=?", (record_id,)
+                    "SELECT status, category_final FROM analysis_results WHERE record_id=?",
+                    (record_id,),
                 ) as cur:
-                    rows[record_id] = (await cur.fetchone())["status"]
-            return rows[with_image], rows[without_image]
+                    row = await cur.fetchone()
+                    rows[record_id] = (row["status"], row["category_final"])
+            return (
+                rows[with_image][0],
+                rows[without_image][0],
+                rows[manual_label][0],
+                rows[manual_label][1],
+            )
         finally:
             await db.close()
 
-    assert asyncio.run(_read()) == ("pending_vlm", "vlm_done")
+    assert asyncio.run(_read()) == ("pending_vlm", "vlm_done", "vlm_done", "work")

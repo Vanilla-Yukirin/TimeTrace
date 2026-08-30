@@ -1222,6 +1222,9 @@ class SqliteDatabase:
                    FROM analysis_results ar
                    WHERE ar.status='vlm_done'
                      AND TRIM(COALESCE(ar.vlm_desc, ''))=''
+                     AND NOT (
+                         ar.category_final IS NOT NULL AND ar.vlm_model IS NULL
+                     )
                      AND EXISTS (
                          SELECT 1 FROM screenshots s WHERE s.record_id=ar.record_id
                      )""",
@@ -1313,6 +1316,9 @@ class SqliteDatabase:
                            done_at=NULL, updated_at=?
                        WHERE status='vlm_done'
                          AND TRIM(COALESCE(vlm_desc, ''))=''
+                         AND NOT (
+                             category_final IS NOT NULL AND vlm_model IS NULL
+                         )
                          AND EXISTS (
                              SELECT 1 FROM screenshots s
                              WHERE s.record_id=analysis_results.record_id
@@ -1329,6 +1335,9 @@ class SqliteDatabase:
                                SELECT ar.record_id FROM analysis_results ar
                                WHERE ar.status='pending_vlm'
                                  AND TRIM(COALESCE(ar.vlm_desc, ''))=''
+                                 AND NOT (
+                                     ar.category_final IS NOT NULL AND ar.vlm_model IS NULL
+                                 )
                                  AND EXISTS (
                                      SELECT 1 FROM screenshots s
                                      WHERE s.record_id=ar.record_id
