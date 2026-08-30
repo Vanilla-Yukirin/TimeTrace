@@ -65,6 +65,8 @@ class OutboxBackend:
         ctx: CaptureContext,
         reason: str,
         event_type: str = "heartbeat",
+        *,
+        ts_start_ms: int | None = None,
     ) -> str:
         """Generate a client_record_id, queue a record-only ingest entry."""
         client_record_id = str(uuid.uuid4())
@@ -72,7 +74,7 @@ class OutboxBackend:
             {
                 "kind": "ingest",
                 "client_record_id": client_record_id,
-                "ts_start": _now_ms(),
+                "ts_start": ts_start_ms if ts_start_ms is not None else _now_ms(),
                 "app_name": ctx.app_name,
                 "process_name": ctx.process_name,
                 "window_title": ctx.window_title,

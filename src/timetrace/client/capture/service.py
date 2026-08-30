@@ -189,7 +189,10 @@ class CaptureService:
                     ts_end_ms=wall_ms,
                 )
             record_id = await self._backend.submit_record(
-                ctx, reason="switch", event_type="window_switch"
+                ctx,
+                reason="switch",
+                event_type="window_switch",
+                ts_start_ms=wall_ms,
             )
             self._notify_capture("window_switch")
 
@@ -219,7 +222,10 @@ class CaptureService:
                     ts_end_ms=wall_ms,
                 )
             record_id = await self._backend.submit_record(
-                ctx, reason="heartbeat", event_type="heartbeat"
+                ctx,
+                reason="heartbeat",
+                event_type="heartbeat",
+                ts_start_ms=wall_ms,
             )
             self._notify_capture("heartbeat")
             await self._save_screenshot(record_id, win.hwnd, now)

@@ -75,6 +75,19 @@ async def test_submit_record_creates_server_row(backend, db):
     assert found["window_title"] == "main.py"
 
 
+async def test_submit_record_preserves_explicit_observation_time(backend, db):
+    observed_ms = 1_747_300_000_000
+    rid = await backend.submit_record(
+        _CTX,
+        reason="heartbeat",
+        ts_start_ms=observed_ms,
+    )
+
+    found = await db.find_record_by_client_id(rid)
+    assert found is not None
+    assert found["ts_start"] == observed_ms
+
+
 async def test_submit_record_marks_record_pending(backend, db):
     """Each ingest also enqueues a pending_vlm task — worker can pick it up."""
     await backend.submit_record(_CTX, reason="heartbeat")

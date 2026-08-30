@@ -78,7 +78,7 @@ should_capture(ctx, privacy) == False → return        # 隐私过滤
      _save_screenshot(...) 补帧
 ```
 
-**有界时间块设计**：每条 record 持续上限 = `max_capture_interval_s`（默认 30s）。采集循环用 monotonic 间隔识别休眠/进程暂停等不可观测 gap，并以 gap 前最后一次 tick 的墙钟收口；服务端再拒绝负数或超过 5 分钟的边界，常驻维护循环每分钟回收超过 5 分钟的 open lease。分析层要展示连续 session 按相邻同应用记录合并即可，不依赖 `ts_end = null` 开区间。
+**有界时间块设计**：每条 record 持续上限 = `max_capture_interval_s`（默认 30s）。采集循环用 monotonic 间隔识别休眠/进程暂停等不可观测 gap，并以 gap 前最后一次 tick 的墙钟收口；同一个 tick 的观测墙钟通过 `submit_record(..., ts_start_ms=...)` 成为 record 开始时间，即使持久化/网络调用很慢也不会漂移。服务端再拒绝负数或超过 5 分钟的边界，常驻维护循环每分钟回收超过 5 分钟的 open lease。分析层要展示连续 session 按相邻同应用记录合并即可，不依赖 `ts_end = null` 开区间。
 
 ---
 

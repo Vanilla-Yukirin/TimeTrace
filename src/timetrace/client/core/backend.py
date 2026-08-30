@@ -82,8 +82,10 @@ class BackendClient(Protocol):
         ctx: CaptureContext,
         reason: str,
         event_type: str = "heartbeat",
+        *,
+        ts_start_ms: int | None = None,
     ) -> str:
-        """Persist a new activity record. Returns the new record id."""
+        """Persist an activity observed at ``ts_start_ms``; return its id."""
         ...
 
     async def close_record(self, record_id: str, *, ts_end_ms: int | None = None) -> None:
@@ -131,8 +133,15 @@ class InProcessBackend:
         ctx: CaptureContext,
         reason: str,
         event_type: str = "heartbeat",
+        *,
+        ts_start_ms: int | None = None,
     ) -> str:
-        return await self._db.insert_record(ctx, reason=reason, event_type=event_type)
+        return await self._db.insert_record(
+            ctx,
+            reason=reason,
+            event_type=event_type,
+            ts_start=ts_start_ms,
+        )
 
     async def close_record(self, record_id: str, *, ts_end_ms: int | None = None) -> None:
         await self._db.close_record(record_id, ts_end=ts_end_ms)
@@ -262,6 +271,8 @@ class HttpBackend:
         ctx: CaptureContext,
         reason: str,
         event_type: str = "heartbeat",
+        *,
+        ts_start_ms: int | None = None,
     ) -> str:
         """Generate a client_record_id, POST a record-only ingest, return it.
 
@@ -273,7 +284,7 @@ class HttpBackend:
         client_record_id = str(uuid.uuid4())
         payload = {
             "client_record_id": client_record_id,
-            "ts_start": int(time.time() * 1000),
+            "ts_start": ts_start_ms if ts_start_ms is not None else int(time.time() * 1000),
             "app_name": ctx.app_name,
             "process_name": ctx.process_name,
             "window_title": ctx.window_title,

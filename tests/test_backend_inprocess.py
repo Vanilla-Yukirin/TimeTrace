@@ -55,6 +55,19 @@ async def test_submit_record_creates_row_with_metadata(backend, db):
     assert rows[0]["capture_reason"] == "heartbeat"
 
 
+async def test_submit_record_preserves_explicit_observation_time(backend, db):
+    observed_ms = 1_747_300_000_000
+    rid = await backend.submit_record(
+        _CTX,
+        reason="heartbeat",
+        ts_start_ms=observed_ms,
+    )
+
+    row = await db.get_record_by_id(rid)
+    assert row is not None
+    assert row["ts_start"] == observed_ms
+
+
 async def test_close_record_sets_ts_end(backend, db):
     rid = await backend.submit_record(_CTX, reason="switch", event_type="window_switch")
     await backend.close_record(rid)
