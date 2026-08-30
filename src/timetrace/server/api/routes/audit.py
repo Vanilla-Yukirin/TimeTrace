@@ -78,9 +78,9 @@ def _shape_row(row: dict, now: int) -> dict:
     first_shot_at = row["first_shot_at"]
     queued_at = row["queued_at"]
     done_at = row["done_at"]
-    locked_at = row["locked_at"]
+    started_at = row["started_at"]
     queue_wait_ms = (
-        locked_at - queued_at if locked_at is not None and queued_at is not None else None
+        started_at - queued_at if started_at is not None and queued_at is not None else None
     )
 
     # In single-process mode capture and ingest are the same instant
@@ -136,7 +136,7 @@ def _shape_row(row: dict, now: int) -> dict:
         "ingest_delay_ms": None if single_process else created_at - ts_start,
         "screenshot_lag_ms": (first_shot_at - created_at) if first_shot_at is not None else None,
         "activity_duration_ms": (ts_end - ts_start) if ts_end is not None else None,
-        "queue_wait_ms": queue_wait_ms,  # locked_at − queued_at (claim − enqueue)
+        "queue_wait_ms": queue_wait_ms,  # started_at − queued_at (claim − enqueue)
         "vlm_duration_ms": row["vlm_latency_ms"],  # describe() wall time
         # done_at − created_at: server-side ingest→analysis time (single clock).
         "total_latency_ms": (done_at - created_at) if done_at is not None else None,

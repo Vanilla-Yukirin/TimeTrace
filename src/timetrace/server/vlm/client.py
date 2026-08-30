@@ -88,7 +88,7 @@ _DESCRIBE_SCHEMA = {
             "maxItems": 8,
         },
         "summary": {"type": "string"},
-        "description": {"type": "string"},
+        "description": {"type": "string", "minLength": 1},
         "category": {"type": "string", "enum": list(_CATEGORY_IDS)},
     },
     "required": ["keywords", "summary", "description", "category"],
@@ -161,6 +161,8 @@ def _validate_describe_payload(raw: Any) -> dict:
         raise VLMError("VLM response missing or non-string 'summary'")
     if not isinstance(description, str):
         raise VLMError("VLM response missing or non-string 'description'")
+    if not format_description(raw):
+        raise VLMError("VLM response contains no descriptive text")
     # category is best-effort: even with the enum schema some servers omit it or
     # return an off-list value; fall back to uncategorized rather than failing
     # the whole describe (the description is still useful without a category).

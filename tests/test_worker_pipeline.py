@@ -157,6 +157,25 @@ async def test_worker_retries_on_failure(db, tmp_path):
     assert "transient network blip" in (row["error_msg"] or "")
 
 
+async def test_worker_retries_empty_descriptive_output(db, tmp_path):
+    rid = await _seed_pending(db, tmp_path)
+    vlm = _StubVLM(payload={"keywords": [], "summary": "", "description": "", "category": "work"})
+    worker = _make_worker(db, vlm, tmp_path)
+
+    task = await db.claim_next_task("pending_vlm")
+    await worker._handle_one(task, worker_id=0)
+
+    async with db.conn.execute(
+        "SELECT status, retry_count, vlm_desc, error_msg FROM analysis_results WHERE record_id=?",
+        (rid,),
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["status"] == "pending_vlm"
+    assert row["retry_count"] == 1
+    assert row["vlm_desc"] is None
+    assert "no descriptive text" in row["error_msg"]
+
+
 async def test_worker_marks_error_final_after_max_retries(db, tmp_path):
     rid = await _seed_pending(db, tmp_path)
     # Pre-load retry_count = max

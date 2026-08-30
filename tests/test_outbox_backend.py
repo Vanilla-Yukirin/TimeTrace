@@ -221,6 +221,15 @@ async def test_close_record_appends_close_entry_with_ts_end(outbox):
     assert close_entry.payload["ts_end"] > 0
 
 
+async def test_close_record_preserves_explicit_last_observed_time(outbox):
+    backend = OutboxBackend(outbox)
+    rid = await backend.submit_record(_CTX, reason="heartbeat")
+    await backend.close_record(rid, ts_end_ms=1_747_300_050_000)
+
+    entries = [e async for e in outbox.iter_pending()]
+    assert entries[1].payload["ts_end"] == 1_747_300_050_000
+
+
 # --------------------------------------------------------------------------- #
 # OutboxBackend.mark_pending                                                   #
 # --------------------------------------------------------------------------- #

@@ -124,8 +124,8 @@ class OutboxBackend:
         )
         return None
 
-    async def close_record(self, record_id: str) -> None:
-        """Queue a close entry stamping the *current* client clock as ts_end.
+    async def close_record(self, record_id: str, *, ts_end_ms: int | None = None) -> None:
+        """Queue a close entry with the last trustworthy client wall time.
 
         The sender replays this with the ts_end captured here, not its own
         drain-time clock — so a backed-up outbox doesn't smear close moments
@@ -135,7 +135,7 @@ class OutboxBackend:
             {
                 "kind": "close",
                 "client_record_id": record_id,
-                "ts_end": _now_ms(),
+                "ts_end": ts_end_ms if ts_end_ms is not None else _now_ms(),
             }
         )
 

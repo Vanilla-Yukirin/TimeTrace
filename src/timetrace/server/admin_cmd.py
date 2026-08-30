@@ -27,6 +27,8 @@ from auth.py only.
 from __future__ import annotations
 
 import argparse
+import os
+import sqlite3
 import sys
 import time
 from collections.abc import Callable
@@ -72,6 +74,16 @@ def build_parser() -> argparse.ArgumentParser:
     nr.add_argument(
         "--force", action="store_true", help="Re-narrate even already-narrated windows."
     )
+
+    repair = sub.add_parser(
+        "repair-data-quality",
+        help="Audit deterministic metadata defects; use --apply to back up and repair.",
+    )
+    repair.add_argument(
+        "--apply",
+        action="store_true",
+        help="Create an online SQLite backup, then apply one transactional repair.",
+    )
     nr.add_argument(
         "--max-tokens",
         type=int,
@@ -113,6 +125,8 @@ def run(
         return _cmd_narrate(
             args.start, args.end, args.limit, args.force, args.max_tokens, args.grains, out
         )
+    if args.cmd == "repair-data-quality":
+        return _cmd_repair_data_quality(args.apply, out)
     out(f"unhandled command: {args}")
     return 2
 
@@ -198,6 +212,59 @@ def _cmd_tokens_revoke(identifier: str, out: Callable[[str], None]) -> int:
     ServerAuth.write_tokens(remaining)
     out(f"Revoked token labelled {target.label!r} (...{target.value[-8:]}).")
     out("Restart timetrace-server for the revocation to take effect.")
+    return 0
+
+
+def _cmd_repair_data_quality(apply: bool, out: Callable[[str], None]) -> int:
+    """Audit or transactionally repair deterministic data-quality defects."""
+    import asyncio
+    import datetime as _dt
+
+    from timetrace.server.db import Database
+
+    cfg = AppConfig()
+    backup_path = None
+    if apply:
+        stamp = _dt.datetime.now().strftime("%Y%m%d%H%M%S%f")
+        backup_path = cfg.storage.db_path.with_name(
+            f"{cfg.storage.db_path.stem}.pre-quality-repair-{stamp}{cfg.storage.db_path.suffix}"
+        )
+        # sqlite3.backup() gives a consistent online snapshot even while the
+        # WAL-mode server is running; a plain file copy would not.
+        source = sqlite3.connect(f"file:{cfg.storage.db_path}?mode=ro", uri=True)
+        target = sqlite3.connect(backup_path)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        if os.name == "posix":
+            backup_path.chmod(0o600)
+        out(f"backup = {backup_path}")
+
+    async def _run() -> tuple[dict[str, int], dict[str, int] | None, dict[str, int]]:
+        db = Database(cfg.storage)
+        await db.init()
+        try:
+            before = await db.inspect_data_quality()
+            applied = await db.repair_data_quality() if apply else None
+            after = await db.inspect_data_quality()
+            return before, applied, after
+        finally:
+            await db.close()
+
+    try:
+        before, applied, after = asyncio.run(_run())
+    except Exception:
+        if backup_path is not None:
+            out(f"repair failed; backup remains at {backup_path}")
+        raise
+    out(f"before = {before}")
+    if applied is None:
+        out("dry-run only; re-run with --apply to back up and repair")
+    else:
+        out(f"applied = {applied}")
+        out(f"after = {after}")
     return 0
 
 

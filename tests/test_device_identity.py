@@ -18,6 +18,7 @@ from timetrace.common.models import CaptureContext
 from timetrace.server.api.app import create_app
 from timetrace.server.auth import ServerAuth, TokenEntry
 from timetrace.server.db import Database
+from timetrace.server.db.sqlite import _MAX_ORPHAN_BRIDGE_MS
 from timetrace.server.storage.blob import LocalBlobStorage
 from timetrace.server.users import UserStore
 
@@ -215,7 +216,7 @@ async def test_new_ingest_only_heals_open_records_from_same_device(db):
     assert (await db.get_record_by_id(record_b))["ts_end"] is None
 
 
-async def test_startup_heals_each_device_timeline_independently(tmp_path):
+async def test_activity_lease_expiry_heals_each_device_timeline_independently(tmp_path):
     cfg = StorageConfig(data_dir=tmp_path)
     database = Database(cfg)
     await database.init()
@@ -246,6 +247,7 @@ async def test_startup_heals_each_device_timeline_independently(tmp_path):
 
     reopened = Database(cfg)
     await reopened.init()
+    await reopened.expire_stale_open_records(now_ms=base + _MAX_ORPHAN_BRIDGE_MS + 10_000)
     assert (await reopened.get_record_by_id(record_a1))["ts_end"] == base + 200
     assert (await reopened.get_record_by_id(record_b1))["ts_end"] == base + 100
     assert (await reopened.get_record_by_id(record_a2))["ts_end"] == base + 200

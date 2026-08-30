@@ -86,8 +86,12 @@ class BackendClient(Protocol):
         """Persist a new activity record. Returns the new record id."""
         ...
 
-    async def close_record(self, record_id: str) -> None:
-        """Set ts_end on a previously-submitted record."""
+    async def close_record(self, record_id: str, *, ts_end_ms: int | None = None) -> None:
+        """Set ``ts_end`` on a previously-submitted record.
+
+        ``ts_end_ms`` is the last client-observed wall time. Capture supplies it
+        explicitly so a suspend/resume gap is never mistaken for activity.
+        """
         ...
 
     async def submit_screenshot(self, payload: ScreenshotSubmission) -> str | None:
@@ -130,8 +134,8 @@ class InProcessBackend:
     ) -> str:
         return await self._db.insert_record(ctx, reason=reason, event_type=event_type)
 
-    async def close_record(self, record_id: str) -> None:
-        await self._db.close_record(record_id)
+    async def close_record(self, record_id: str, *, ts_end_ms: int | None = None) -> None:
+        await self._db.close_record(record_id, ts_end=ts_end_ms)
 
     async def submit_screenshot(self, payload: ScreenshotSubmission) -> str:
         phash_blob = phash_to_blob(payload.phash) if payload.phash is not None else None
@@ -281,9 +285,12 @@ class HttpBackend:
         self._record_id_for[client_record_id] = response["record_id"]
         return client_record_id
 
-    async def close_record(self, record_id: str) -> None:
-        """Close the record on the server (sets ts_end to current client clock)."""
-        await self.post_close(record_id, ts_end=int(time.time() * 1000))
+    async def close_record(self, record_id: str, *, ts_end_ms: int | None = None) -> None:
+        """Close using an observed client timestamp, defaulting to now."""
+        await self.post_close(
+            record_id,
+            ts_end=ts_end_ms if ts_end_ms is not None else int(time.time() * 1000),
+        )
 
     async def post_close(self, record_id: str, ts_end: int) -> None:
         """Wire-level close with a caller-supplied ts_end.

@@ -41,6 +41,8 @@ Usage:
                                          while the server is running).
   timetrace-server narrate <start> <end>   Generate LLM narratives for finalized
                                          cascade windows in a range (one-shot).
+  timetrace-server repair-data-quality    Audit deterministic metadata defects;
+                                         pass --apply to back up and repair.
   timetrace-server -h | --help           Show this help.
 
 Token file lives at ~/.config/timetrace-server/tokens.json (chmod 600 on POSIX).
@@ -61,7 +63,7 @@ def main() -> None:
     if args and args[0] in ("-h", "--help"):
         print(_HELP_TEXT)
         return
-    if args and args[0] in ("info", "tokens", "backfill", "narrate"):
+    if args and args[0] in ("info", "tokens", "backfill", "narrate", "repair-data-quality"):
         from timetrace.server.admin_cmd import run as admin_run  # noqa: PLC0415
 
         sys.exit(admin_run(args))
