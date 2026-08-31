@@ -435,6 +435,24 @@ async def test_close_record_known_id_response_echoes_supplied_ts_end(db, blob_st
     assert body["ts_end"] == 1747300050000
 
 
+async def test_close_record_returns_stored_boundary_when_long_span_is_rejected(db, blob_storage):
+    app = create_app(db, blob_storage=blob_storage)
+    ts_start = 1747300000000
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/ingest/record",
+            data={"record": _record_payload("client-close-gap", ts_start=ts_start)},
+        ).json()
+        resp = client.post(
+            f"/v1/ingest/record/{first['record_id']}/close",
+            json={"ts_end": ts_start + 12 * 60 * 60 * 1000},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["ts_end"] == ts_start
+    assert (await db.get_record_by_id(first["record_id"]))["ts_end"] == ts_start
+
+
 async def test_close_record_accepts_client_record_id(db, blob_storage):
     """HttpBackend can recover from a process restart only if the close endpoint
     accepts the client_record_id directly (the only id the client always

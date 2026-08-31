@@ -227,13 +227,14 @@ async def serve(
 
     async def _reclaim_loop() -> None:
         while True:
-            await asyncio.sleep(_STALE_TASK_RECLAIM_INTERVAL_S)
             await components.db.reclaim_stale_tasks()
+            await components.db.expire_stale_open_records()
             # Cheap; sweeps expired browser sessions so the table doesn't grow
             # unbounded. Per-request resolve_session() already lazy-rejects them.
             purged = await components.db.purge_expired_sessions()
             if purged:
                 logger.info("auth.sessions_purged", count=purged)
+            await asyncio.sleep(_STALE_TASK_RECLAIM_INTERVAL_S)
 
     async def _report_scheduler() -> None:
         # AI 看板：定时让 agent 生成 HTML 洞察报告。无 VLM 时直接退出，不影响

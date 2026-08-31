@@ -222,6 +222,18 @@ async def test_vlm_client_describe_raises_on_missing_field():
         await client.describe(img)
 
 
+async def test_vlm_client_describe_rejects_empty_descriptive_output():
+    mock = AsyncMock(
+        return_value=_fake_completion(
+            '{"keywords": [], "summary": "", "description": "", "category": "work"}'
+        )
+    )
+    client = _make_client_with_mock(mock)
+    img = Image.new("RGB", (8, 8), (0, 0, 0))
+    with pytest.raises(VLMError, match="no descriptive text"):
+        await client.describe(img)
+
+
 async def test_vlm_client_describe_raises_on_non_list_keywords():
     mock = AsyncMock(
         return_value=_fake_completion('{"keywords": "x", "summary": "s", "description": "d"}')

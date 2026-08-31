@@ -247,7 +247,7 @@ async def close_record(
     effective_ts_end = ts_end if ts_end is not None else _now_ms()
 
     try:
-        resolved_id = await db.close_device_record(
+        resolved = await db.close_device_record(
             record_id,
             device_id=device_id,
             token_fingerprint=token_fingerprint,
@@ -256,7 +256,8 @@ async def close_record(
         )
     except DeviceBindingError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    if resolved_id is None:
+    if resolved is None:
         raise HTTPException(status_code=404, detail=f"record not found: {record_id!r}")
+    resolved_id, stored_ts_end = resolved
 
-    return {"record_id": resolved_id, "ts_end": effective_ts_end}
+    return {"record_id": resolved_id, "ts_end": stored_ts_end}

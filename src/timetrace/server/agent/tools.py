@@ -39,10 +39,10 @@ _MAX_HOURS = 720  # 30 days
 # A single record spanning more than this is a stale boundary artifact (laptop
 # sleep / lid-close left the last pre-sleep record open until wake), NOT real
 # activity time. Capture emits a heartbeat at least every 30s while active and
-# idle closes a record after 180s, so nothing legitimate exceeds this. Mirrors
-# the DB-side ``_cap_implausible_record_durations`` cap (db/sqlite.py) on the
-# READ path so stats/reports don't inflate by ~9h sleep gaps in the window
-# between server restarts (the DB cap only runs at init()).
+# idle closes a record after 180s, so nothing legitimate exceeds this. The
+# write path rejects such boundaries and the online activity lease expires
+# abandoned open rows; this read clamp remains defense in depth for legacy data
+# until an explicit, backup-guarded repair has run.
 _MAX_PLAUSIBLE_RECORD_MS = 5 * 60 * 1000
 
 # Bucket for records that have NO category yet — either never analyzed, or

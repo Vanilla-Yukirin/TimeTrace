@@ -29,6 +29,28 @@ logger = structlog.get_logger(__name__)
 _MAX_ORPHAN_BRIDGE_MS = 5 * 60 * 1000
 
 
+def _bounded_record_end(
+    ts_start: int,
+    requested_ts_end: int,
+    existing_ts_end: int | None = None,
+) -> tuple[int, bool]:
+    """Return a conservative, trustworthy record boundary.
+
+    Capture emits a new heartbeat at least every 30 seconds while it is
+    observing activity. A negative or >5 minute boundary therefore crosses an
+    unobserved gap (sleep, stalled process, or bad/legacy client). Preserve an
+    already-plausible boundary when one exists; otherwise collapse to the start
+    rather than inventing activity. The bool reports whether the request was
+    rejected.
+    """
+    requested_is_plausible = 0 <= requested_ts_end - ts_start <= _MAX_ORPHAN_BRIDGE_MS
+    if requested_is_plausible:
+        return requested_ts_end, False
+    if existing_ts_end is not None and 0 <= existing_ts_end - ts_start <= _MAX_ORPHAN_BRIDGE_MS:
+        return existing_ts_end, True
+    return ts_start, True
+
+
 class DeviceBindingError(ValueError):
     """A device is revoked or already belongs to a different bearer token."""
 
@@ -135,11 +157,11 @@ CREATE TABLE IF NOT EXISTS analysis_results (
     text_embedding      BLOB,
     text_embedding_model TEXT,
     -- Pipeline stage timestamps (epoch ms, nullable). queued_at = when (re)
-    -- enqueued to pending_vlm; done_at = when transitioned to vlm_done. NULL on
-    -- rows created before this migration (the moments are gone, no backfill) →
-    -- the audit feed shows "—". Drive queue-wait / total-latency; reused by the
-    -- memory-pyramid rollup later.
+    -- enqueued; started_at = latest claim; done_at = terminal success. locked_at
+    -- is only a live lease and is cleared when processing ends. NULL on rows
+    -- created before these migrations means the moment is honestly unknown.
     queued_at           INTEGER,
+    started_at          INTEGER,
     done_at             INTEGER
 );
 
@@ -402,13 +424,6 @@ class SqliteDatabase:
             await self._conn.executescript(_SCHEMA)
             await self._conn.commit()
             await self._migrate()
-            healed = await self._close_open_records_by_device(_now_ms(), tail_ts=None)
-            if healed:
-                logger.info("database.heal_open_records_on_start", count=healed)
-            capped = await self._cap_implausible_record_durations(_now_ms())
-            if capped:
-                logger.info("database.cap_implausible_record_durations", count=capped)
-            # _seed_categories' commit also flushes the heal UPDATE above.
             await self._seed_categories()
             await self._seed_schema_version()
             logger.info("database.init", path=str(self._cfg.db_path))
@@ -469,6 +484,10 @@ class SqliteDatabase:
             await self._conn.execute("ALTER TABLE analysis_results ADD COLUMN queued_at INTEGER")
             await self._conn.commit()
             logger.info("database.migrate", added_column="analysis_results.queued_at")
+        if "started_at" not in ar_cols:
+            await self._conn.execute("ALTER TABLE analysis_results ADD COLUMN started_at INTEGER")
+            await self._conn.commit()
+            logger.info("database.migrate", added_column="analysis_results.started_at")
         if "done_at" not in ar_cols:
             await self._conn.execute("ALTER TABLE analysis_results ADD COLUMN done_at INTEGER")
             await self._conn.commit()
@@ -560,7 +579,11 @@ class SqliteDatabase:
         # record. created_at/updated_at stay on the server clock (bookkeeping).
         ts_start_value = ts_start if ts_start is not None else now
         async with self._lock:
-            healed = await self._close_open_records_before(now, tail_ts=now, device_id=device_id)
+            healed = await self._close_open_records_before(
+                ts_start_value,
+                tail_ts=ts_start_value,
+                device_id=device_id,
+            )
             if healed:
                 logger.info("database.heal_open_records_on_insert", count=healed)
                 # Commit the heal independently of the INSERT below so that a
@@ -715,7 +738,11 @@ class SqliteDatabase:
                     await self.conn.commit()
                     return existing["id"], False
 
-                await self._close_open_records_before(now, tail_ts=now, device_id=device_id)
+                await self._close_open_records_before(
+                    ts_start_value,
+                    tail_ts=ts_start_value,
+                    device_id=device_id,
+                )
                 record_id = _new_id()
                 await self.conn.execute(
                     """INSERT INTO records
@@ -833,8 +860,8 @@ class SqliteDatabase:
         token_fingerprint: str | None,
         token_label: str | None,
         ts_end: int,
-    ) -> str | None:
-        """Atomically authorize ownership, legacy-claim, close, and touch."""
+    ) -> tuple[str, int] | None:
+        """Authorize, close, and return ``(record_id, stored_ts_end)``."""
         now = _now_ms()
         async with self._lock:
             try:
@@ -876,9 +903,14 @@ class SqliteDatabase:
                             (device_id, record["id"]),
                         )
 
+                effective_ts_end, rejected = _bounded_record_end(
+                    int(record["ts_start"]),
+                    ts_end,
+                    record.get("ts_end"),
+                )
                 await self.conn.execute(
                     "UPDATE records SET ts_end=?, updated_at=? WHERE id=?",
-                    (ts_end, now, record["id"]),
+                    (effective_ts_end, now, record["id"]),
                 )
                 if device_id is not None:
                     await self.conn.execute(
@@ -887,7 +919,14 @@ class SqliteDatabase:
                         (now, device_id, now - 60_000),
                     )
                 await self.conn.commit()
-                return record["id"]
+                if rejected:
+                    logger.warning(
+                        "database.record_end_rejected",
+                        record_id=record["id"],
+                        requested_ts_end=ts_end,
+                        stored_ts_end=effective_ts_end,
+                    )
+                return record["id"], effective_ts_end
             except Exception:
                 await self.conn.rollback()
                 raise
@@ -1001,8 +1040,20 @@ class SqliteDatabase:
         a stale HttpBackend close calls go nowhere with no signal.
         """
         now = _now_ms()
-        ts_end_value = ts_end if ts_end is not None else now
+        requested_ts_end = ts_end if ts_end is not None else now
         async with self._lock:
+            async with self.conn.execute(
+                "SELECT ts_start, ts_end FROM records WHERE id=?",
+                (record_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                return False
+            ts_end_value, rejected = _bounded_record_end(
+                int(row["ts_start"]),
+                requested_ts_end,
+                row["ts_end"],
+            )
             cur = await self.conn.execute(
                 "UPDATE records SET ts_end=?, updated_at=? WHERE id=?",
                 (ts_end_value, now, record_id),
@@ -1010,6 +1061,13 @@ class SqliteDatabase:
             rowcount = cur.rowcount
             await cur.close()
             await self.conn.commit()
+        if rejected:
+            logger.warning(
+                "database.record_end_rejected",
+                record_id=record_id,
+                requested_ts_end=requested_ts_end,
+                stored_ts_end=ts_end_value,
+            )
         return rowcount > 0
 
     async def _close_open_records_before(
@@ -1100,7 +1158,7 @@ class SqliteDatabase:
         *,
         tail_ts: int | None,
     ) -> int:
-        """Startup healing across independent device timelines.
+        """Expire open records across independent device timelines.
 
         Caller holds ``self._lock``. Each distinct device (including the NULL
         legacy/single-process scope) is healed separately so one machine's next
@@ -1120,28 +1178,201 @@ class SqliteDatabase:
             )
         return healed
 
-    async def _cap_implausible_record_durations(self, now: int) -> int:
-        """Collapse impossible record spans left by older orphan-heal logic.
+    async def expire_stale_open_records(self, now_ms: int | None = None) -> int:
+        """Expire open activity leases that have had no observation for 5 minutes.
 
-        Capture normally emits at least one heartbeat every 30 seconds while
-        active, and idle transitions close the current record after 180 seconds.
-        A single record spanning more than `_MAX_ORPHAN_BRIDGE_MS` is therefore
-        a stale boundary artifact, not a trustworthy activity duration.
-
-        Caller must hold ``self._lock`` AND is responsible for committing.
-        Returns the number of rows updated.
+        This is online state-machine maintenance, not a startup repair sweep.
+        Normal clients replace records every ~30 seconds; an older open row is
+        necessarily orphaned. A plausible next record in the same device scope
+        supplies the boundary, otherwise the row becomes a zero-duration point.
         """
-        cur = await self.conn.execute(
-            """UPDATE records
-               SET ts_end = ts_start,
-                   updated_at = ?
-               WHERE ts_end IS NOT NULL
-                 AND ts_end - ts_start > ?""",
-            (now, _MAX_ORPHAN_BRIDGE_MS),
-        )
-        rowcount = cur.rowcount
-        await cur.close()
-        return rowcount
+        now = now_ms if now_ms is not None else _now_ms()
+        cutoff = now - _MAX_ORPHAN_BRIDGE_MS
+        async with self._lock:
+            expired = await self._close_open_records_by_device(cutoff, tail_ts=None)
+            if expired:
+                await self.conn.commit()
+        if expired:
+            logger.info("database.activity_leases_expired", count=expired)
+        return expired
+
+    async def inspect_data_quality(self, now_ms: int | None = None) -> dict[str, int]:
+        """Return aggregate repair candidates without reading screenshot content."""
+        now = now_ms if now_ms is not None else _now_ms()
+        queries = {
+            "expired_open_records": (
+                "SELECT COUNT(*) FROM records WHERE ts_end IS NULL AND ts_start < ?",
+                (now - _MAX_ORPHAN_BRIDGE_MS,),
+            ),
+            "invalid_closed_spans": (
+                """SELECT COUNT(*) FROM records
+                   WHERE ts_end IS NOT NULL
+                     AND (ts_end < ts_start OR ts_end - ts_start > ?)""",
+                (_MAX_ORPHAN_BRIDGE_MS,),
+            ),
+            "successful_rows_with_stale_errors": (
+                """SELECT COUNT(*) FROM analysis_results
+                   WHERE status='vlm_done'
+                     AND (error_code IS NOT NULL OR error_msg IS NOT NULL
+                          OR next_retry_at IS NOT NULL OR locked_at IS NOT NULL)""",
+                (),
+            ),
+            "completed_with_image_but_empty_description": (
+                """SELECT COUNT(*)
+                   FROM analysis_results ar
+                   WHERE ar.status='vlm_done'
+                     AND TRIM(COALESCE(ar.vlm_desc, ''))=''
+                     AND NOT (
+                         ar.category_final IS NOT NULL AND ar.vlm_model IS NULL
+                     )
+                     AND EXISTS (
+                         SELECT 1 FROM screenshots s WHERE s.record_id=ar.record_id
+                     )""",
+                (),
+            ),
+            "completed_without_image": (
+                """SELECT COUNT(*)
+                   FROM analysis_results ar
+                   WHERE ar.status='vlm_done'
+                     AND TRIM(COALESCE(ar.vlm_desc, ''))=''
+                     AND NOT EXISTS (
+                         SELECT 1 FROM screenshots s WHERE s.record_id=ar.record_id
+                     )""",
+                (),
+            ),
+            "empty_narrated_summaries": (
+                """SELECT COUNT(*) FROM summaries
+                   WHERE status='narrated'
+                     AND TRIM(COALESCE(description, ''))=''
+                     AND TRIM(COALESCE(evaluation, ''))=''""",
+                (),
+            ),
+            "summary_fts_rows": ("SELECT COUNT(*) FROM summaries_fts", ()),
+            "narrated_summary_rows": (
+                """SELECT COUNT(*) FROM summaries
+                   WHERE COALESCE(description, '') != ''
+                      OR COALESCE(evaluation, '') != ''""",
+                (),
+            ),
+        }
+        result: dict[str, int] = {}
+        async with self._lock:
+            for key, (sql, params) in queries.items():
+                async with self.conn.execute(sql, params) as cur:
+                    result[key] = int((await cur.fetchone())[0])
+        return result
+
+    async def repair_data_quality(self, now_ms: int | None = None) -> dict[str, int]:
+        """Repair deterministic metadata defects; never reads or deletes images.
+
+        The caller is responsible for taking a SQLite backup first. All changes
+        are one transaction: expire abandoned activity leases, repair impossible
+        closed spans using a plausible same-device successor when available,
+        clear stale retry errors from successful rows, requeue falsely-successful
+        image analyses and empty narratives, and rebuild the derived summary FTS
+        index. Records that truly have no screenshot remain completed-by-skip.
+        """
+        now = now_ms if now_ms is not None else _now_ms()
+        async with self._lock:
+            try:
+                await self.conn.execute("BEGIN IMMEDIATE")
+                expired = await self._close_open_records_by_device(
+                    now - _MAX_ORPHAN_BRIDGE_MS,
+                    tail_ts=None,
+                )
+                cur = await self.conn.execute(
+                    """UPDATE records
+                       SET ts_end = COALESCE(
+                               (SELECT MIN(n.ts_start) FROM records n
+                                WHERE n.ts_start > records.ts_start
+                                  AND n.ts_start - records.ts_start <= ?
+                                  AND n.device_id IS records.device_id),
+                               records.ts_start
+                           ),
+                           updated_at = ?
+                       WHERE ts_end IS NOT NULL
+                         AND (ts_end < ts_start OR ts_end - ts_start > ?)""",
+                    (_MAX_ORPHAN_BRIDGE_MS, now, _MAX_ORPHAN_BRIDGE_MS),
+                )
+                repaired_spans = cur.rowcount
+                await cur.close()
+                cur = await self.conn.execute(
+                    """UPDATE analysis_results
+                       SET error_code=NULL, error_msg=NULL, next_retry_at=NULL,
+                           started_at=COALESCE(started_at, locked_at),
+                           locked_at=NULL, updated_at=?
+                       WHERE status='vlm_done'
+                         AND (error_code IS NOT NULL OR error_msg IS NOT NULL
+                              OR next_retry_at IS NOT NULL OR locked_at IS NOT NULL)""",
+                    (now,),
+                )
+                cleared_errors = cur.rowcount
+                await cur.close()
+                cur = await self.conn.execute(
+                    """UPDATE analysis_results
+                       SET status='pending_vlm', retry_count=0,
+                           error_code=NULL, error_msg=NULL, next_retry_at=NULL,
+                           locked_at=NULL, queued_at=?, started_at=NULL,
+                           done_at=NULL, updated_at=?
+                       WHERE status='vlm_done'
+                         AND TRIM(COALESCE(vlm_desc, ''))=''
+                         AND NOT (
+                             category_final IS NOT NULL AND vlm_model IS NULL
+                         )
+                         AND EXISTS (
+                             SELECT 1 FROM screenshots s
+                             WHERE s.record_id=analysis_results.record_id
+                         )""",
+                    (now, now),
+                )
+                requeued_empty_vlm = cur.rowcount
+                await cur.close()
+                if requeued_empty_vlm:
+                    await self.conn.execute(
+                        """UPDATE records
+                           SET status='pending_vlm', updated_at=?
+                           WHERE id IN (
+                               SELECT ar.record_id FROM analysis_results ar
+                               WHERE ar.status='pending_vlm'
+                                 AND TRIM(COALESCE(ar.vlm_desc, ''))=''
+                                 AND NOT (
+                                     ar.category_final IS NOT NULL AND ar.vlm_model IS NULL
+                                 )
+                                 AND EXISTS (
+                                     SELECT 1 FROM screenshots s
+                                     WHERE s.record_id=ar.record_id
+                                 )
+                           )""",
+                        (now,),
+                    )
+                cur = await self.conn.execute(
+                    """UPDATE summaries
+                       SET status='pending_summary', description=NULL,
+                           evaluation=NULL, body_json=NULL, src_tokens=NULL,
+                           out_tokens=NULL, compression_ratio=NULL,
+                           locked_at=NULL, updated_at=?
+                       WHERE status='narrated'
+                         AND TRIM(COALESCE(description, ''))=''
+                         AND TRIM(COALESCE(evaluation, ''))=''""",
+                    (now,),
+                )
+                requeued_empty = cur.rowcount
+                await cur.close()
+                await self._rebuild_summary_fts_locked()
+                async with self.conn.execute("SELECT COUNT(*) FROM summaries_fts") as cur:
+                    fts_rows = int((await cur.fetchone())[0])
+                await self.conn.commit()
+            except Exception:
+                await self.conn.rollback()
+                raise
+        return {
+            "expired_open_records": expired,
+            "repaired_closed_spans": repaired_spans,
+            "cleared_success_errors": cleared_errors,
+            "requeued_empty_vlm": requeued_empty_vlm,
+            "requeued_empty_summaries": requeued_empty,
+            "summary_fts_rows": fts_rows,
+        }
 
     async def mark_pending(self, record_id: str) -> None:
         now = _now_ms()
@@ -1182,7 +1413,7 @@ class SqliteDatabase:
             async with self.conn.execute(
                 """UPDATE analysis_results
                    SET status='pending_vlm', locked_at=NULL, next_retry_at=NULL,
-                       queued_at=?, updated_at=?
+                       queued_at=?, started_at=NULL, updated_at=?
                    WHERE record_id=? AND status='vlm_done' AND vlm_desc IS NULL""",
                 (now, now, record_id),
             ) as cur:
@@ -1385,7 +1616,7 @@ class SqliteDatabase:
                 a.category_final, a.category_suggested, a.confidence,
                 a.retry_count, a.next_retry_at, a.error_code, a.error_msg,
                 a.vlm_latency_ms, a.vlm_model, a.locked_at,
-                a.queued_at, a.done_at, a.decision_trace,
+                a.queued_at, a.started_at, a.done_at, a.decision_trace,
                 a.updated_at            AS analysis_updated_at,
                 (a.vlm_desc IS NOT NULL) AS has_desc,
                 length(a.vlm_desc)       AS desc_chars,
@@ -1642,7 +1873,7 @@ class SqliteDatabase:
         async with self._lock:
             async with self.conn.execute(
                 """UPDATE analysis_results
-                   SET status = ?, locked_at = ?, updated_at = ?
+                   SET status = ?, locked_at = ?, started_at = ?, updated_at = ?
                    WHERE record_id = (
                        SELECT record_id FROM analysis_results
                        WHERE status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)
@@ -1650,7 +1881,7 @@ class SqliteDatabase:
                        LIMIT 1
                    ) AND status = ?
                    RETURNING record_id, retry_count""",
-                (processing, now, now, kind, now, kind),
+                (processing, now, now, now, kind, now, kind),
             ) as cur:
                 row = await cur.fetchone()
             await self.conn.commit()
@@ -1706,6 +1937,7 @@ class SqliteDatabase:
                        next_retry_at=?,
                        locked_at=NULL,
                        queued_at=?,
+                       started_at=NULL,
                        updated_at=?
                    WHERE record_id=?""",
                 (error_msg, retry_count, next_retry_at, now, now, record_id),
@@ -1847,8 +2079,11 @@ class SqliteDatabase:
                 # describe OR no-image skip). A re-enqueue→vlm_done overwrites it
                 # with the latest completion — what total-latency wants.
                 await self.conn.execute(
-                    "UPDATE analysis_results SET status=?, updated_at=?, done_at=? "
-                    "WHERE record_id=?",
+                    """UPDATE analysis_results
+                       SET status=?, error_code=NULL, error_msg=NULL,
+                           next_retry_at=NULL, locked_at=NULL,
+                           updated_at=?, done_at=?
+                       WHERE record_id=?""",
                     (new_status, now, now, record_id),
                 )
             else:
@@ -2039,7 +2274,8 @@ class SqliteDatabase:
                 # "(re)enqueued to pending_vlm" contract on the column.
                 await self.conn.execute(
                     "UPDATE analysis_results"
-                    " SET status=?, locked_at=NULL, queued_at=?, updated_at=? WHERE record_id=?",
+                    " SET status=?, locked_at=NULL, queued_at=?, started_at=NULL,"
+                    " updated_at=? WHERE record_id=?",
                     (pending_status, now, now, row["record_id"]),
                 )
                 count += 1
@@ -2245,7 +2481,41 @@ class SqliteDatabase:
                     summary_id,
                 ),
             )
+            # FTS5 has no UPSERT constraint. Delete+insert keeps exactly one
+            # current row per summary across retries and forced re-narration.
+            await self.conn.execute(
+                "DELETE FROM summaries_fts WHERE summary_id=?",
+                (summary_id,),
+            )
+            await self.conn.execute(
+                """INSERT INTO summaries_fts
+                       (summary_id, grain, description, evaluation)
+                   SELECT id, grain, COALESCE(description, ''), COALESCE(evaluation, '')
+                   FROM summaries WHERE id=?""",
+                (summary_id,),
+            )
             await self.conn.commit()
+
+    async def rebuild_summary_fts(self) -> int:
+        """Rebuild the derived summary text index without touching narratives."""
+        async with self._lock:
+            await self._rebuild_summary_fts_locked()
+            async with self.conn.execute("SELECT COUNT(*) FROM summaries_fts") as cur:
+                count = int((await cur.fetchone())[0])
+            await self.conn.commit()
+        return count
+
+    async def _rebuild_summary_fts_locked(self) -> None:
+        """Lock-held core used by explicit repair and the public rebuild call."""
+        await self.conn.execute("DELETE FROM summaries_fts")
+        await self.conn.execute(
+            """INSERT INTO summaries_fts
+                   (summary_id, grain, description, evaluation)
+               SELECT id, grain, COALESCE(description, ''), COALESCE(evaluation, '')
+               FROM summaries
+               WHERE COALESCE(description, '') != ''
+                  OR COALESCE(evaluation, '') != ''"""
+        )
 
     async def get_category_final(self, record_id: str) -> str | None:
         """Return analysis_results.category_final for a record, or None."""

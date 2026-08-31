@@ -65,6 +65,8 @@ class OutboxBackend:
         ctx: CaptureContext,
         reason: str,
         event_type: str = "heartbeat",
+        *,
+        ts_start_ms: int | None = None,
     ) -> str:
         """Generate a client_record_id, queue a record-only ingest entry."""
         client_record_id = str(uuid.uuid4())
@@ -72,7 +74,7 @@ class OutboxBackend:
             {
                 "kind": "ingest",
                 "client_record_id": client_record_id,
-                "ts_start": _now_ms(),
+                "ts_start": ts_start_ms if ts_start_ms is not None else _now_ms(),
                 "app_name": ctx.app_name,
                 "process_name": ctx.process_name,
                 "window_title": ctx.window_title,
@@ -124,8 +126,8 @@ class OutboxBackend:
         )
         return None
 
-    async def close_record(self, record_id: str) -> None:
-        """Queue a close entry stamping the *current* client clock as ts_end.
+    async def close_record(self, record_id: str, *, ts_end_ms: int | None = None) -> None:
+        """Queue a close entry with the last trustworthy client wall time.
 
         The sender replays this with the ts_end captured here, not its own
         drain-time clock — so a backed-up outbox doesn't smear close moments
@@ -135,7 +137,7 @@ class OutboxBackend:
             {
                 "kind": "close",
                 "client_record_id": record_id,
-                "ts_end": _now_ms(),
+                "ts_end": ts_end_ms if ts_end_ms is not None else _now_ms(),
             }
         )
 

@@ -218,8 +218,17 @@ class AnalysisWorker:
         # the queued_at/done_at *timestamps* stay on _now_ms() wall time.
         vlm_latency_ms = int((time.monotonic() - vlm_t0) * 1000)
 
-        await self._gate.report_success()
         text = format_description(payload)
+        if not text:
+            # A syntactically valid JSON object with every descriptive field
+            # blank is not a successful analysis. Keep it retryable instead of
+            # persisting a misleading vlm_done row. This guard also protects
+            # alternate/test VLM implementations that bypass VLMClient's
+            # response validator.
+            await self._gate.report_failure()
+            await self._fail(record_id, retry_count, "VLM returned no descriptive text")
+            return
+        await self._gate.report_success()
         await self._db.save_description(
             record_id,
             text,

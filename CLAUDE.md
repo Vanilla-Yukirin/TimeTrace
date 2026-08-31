@@ -60,7 +60,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - **source_hash 重发**：父窗 source_hash 是子窗 Merkle，**只指纹指标/分类、不含叙述文本**；记录被重分类→叶子哈希变→冒泡→`upsert_summary` 重置 pending→重新叙述。注意：子窗叙述本身变了**不**触发父窗重做（已知缺口，目前只在手动 `--force` 下碰到）
 - **两个后台 loop**（`bootstrap.py`，均默认关）：`_rollup_loop`（`TIMETRACE_ROLLUP_ENABLED=1`，纯 SQL、不依赖 VLM）+ `_narrate_loop`（`TIMETRACE_NARRATE_ENABLED=1`，依赖 VLM）。轮询式：每 tick 每 grain 限 20 窗、间隔 `loop_interval_s` 配速单卡——为稳态设计，大积压排空时偏慢（可临时连续灌或调大 batch）。env 开关别加行内注释（`=1  # x` 会被当成值，`_env_truthy` 不认）
 - **暴露给 agent/MCP**：`search_summaries`（`agent/tools.py` + `mcp_layer/server.py`）——粗粒度总览→按返回的 `drill_down_grain` + 该窗 iso 区间换细 grain 下钻，**时间区间即父子链路**
-- **admin CLI**：`timetrace-server backfill <start> <end>`（建指标）、`narrate <start> <end> [--force] [--grains 1h,6h,day,week] [--max-tokens N]`（生成/重叙述；`--grains` 只重跑指定层）
+- **admin CLI**：`timetrace-server backfill <start> <end>`（建指标）、`narrate <start> <end> [--force] [--grains 1h,6h,day,week] [--max-tokens N]`（生成/重叙述；`--grains` 只重跑指定层）、`repair-data-quality [--apply]`（默认只审计；apply 先做在线 SQLite backup，再以单事务修复确定性元数据问题；不读取/删除截图）
 - **LM Studio 配置硬约束**（box 的 35B 端点，叙述/VLM/报告共用）：必须 **context ≥16384 + `max concurrent predictions`(=parallel)=1**。parallel 默认 4 会把 KV cache 等分成 1/4（4096→实际每请求 1024），叙述 prompt 立刻溢出。该 35B 是**永远思考**模型（`enable_thinking:false` 与 `/no_think` 实测都关不掉），思考算进输出 token → `max_tokens` 要给够（per-grain：5min 4000、聚合窗 6000-7000）。单卡 parallel=1 → 所有消费者（worker 图片分析 / 叙述 / 报告 / ask_agent）**FIFO 排队串行**，嵌入(nomic)是另一个模型、抢卡时会触发换模型 thrash
 
 **数据流挂钩**：
@@ -81,7 +81,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - **入口**：三个 `[project.scripts]`：
   - `timetrace` → `main.py:main` 单进程默认（pystray 主线程 + asyncio loop）
   - `timetrace-client` → `client/cli.py:main` 客户端守护；子命令 `init` (交互/--non-interactive)、`print-config`
-  - `timetrace-server` → `server/cli.py:main` 服务端守护；子命令 `info`、`tokens list/add/revoke`、`backfill <start> <end>`（建指标级联）、`narrate <start> <end> [--force] [--grains] [--max-tokens]`（生成/重叙述）—— 后两个见 admin_cmd.py
+  - `timetrace-server` → `server/cli.py:main` 服务端守护；子命令 `info`、`tokens list/add/revoke`、`backfill <start> <end>`（建指标级联）、`narrate <start> <end> [--force] [--grains] [--max-tokens]`（生成/重叙述）、`repair-data-quality [--apply]`（dry-run/备份后修复）—— 管理命令见 admin_cmd.py
   - main.py 与 server/cli.py 共享 `server/bootstrap.py`（build_server_components + serve(extra_tasks=...)），不会再次漂移
 - **三层目录**：`src/timetrace/{common,client,server}/`。配置在 `common/config.py` + `client/core/config.py`（ClientConfig 现在吃 storage/capture/privacy 三段，是双进程 client 的单一 source of truth；含 `apply_env_overrides()` 接 9 个 TIMETRACE_* env vars）；wire schema 在 `common/protocol.py`；capture / 托盘 / outbox / backend / init_cmd 在 `client/`；api / db / queue / blob / worker / vlm / phash / mcp / admin_cmd / bootstrap 在 `server/`。
 - **DB 路径**：`server/db/sqlite.py::SqliteDatabase`，`server/db/__init__.py` 导出 `Database = SqliteDatabase` 别名 —— 现在所有调用方都还是用 `from timetrace.server.db import Database`，PostgresDatabase 在 P5 进来时这条别名升级为 typing.Protocol。
@@ -90,6 +90,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
   - `HttpBackend`：POST `/v1/ingest/record` + `.../close`，双进程下底层 transport（支持 `data_dir` 相对路径解析、`auth_token` + `device_id` 双 header 注入）
   - `OutboxBackend`：把 capture 调用先 append 进 Outbox，由 `OutboxSender` 后台 drain 给 HttpBackend；已是 timetrace-client 默认 backend
 - **Outbox**：`client/core/outbox.py`，append-only `log.jsonl` + `blobs/` + `state.json`（atomic rename + fsync）。`_read_log` 对末尾 partial JSON 行容错。`OutboxSender` 严格 FIFO + 指数 backoff + 可选 token bucket 限速 + `compact_every_n_acks=200` inline compaction（crash-safe 顺序：state.acked=0 先于 log 重写，最坏 at-least-once replay）。
+- **活动区间不变量**：capture 的 1s loop 若出现 >5s monotonic gap（休眠/暂停），用 gap 前最后观测墙钟关闭旧 record，resume 新开；close 的可信时间随 Outbox 原样重放。DB 写边界拒绝负数或 >5min 区间，常驻维护 loop 每分钟回收 >5min open lease；历史异常只通过 `repair-data-quality --apply` 在一致性备份后显式修复，不再在 `db.init()` 静默改历史。
 - **Auth**：`server/auth.py::ServerAuth`，`load_or_generate()` 读 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600）或首启自动生成 `tt_live_<32urlbytes>`；`/v1/ingest/*` 与 `/mcp` 是 bearer-only，records/search/feedback 等浏览器业务路由要求 cookie 或 bearer principal，只有 `/healthz` 是公开探活。token CRUD 通过 `timetrace-server tokens` 子命令或 Web admin；CLI 改完重启 server 才生效。
 - **Ingest 路由幂等性**：`/v1/ingest/record` 用 `client_record_id` UNIQUE 索引做 record 级幂等；`screenshots(record_id, hash_sha256)` UNIQUE 索引做 screenshot 级幂等防 outbox at-least-once replay 双插。`/close` 路由按 server id 或 client_record_id 兜底，未知 id 返 404；blob 路径用 record.ts_start 算日期目录（不是上传时刻）。
 - **数据目录**：`%USERPROFILE%/TimeTraceData/`（不在仓库内）

@@ -211,6 +211,35 @@ async def test_parent_deferred_until_children_narrated(db):
     )
 
 
+async def test_save_narrative_keeps_single_current_fts_row(db):
+    ts = _ms(2001, 6, 9, 9, 0)
+    await _add(db, ts, 60_000, "Code", "main.py", "写代码", "work")
+    await MetricsCascadeBuilder(db, RollupConfig()).build_day(ts)
+    leaf = await db.get_summary("5min", scope_key(ts, "5min", CUT))
+
+    await db.save_summary_narrative(
+        leaf["id"],
+        description="第一次叙述",
+        evaluation="正常",
+        body_json='{"key_points": []}',
+    )
+    await db.save_summary_narrative(
+        leaf["id"],
+        description="第二次叙述",
+        evaluation="已更新",
+        body_json='{"key_points": []}',
+    )
+
+    async with db.conn.execute(
+        "SELECT description, evaluation FROM summaries_fts WHERE summary_id=?",
+        (leaf["id"],),
+    ) as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["description"] == "第二次叙述"
+    assert rows[0]["evaluation"] == "已更新"
+
+
 async def test_narrate_range_grains_filter(db):
     # grains filter restricts which layers get (re)narrated — used to redo only
     # parent layers after a backlog drain without touching the good leaves.

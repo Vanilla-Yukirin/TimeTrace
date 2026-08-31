@@ -67,6 +67,19 @@ async def test_submit_record_appends_ingest_entry(outbox):
     assert entries[0].thumb_bytes is None
 
 
+async def test_submit_record_preserves_explicit_observation_time(outbox):
+    observed_ms = 1_747_300_000_000
+    backend = OutboxBackend(outbox)
+    await backend.submit_record(
+        _CTX,
+        reason="heartbeat",
+        ts_start_ms=observed_ms,
+    )
+
+    entries = [entry async for entry in outbox.iter_pending()]
+    assert entries[0].payload["ts_start"] == observed_ms
+
+
 async def test_submit_record_returns_unique_client_record_ids(outbox):
     backend = OutboxBackend(outbox)
     a = await backend.submit_record(_CTX, reason="heartbeat")
@@ -219,6 +232,15 @@ async def test_close_record_appends_close_entry_with_ts_end(outbox):
     assert close_entry.payload["client_record_id"] == rid
     assert isinstance(close_entry.payload["ts_end"], int)
     assert close_entry.payload["ts_end"] > 0
+
+
+async def test_close_record_preserves_explicit_last_observed_time(outbox):
+    backend = OutboxBackend(outbox)
+    rid = await backend.submit_record(_CTX, reason="heartbeat")
+    await backend.close_record(rid, ts_end_ms=1_747_300_050_000)
+
+    entries = [e async for e in outbox.iter_pending()]
+    assert entries[1].payload["ts_end"] == 1_747_300_050_000
 
 
 # --------------------------------------------------------------------------- #

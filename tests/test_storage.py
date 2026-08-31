@@ -671,8 +671,8 @@ async def test_insert_closes_multiple_orphans_each_to_correct_boundary(db):
     assert c["ts_end"] == d["ts_start"]
 
 
-async def test_init_heals_orphan_with_successor_to_next_ts_start(tmp_path):
-    """Layer 2: db.init() repairs historical orphans whose successor exists."""
+async def test_activity_lease_expiry_heals_orphan_with_successor(tmp_path):
+    """Online lease expiry repairs an orphan from its same-device successor."""
     cfg = StorageConfig(data_dir=tmp_path)
     db1 = Database(cfg)
     await db1.init()
@@ -685,10 +685,12 @@ async def test_init_heals_orphan_with_successor_to_next_ts_start(tmp_path):
     await db1.conn.commit()
     await db1.close()
 
-    # Re-open: init() heals A.
+    # Re-open alone is read-only for activity history. The recurring lease
+    # expiry used by the server performs the deterministic transition.
     db2 = Database(cfg)
     await db2.init()
     try:
+        await db2.expire_stale_open_records(now_ms=10_000_000)
         async with db2.conn.execute("SELECT ts_end FROM records WHERE id=?", (rid_a,)) as cur:
             a_end = (await cur.fetchone())["ts_end"]
         async with db2.conn.execute("SELECT ts_start FROM records WHERE id=?", (rid_b,)) as cur:
@@ -698,7 +700,7 @@ async def test_init_heals_orphan_with_successor_to_next_ts_start(tmp_path):
         await db2.close()
 
 
-async def test_init_zeroes_orphan_when_successor_gap_is_too_large(tmp_path):
+async def test_activity_lease_expiry_zeroes_orphan_when_successor_is_too_late(tmp_path):
     """Historical orphans with day-sized gaps should render as points, not bars."""
     cfg = StorageConfig(data_dir=tmp_path)
     db1 = Database(cfg)
@@ -718,6 +720,7 @@ async def test_init_zeroes_orphan_when_successor_gap_is_too_large(tmp_path):
     db2 = Database(cfg)
     await db2.init()
     try:
+        await db2.expire_stale_open_records(now_ms=10_000_000)
         async with db2.conn.execute(
             "SELECT ts_start, ts_end FROM records WHERE id=?", (rid_a,)
         ) as cur:
@@ -727,8 +730,8 @@ async def test_init_zeroes_orphan_when_successor_gap_is_too_large(tmp_path):
         await db2.close()
 
 
-async def test_init_caps_existing_implausibly_long_closed_record(tmp_path):
-    """Rows already closed by older builds must be cleaned up on startup too."""
+async def test_explicit_quality_repair_fixes_existing_long_closed_record(tmp_path):
+    """Historical closed spans are changed only by the explicit repair command."""
     cfg = StorageConfig(data_dir=tmp_path)
     db1 = Database(cfg)
     await db1.init()
@@ -744,6 +747,9 @@ async def test_init_caps_existing_implausibly_long_closed_record(tmp_path):
     db2 = Database(cfg)
     await db2.init()
     try:
+        before = await db2.inspect_data_quality(now_ms=10_000_000)
+        assert before["invalid_closed_spans"] == 1
+        await db2.repair_data_quality(now_ms=10_000_000)
         async with db2.conn.execute(
             "SELECT ts_start, ts_end FROM records WHERE id=?", (rid,)
         ) as cur:
@@ -753,8 +759,8 @@ async def test_init_caps_existing_implausibly_long_closed_record(tmp_path):
         await db2.close()
 
 
-async def test_init_heals_latest_orphan_with_no_successor_to_zero_duration(tmp_path):
-    """Layer 2: orphan with no successor gets ts_end == ts_start (zero-duration),
+async def test_activity_lease_expiry_zeroes_latest_orphan_without_successor(tmp_path):
+    """An expired orphan with no successor gets ts_end == ts_start,
     NOT updated_at — that would point at when VLM completed days later."""
     cfg = StorageConfig(data_dir=tmp_path)
     db1 = Database(cfg)
@@ -773,6 +779,7 @@ async def test_init_heals_latest_orphan_with_no_successor_to_zero_duration(tmp_p
     db2 = Database(cfg)
     await db2.init()
     try:
+        await db2.expire_stale_open_records(now_ms=10_000_000)
         async with db2.conn.execute(
             "SELECT ts_start, ts_end FROM records WHERE id=?", (rid_a,)
         ) as cur:
@@ -921,3 +928,45 @@ async def test_close_open_records_before_returns_zero_when_clean(db):
 
     async with db.conn.execute("SELECT ts_end FROM records WHERE id=?", (rid,)) as cur:
         assert (await cur.fetchone())["ts_end"] is None
+
+
+async def test_close_record_rejects_unobserved_long_span(db):
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    start = 1_747_300_000_000
+    rid = await db.insert_record(ctx, reason="heartbeat", ts_start=start)
+
+    assert await db.close_record(rid, ts_end=start + _MAX_ORPHAN_BRIDGE_MS + 1)
+    row = await db.get_record_by_id(rid)
+    assert row["ts_end"] == start
+
+
+async def test_invalid_late_close_preserves_existing_plausible_boundary(db):
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    start = 1_747_300_000_000
+    rid = await db.insert_record(ctx, reason="heartbeat", ts_start=start)
+    await db.close_record(rid, ts_end=start + 30_000)
+
+    await db.close_record(rid, ts_end=start + 12 * 3600_000)
+    row = await db.get_record_by_id(rid)
+    assert row["ts_end"] == start + 30_000
+
+
+async def test_vlm_success_clears_retry_error_metadata(db):
+    ctx = CaptureContext(app_name="A", process_name="a", window_title="a")
+    rid = await db.insert_record(ctx, reason="heartbeat")
+    await db.mark_pending(rid)
+    await db.mark_error_retryable(rid, "temporary", 1, int(time.time() * 1000) + 60_000)
+
+    await db.transition(rid, "vlm_done")
+    async with db.conn.execute(
+        "SELECT error_code, error_msg, next_retry_at, locked_at FROM analysis_results "
+        "WHERE record_id=?",
+        (rid,),
+    ) as cur:
+        row = await cur.fetchone()
+    assert dict(row) == {
+        "error_code": None,
+        "error_msg": None,
+        "next_retry_at": None,
+        "locked_at": None,
+    }

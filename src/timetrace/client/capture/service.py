@@ -23,6 +23,11 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# The loop normally observes the foreground once per second. A larger gap means
+# the process was suspended, starved, or the machine slept; wall time across
+# that gap is not observed activity and must never be assigned to a record.
+_MAX_CONTINUOUS_OBSERVATION_GAP_S = 5.0
+
 
 class CaptureService:
     """Lightweight capture loop: window events + periodic key-frame screenshots."""
@@ -55,6 +60,8 @@ class CaptureService:
         self._last_record_id: str | None = None
         self._is_idle: bool = False
         self._pending_screenshot_task: asyncio.Task | None = None
+        self._last_tick_monotonic: float | None = None
+        self._last_tick_wall_ms: int | None = None
 
         # Track the previous window to detect switches
         self._prev_hwnd: int | None = None
@@ -71,14 +78,27 @@ class CaptureService:
                 await asyncio.sleep(1.0)
         finally:
             if self._last_record_id:
-                await self._safe_close_record(self._last_record_id, where="shutdown")
+                # Shutdown can be delivered immediately after a long suspend,
+                # before another tick gets a chance to detect the gap. Close at
+                # the last observed wall time, never at an unobserved "now".
+                await self._safe_close_record(
+                    self._last_record_id,
+                    where="shutdown",
+                    ts_end_ms=self._last_tick_wall_ms,
+                )
             # Use a daemon thread so that a hung pynput stop() cannot prevent
             # the process from exiting.  The default executor uses non-daemon
             # threads, which would block process exit if stop() stalls.
             threading.Thread(target=self._idle.stop, name="idle-stop", daemon=True).start()
             await self._cancel_pending_screenshot()
 
-    async def _safe_close_record(self, record_id: str, *, where: str) -> None:
+    async def _safe_close_record(
+        self,
+        record_id: str,
+        *,
+        where: str,
+        ts_end_ms: int | None,
+    ) -> None:
         """Close a record, logging+swallowing any error.
 
         The capture loop must survive a single failed close — backend hiccups
@@ -88,7 +108,7 @@ class CaptureService:
         heartbeat) when post-mortem'ing logs.
         """
         try:
-            await self._backend.close_record(record_id)
+            await self._backend.close_record(record_id, ts_end_ms=ts_end_ms)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "capture.close_record_failed",
@@ -99,6 +119,31 @@ class CaptureService:
 
     async def _tick(self) -> None:
         now = time.monotonic()
+        wall_ms = int(time.time() * 1000)
+
+        # Detect discontinuity BEFORE idle/window handling. On Windows a wake
+        # input can reset IdleDetector before this coroutine runs, so idle time
+        # alone cannot reliably tell us the machine slept. The event-loop gap is
+        # the direct observation: nothing was sampled between these two ticks.
+        if (
+            self._last_tick_monotonic is not None
+            and now - self._last_tick_monotonic > _MAX_CONTINUOUS_OBSERVATION_GAP_S
+        ):
+            gap_s = now - self._last_tick_monotonic
+            if self._last_record_id:
+                await self._safe_close_record(
+                    self._last_record_id,
+                    where="observation_gap",
+                    ts_end_ms=self._last_tick_wall_ms,
+                )
+            self._last_record_id = None
+            self._prev_hwnd = None
+            self._prev_app = ""
+            await self._cancel_pending_screenshot()
+            logger.info("capture.observation_gap", gap_s=round(gap_s, 3))
+
+        self._last_tick_monotonic = now
+        self._last_tick_wall_ms = wall_ms
         idle_s = self._idle.idle_seconds
 
         # --- Idle state transitions ---
@@ -106,7 +151,11 @@ class CaptureService:
             if not self._is_idle:
                 self._is_idle = True
                 if self._last_record_id:
-                    await self._safe_close_record(self._last_record_id, where="idle_start")
+                    await self._safe_close_record(
+                        self._last_record_id,
+                        where="idle_start",
+                        ts_end_ms=wall_ms,
+                    )
                     self._last_record_id = None
                 logger.info("capture.idle_start", idle_s=idle_s)
             return  # Don't capture while idle
@@ -134,9 +183,16 @@ class CaptureService:
         window_switched = win.hwnd != self._prev_hwnd and win.hwnd != 0
         if window_switched:
             if self._last_record_id:
-                await self._safe_close_record(self._last_record_id, where="window_switch")
+                await self._safe_close_record(
+                    self._last_record_id,
+                    where="window_switch",
+                    ts_end_ms=wall_ms,
+                )
             record_id = await self._backend.submit_record(
-                ctx, reason="switch", event_type="window_switch"
+                ctx,
+                reason="switch",
+                event_type="window_switch",
+                ts_start_ms=wall_ms,
             )
             self._notify_capture("window_switch")
 
@@ -160,9 +216,16 @@ class CaptureService:
         elapsed = now - self._last_capture_ts
         if elapsed >= self._cfg.max_capture_interval_s:
             if self._last_record_id:
-                await self._safe_close_record(self._last_record_id, where="heartbeat")
+                await self._safe_close_record(
+                    self._last_record_id,
+                    where="heartbeat",
+                    ts_end_ms=wall_ms,
+                )
             record_id = await self._backend.submit_record(
-                ctx, reason="heartbeat", event_type="heartbeat"
+                ctx,
+                reason="heartbeat",
+                event_type="heartbeat",
+                ts_start_ms=wall_ms,
             )
             self._notify_capture("heartbeat")
             await self._save_screenshot(record_id, win.hwnd, now)
