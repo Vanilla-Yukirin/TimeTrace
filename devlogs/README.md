@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-08-31
+**最后更新：** 2026-09-01
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -116,7 +116,10 @@ devlogs/
 | [archive-202608230250-timetrace-docker-rollout.md](infra/archive-202608230250-timetrace-docker-rollout.md) | 阶段性会话归档：厘清部署错位后转向 Docker；其中 Actions 入站 SSH/四 job 等结论已由下一条追加归档纠正 |
 | [archive-202608231819-pull-based-docker-release-correction.md](infra/archive-202608231819-pull-based-docker-release-correction.md) | 追加纠正最终发布模型：Actions 只发布不可变 GHCR 制品，部署机以独占锁主动拉取并完成原子切换与完整回滚，不再依赖 CI 入站 SSH |
 | [archive-202608232320-pull-based-docker-production-acceptance.md](infra/archive-202608232320-pull-based-docker-production-acceptance.md) | PR #4 合并后的首次正式 pull-based 发布验收：main/deploy 同指 `e8b2cae`，GHCR 制品发布、主机主动更新、同 SHA server+SPA、本机 nginx、公网与 LM Studio 链路全部通过；生产故障注入单独延期 |
+| [archive-202608240041-docker-lmstudio-operations.md](infra/archive-202608240041-docker-lmstudio-operations.md) | 移除 Actions 入站依赖，发布 pull-based Docker 并切换 Gemma；保留 GUI/llmster 互斥模式 |
+| [archive-202608250055-windows-client-installer.md](infra/archive-202608250055-windows-client-installer.md) | 源码托盘缺失且首装崩溃；修复 Uvicorn/pystray，完成安装与更新验收 |
 | [archive-202608260230-windows-client-release-acceptance.md](infra/archive-202608260230-windows-client-release-acceptance.md) | Windows 当前用户安装包发布验收：PyInstaller windowless EXE、原子更新、登录自启动、托盘/本地控制台、断网 Outbox 恢复及公网截图落库均通过自动化或运行态证据；代码签名、Release 制品和自动更新仍延期 |
+| [archive-202608260333-windows-client-release-closure.md](infra/archive-202608260333-windows-client-release-closure.md) | 安装版验收后修复生命周期 review、合并 PR #8 并启用登录自启动；确认运行闭环并厘清遗留 worktree 与分支 |
 
 ---
 
