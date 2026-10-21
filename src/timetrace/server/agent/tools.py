@@ -26,6 +26,7 @@ import structlog
 # query_stats instead, because server/summary/metrics.py imports THIS module
 # (_clamped_dur_sql/_UNCLASSIFIED) — a top-level import there would be circular.
 from timetrace.server.summary.windows import CHILD_OF, GRAINS, scope_key, window_bounds
+from timetrace.server.tz import format_ms, from_local, to_local, view_tz, view_tz_name
 
 if TYPE_CHECKING:
     from timetrace.server.db import Database
@@ -82,7 +83,7 @@ def ms_to_iso(ms: int | None) -> str:
     """epoch-ms → ISO 8601 local-tz, sortable + human-readable."""
     if ms is None:
         return ""
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ms / 1000))
+    return format_ms(ms, tz=view_tz())
 
 
 def format_record_for_llm(r: dict, *, desc_chars: int = 160) -> str:
@@ -330,8 +331,11 @@ _VALID_PERIODS = ("today", "this_week", "this_month", "custom")
 
 
 def _parse_iso_local(s: str) -> int:
-    """Parse 'YYYY-MM-DD[ T]HH:MM[:SS]' as LOCAL time → epoch-ms."""
-    return int(_dt.datetime.fromisoformat(s.strip()).timestamp() * 1000)
+    """Parse 'YYYY-MM-DD[ T]HH:MM[:SS]' in the view zone → epoch-ms.
+
+    An explicit offset in the string (``…+09:00`` / ``Z``) wins over the zone.
+    """
+    return from_local(_dt.datetime.fromisoformat(s.strip()), view_tz())
 
 
 def _period_bounds(
@@ -346,13 +350,21 @@ def _period_bounds(
         if end_ms <= start_ms:
             raise ValueError("end_iso must be after start_iso")
         return start_ms, end_ms
+    # Named periods are civil periods in the caller's view zone (the browser's,
+    # when it sent one). When that zone equals the pyramid zone these bounds
+    # coincide with stored day/week windows and query_stats can use the digest.
+    tz = view_tz()
     if period == "today":
-        return window_bounds(now, "day", cut_hour)[0], now
+        return window_bounds(now, "day", cut_hour, tz=tz)[0], now
     if period == "this_week":
-        return window_bounds(now, "week", cut_hour)[0], now
+        return window_bounds(now, "week", cut_hour, tz=tz)[0], now
     if period == "this_month":
-        d = _dt.datetime.fromtimestamp(now / 1000)
-        return int(_dt.datetime(d.year, d.month, 1, cut_hour).timestamp() * 1000), now
+        d = to_local(now, tz)
+        first = d.replace(day=1, hour=cut_hour, minute=0, second=0, microsecond=0)
+        if first > d:  # before the cut on the 1st → still last month's logical span
+            prev = (first - _dt.timedelta(days=1)).replace(day=1)
+            first = prev
+        return from_local(first, tz), now
     raise ValueError(f"unknown period: {period}")
 
 
@@ -480,6 +492,7 @@ async def query_stats(
         "source": source,
         "period_start_iso": ms_to_iso(start_ms),
         "period_end_iso": ms_to_iso(end_ms),
+        "timezone": view_tz_name(),
         "capped_per_record_seconds": _MAX_PLAUSIBLE_RECORD_MS // 1000,
         "semantics": _duration_semantics(metric),
     }
@@ -592,6 +605,7 @@ async def search_summaries(
         "period": period,
         "period_start_iso": ms_to_iso(start_ms),
         "period_end_iso": ms_to_iso(end_ms),
+        "timezone": view_tz_name(),
         "count": len(items),
         "items": items,
         "note": (

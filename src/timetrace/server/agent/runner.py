@@ -32,6 +32,7 @@ import structlog
 from openai import AsyncOpenAI
 
 from timetrace.server.agent import tools as agent_tools
+from timetrace.server.tz import format_ms, view_tz, view_tz_name
 
 if TYPE_CHECKING:
     from timetrace.common.config import VLMConfig
@@ -136,7 +137,7 @@ class AgentRunner:
     ) -> AsyncIterator[dict]:
         """Drive the loop, yielding event dicts. ``messages`` is the chat history
         ([{role, content}, ...]); the latest user message is last."""
-        now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        now = f"{format_ms(int(time.time() * 1000), tz=view_tz())}（{view_tz_name()}）"
         if self._system_prompt is not None:
             system_content = f"{self._system_prompt}\n\n当前时间：{now}。"
         else:

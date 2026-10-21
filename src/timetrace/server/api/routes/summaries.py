@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import time
 
 from fastapi import APIRouter, Request
 
 from timetrace.server.summary.windows import GRAINS
+from timetrace.server.tz import from_local, server_tz, to_local, view_tz, view_tz_name
 
 router = APIRouter(tags=["summaries"])
 
@@ -24,16 +26,18 @@ _CUT_HOUR = 4
 
 
 def _day_bounds(day: str | None) -> tuple[int, int, str]:
-    """Resolve a 'YYYY-MM-DD' (or None=today) to the [4AM, next 4AM) logical day."""
+    """Resolve a 'YYYY-MM-DD' (or None=today) to the [4AM, next 4AM) logical day
+    in the request's view zone (see server/tz.py)."""
+    tz = view_tz()
     if day:
         d = _dt.date.fromisoformat(day)
     else:
-        now = _dt.datetime.now()
+        now = to_local(int(time.time() * 1000), tz)
         # before the cut, "today" is still the previous logical day
         d = (now - _dt.timedelta(hours=_CUT_HOUR)).date()
     start = _dt.datetime(d.year, d.month, d.day, _CUT_HOUR)
-    start_ms = int(start.timestamp() * 1000)
-    end_ms = int((start + _dt.timedelta(days=1)).timestamp() * 1000)
+    start_ms = from_local(start, tz)
+    end_ms = from_local(start + _dt.timedelta(days=1), tz)
     return start_ms, end_ms, d.isoformat()
 
 
@@ -76,5 +80,9 @@ async def summaries_for_day(request: Request, day: str | None = None) -> dict:
         "day": day_iso,
         "day_start": start_ms,
         "day_end": end_ms,
+        "timezone": view_tz_name(),
+        # Zone the stored windows were cut in; when it differs from ``timezone``
+        # the 6h/day/week windows straddle this day's edges.
+        "pyramid_timezone": (server_tz().key if server_tz() else None),
         "grains": grains,
     }

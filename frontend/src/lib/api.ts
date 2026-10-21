@@ -49,6 +49,23 @@ export function broadcastKick(): void {
   }
 }
 
+/** The browser's IANA time zone (e.g. 'Asia/Tokyo'). Storage is UTC epoch ms;
+ *  the server uses this zone for "today"/"this week" bounds and for the local
+ *  times it writes into agent/report text, so they match what this page shows. */
+export function browserTimeZone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null
+  } catch {
+    return null
+  }
+}
+
+/** Headers every API request carries: currently just the view time zone. */
+export function tzHeaders(): Record<string, string> {
+  const tz = browserTimeZone()
+  return tz ? { 'X-Timezone': tz } : {}
+}
+
 /** The ONE fetch wrapper every API call must go through. Centralizes:
  *  - credentials:'include' (send the HttpOnly session cookie)
  *  - 401 → broadcastKick() + UnauthorizedError (so AuthContext/RequireAuth
@@ -61,8 +78,8 @@ export function broadcastKick(): void {
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const isStringBody = typeof init?.body === 'string'
   const baseHeaders: Record<string, string> = isStringBody
-    ? { 'Content-Type': 'application/json' }
-    : {}
+    ? { 'Content-Type': 'application/json', ...tzHeaders() }
+    : tzHeaders()
   const res = await fetch(path, {
     // Same-origin in prod (front + back at timetrace.yukirin.me), Vite proxy
     // in dev (5173 → 8765 — proxy forwards cookies natively).

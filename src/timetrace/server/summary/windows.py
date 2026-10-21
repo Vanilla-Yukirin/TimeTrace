@@ -7,9 +7,11 @@ load-bearing layer from semantic episodes to fixed time windows: there is no
 boundary-detection knob (γ) to mis-tune — windows are a dead-simple grid, so
 the cascade is deterministic and idempotent (window ⇒ key).
 
-Local civil time is used throughout (mirrors the rest of the codebase, which
-uses ``time.localtime`` for day grouping). DST is NOT handled — the deployment
-target (Asia/Shanghai) has none; revisit if a DST locale ever matters.
+Civil time is the *pyramid zone*: :func:`timetrace.server.tz.server_tz`
+(``TIMETRACE_TZ``, else the process local zone). The stored grid never follows a
+request's view zone. Read paths that need bounds in another zone pass ``tz=``
+explicitly. Aware ``zoneinfo`` datetimes add timedeltas in wall-clock terms, so
+a "day" is the civil day even across a DST change.
 
 Grain ladder, fine → coarse::
 
@@ -23,6 +25,11 @@ also align to the logical day). ``6h`` / ``day`` / ``week`` anchor to the
 from __future__ import annotations
 
 import datetime as _dt
+from zoneinfo import ZoneInfo
+
+from timetrace.server.tz import server_tz
+
+_SERVER = object()  # sentinel: "use the pyramid zone"
 
 # Fine → coarse. Mirrors RollupConfig.grains.
 GRAINS: tuple[str, ...] = ("5min", "1h", "6h", "day", "week")
@@ -41,9 +48,16 @@ PARENT_OF: dict[str, str | None] = {
 _FIXED_MINUTES = {"5min": 5, "1h": 60}
 
 
-def _local(ts_ms: int) -> _dt.datetime:
-    """epoch-ms → naive local-time datetime (mirrors time.localtime usage)."""
-    return _dt.datetime.fromtimestamp(ts_ms / 1000)
+def _zone(tz: ZoneInfo | None | object) -> ZoneInfo | None:
+    return server_tz() if tz is _SERVER else tz  # type: ignore[return-value]
+
+
+def _local(ts_ms: int, tz: ZoneInfo | None | object = _SERVER) -> _dt.datetime:
+    """epoch-ms → civil datetime in ``tz`` (naive process-local when the zone is None)."""
+    zone = _zone(tz)
+    if zone is None:
+        return _dt.datetime.fromtimestamp(ts_ms / 1000)
+    return _dt.datetime.fromtimestamp(ts_ms / 1000, zone)
 
 
 def _ms(dt: _dt.datetime) -> int:
@@ -63,19 +77,21 @@ def _logical_day_start(dt: _dt.datetime, cut_hour: int) -> _dt.datetime:
     return anchor
 
 
-def day_local(ts_ms: int, cut_hour: int = 4) -> str:
+def day_local(ts_ms: int, cut_hour: int = 4, *, tz: ZoneInfo | None | object = _SERVER) -> str:
     """``'YYYY-MM-DD'`` logical-day key for ``ts_ms`` under the 4AM cut."""
-    return _logical_day_start(_local(ts_ms), cut_hour).strftime("%Y-%m-%d")
+    return _logical_day_start(_local(ts_ms, tz), cut_hour).strftime("%Y-%m-%d")
 
 
-def window_bounds(ts_ms: int, grain: str, cut_hour: int = 4) -> tuple[int, int]:
+def window_bounds(
+    ts_ms: int, grain: str, cut_hour: int = 4, *, tz: ZoneInfo | None | object = _SERVER
+) -> tuple[int, int]:
     """Return ``(start_ms, end_ms)`` of the ``grain`` window containing ``ts_ms``.
 
     Intervals are half-open ``[start, end)`` so the windows of a grain TILE the
     timeline without overlap — every frame falls in exactly one window per
     grain, which is what makes the cascade's SUM-invariant hold.
     """
-    dt = _local(ts_ms)
+    dt = _local(ts_ms, tz)
     if grain in _FIXED_MINUTES:
         step = _FIXED_MINUTES[grain]
         if grain == "5min":
@@ -98,15 +114,17 @@ def window_bounds(ts_ms: int, grain: str, cut_hour: int = 4) -> tuple[int, int]:
     raise ValueError(f"unknown grain: {grain}")
 
 
-def scope_key(ts_ms: int, grain: str, cut_hour: int = 4) -> str:
+def scope_key(
+    ts_ms: int, grain: str, cut_hour: int = 4, *, tz: ZoneInfo | None | object = _SERVER
+) -> str:
     """Deterministic, human-readable window key (also the UNIQUE idempotency key).
 
     ``5min`` → ``'2026-06-09T18:25'``, ``1h`` → ``'2026-06-09T18'``,
     ``6h`` → ``'2026-06-09T2'`` (0..3 block within the logical day),
     ``day`` → ``'2026-06-09'``, ``week`` → ``'2026-W23'`` (ISO week).
     """
-    start_ms, _ = window_bounds(ts_ms, grain, cut_hour)
-    start = _local(start_ms)
+    start_ms, _ = window_bounds(ts_ms, grain, cut_hour, tz=tz)
+    start = _local(start_ms, tz)
     if grain == "5min":
         return start.strftime("%Y-%m-%dT%H:%M")
     if grain == "1h":

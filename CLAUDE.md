@@ -75,6 +75,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - 前端**不被** Python 后端托管。`/thumbs/{path}` 与 `/blob/{path}` 是受 `require_principal` 保护的 `FileResponse` 路由，不是裸 `StaticFiles`；前端开发时由 Vite 代理 API，生产静态文件由 `yukirin-server` 的 loopback-only nginx 托管
 - 缩略图 URL 模式：`/thumbs/{path.replace(/\\/g, '/')}`（windows 反斜杠转正斜杠）
 - 列表项已包含 `vlm_desc / category_final / app_name / window_title / url`，详情切换无需再请求
+- **时区契约**：存储 UTC epoch ms；SPA 每个请求带 `X-Timezone`（浏览器 IANA 时区），服务端 `server/tz.py` 用它算「今天/本周」边界与 LLM 可读时刻，缺省回退 `TIMETRACE_TZ`→进程本地；金字塔窗口只按服务端时区切。不写死偏移，见 [infra/architecture/api-server.md](infra/architecture/api-server.md)
 
 ## 项目约定
 
