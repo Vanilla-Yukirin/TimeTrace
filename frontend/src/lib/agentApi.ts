@@ -1,6 +1,8 @@
 // Agent chat (SSE streaming) + AI insight dashboard (reports) API client.
 // Mirrors lib/api.ts conventions: API_BASE prefix, cookie auth via credentials.
 
+import { tzHeaders } from './api'
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
 export interface Usage {
@@ -32,7 +34,7 @@ async function* postSSE<T>(
 ): AsyncGenerator<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...tzHeaders() },
     credentials: 'include',
     body: JSON.stringify(body),
     signal,
@@ -153,7 +155,7 @@ export const reportsApi = {
   async latest(scope: string): Promise<Report | null> {
     const res = await fetch(
       `${API_BASE}/v1/reports/latest?scope=${encodeURIComponent(scope)}`,
-      { credentials: 'include' },
+      { credentials: 'include', headers: tzHeaders() },
     )
     if (res.status === 404) return null
     if (!res.ok) {
@@ -166,7 +168,7 @@ export const reportsApi = {
   async generate(scope: string): Promise<Report> {
     const res = await fetch(`${API_BASE}/v1/reports/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...tzHeaders() },
       credentials: 'include',
       body: JSON.stringify({ scope }),
     })

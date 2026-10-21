@@ -36,6 +36,7 @@ from timetrace.server.api.routes import (
 from timetrace.server.api.routes import auth as auth_routes
 from timetrace.server.auth import make_bearer_dependency
 from timetrace.server.mcp_layer.server import build_mcp_server
+from timetrace.server.tz import TimezoneMiddleware
 
 _logger = structlog.get_logger(__name__)
 
@@ -218,5 +219,10 @@ def create_app(
                             status_code=403,
                         )
             return await call_next(request)
+
+    # Outermost: bind the request's view time zone (X-Timezone / ?tz=) before
+    # any other middleware spawns a task, so every layer — routes, /mcp, SSE
+    # bodies — sees the same zone. See server/tz.py.
+    app.add_middleware(TimezoneMiddleware)
 
     return app

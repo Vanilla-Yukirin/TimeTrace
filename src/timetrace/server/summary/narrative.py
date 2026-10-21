@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from typing import TYPE_CHECKING, Protocol
 
 import structlog
@@ -28,6 +27,7 @@ from timetrace.server.db.sqlite import UNKNOWN_DEVICE
 from timetrace.server.llm_log import timed_chat_completion
 from timetrace.server.summary.metrics import active_wall_ms
 from timetrace.server.summary.windows import CHILD_OF, GRAINS
+from timetrace.server.tz import format_ms, server_tz
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -129,7 +129,8 @@ def _est_tokens(text: str) -> int:
 
 
 def _fmt_hm(ms: int) -> str:
-    return time.strftime("%H:%M", time.localtime(ms / 1000))
+    # Narratives are stored, so they speak the pyramid zone, not a viewer's.
+    return format_ms(ms, "%H:%M", tz=server_tz())
 
 
 _UNKNOWN_DEVICE_LABEL = "未知设备"

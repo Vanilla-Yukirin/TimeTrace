@@ -57,6 +57,8 @@ claude mcp add --transport http timetrace \
 
 URL 末尾的 `/` 不能省（服务端 streamable handler 挂在 mount 根）。
 
+可选再加一个 `X-Timezone: Asia/Tokyo` 这样的 IANA 时区请求头：工具里的「今天/本周」边界和返回的本地时刻都会按这个时区计算；不加时按服务端 `TIMETRACE_TZ`。存储始终是 UTC epoch ms。
+
 ## 可用工具（6 个）
 
 ### 只读

@@ -33,6 +33,7 @@ from openai import AsyncOpenAI
 
 from timetrace.server.agent import tools as agent_tools
 from timetrace.server.llm_log import timed_chat_completion
+from timetrace.server.tz import format_ms, view_tz
 
 if TYPE_CHECKING:
     from timetrace.common.config import VLMConfig
@@ -73,10 +74,10 @@ _MCP_ALLOWED_ORIGINS = [
 
 
 def _ms_to_iso(ms: int | None) -> str:
-    """epoch-ms → ISO 8601 local-tz, sortable + human-readable."""
+    """epoch-ms → 'YYYY-MM-DD HH:MM:SS' in the request's view zone."""
     if ms is None:
         return ""
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ms / 1000))
+    return format_ms(ms, tz=view_tz())
 
 
 def _format_record_for_llm(r: dict) -> str:

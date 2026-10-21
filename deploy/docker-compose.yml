@@ -14,6 +14,7 @@ services:
     environment:
       HOME: /home/timetrace
       TZ: "${TIMETRACE_TZ:-Asia/Shanghai}"
+      TIMETRACE_TZ: "${TIMETRACE_TZ:-Asia/Shanghai}"
     volumes:
       - type: bind
         source: "${TIMETRACE_DATA_DIR:-/home/vanilla/TimeTraceData}"

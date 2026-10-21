@@ -112,6 +112,14 @@
 
 ---
 
+## 时区契约（2026-10 W3）
+
+- 存储一律 UTC epoch ms；`/v1/records` 等接口的 `start`/`end` 本身就是 epoch，与时区无关。
+- 涉及「今天 / 本周 / 本月 / `YYYY-MM-DD` 日界 / 给 LLM 看的本地时刻」的路径使用**视图时区**：请求头 `X-Timezone` 或查询参数 `tz`（IANA 名，后者优先）；非法值返回 400。由 `server/tz.py::TimezoneMiddleware`（纯 ASGI、最外层）绑定到 contextvar，覆盖普通路由、`/mcp` 子应用和 SSE 流。
+- 未携带时回退 `TIMETRACE_TZ`，再回退进程本地时区（即旧行为）。
+- SPA 通过 `lib/api.ts::tzHeaders()` 在所有请求上携带浏览器时区，显示也按浏览器时区。
+- 金字塔是存储的派生层，6h/day/week 窗按 `TIMETRACE_TZ`（服务端时区）切；`/v1/summaries` 响应同时返回 `timezone` 与 `pyramid_timezone`，两者不同时粗粒度窗会跨越视图日边界。叙述文本里的时刻也是金字塔时区。
+
 ## `/v1/records` 参数
 
 ```
