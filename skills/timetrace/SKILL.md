@@ -59,7 +59,7 @@ URL 末尾的 `/` 不能省（服务端 streamable handler 挂在 mount 根）�
 
 可选再加一个 `X-Timezone: Asia/Tokyo` 这样的 IANA 时区请求头：工具里的「今天/本周」边界和返回的本地时刻都会按这个时区计算；不加时按服务端 `TIMETRACE_TZ`。存储始终是 UTC epoch ms。
 
-## 可用工具（6 个）
+## 可用工具（10 个）
 
 ### 只读
 
@@ -70,6 +70,12 @@ URL 末尾的 `/` 不能省（服务端 streamable handler 挂在 mount 根）�
 - **`get_app_breakdown(period=None, hours_back=24, top_n=20)`** — 统计每个应用的累计活跃时长（秒），降序。回答 **"在 X 上花了多久"** 用它。「今天/本周/本月」传 `period=today/this_week/this_month`（按请求时区的自然日，4 点切日）；`hours_back` 只表示滚动的最近 N 小时。`get_category_stats` 同样支持 `period`。
 
 - **`get_category_stats(hours_back=24, top_n=20)`** — 统计某时间窗内每个**分类**（AI 自动打的标签，如 `work` 工作、`entertainment` 娱乐）的累计时长（秒）。回答 **"我把时间花在哪类事情上"** 用它。还没分类的记录归入 `uncategorized`。
+
+- **`search_summaries(grain="day", period="today", query=None)`** — 读「金字塔」叙述层（每个时间窗的流水账 / 重点 / 评价，`5min→1h→6h→day→week`）。**问"那天/那周在做什么"先用它**：粗粒度总览后，按返回的 `drill_down_grain` + 该窗起止（`period="custom"`）下钻。
+
+- **`query_stats(metric, period="today", device_id=None)`** — 按自然时段聚合：`seconds_by_category` / `seconds_by_app` / `seconds_by_device` / `active_seconds`（墙钟并集，多设备并行只算一次）/ `record_count`。
+
+- **`list_devices()`** — 列出采集设备（`device_id`、名称、用户写的设备描述）。问题涉及"办公电脑""家里那台"时先用它拿到 `device_id`；`search_activity` / `get_recent_activity` / `get_app_breakdown` / `get_category_stats` / `query_stats` 都接受可选 `device_id`（`_unknown_device` = 设备身份上线前的旧记录），不传 = 全部设备。
 
 - **`ask_agent(question, hours_back=24)`** — 让 TimeTrace 服务端**自带的本地大模型**跑一遍与 Web 聊天相同的工具循环（先读摘要、再统计/检索）后给出自然语言回答。比直接调具体工具慢（单卡多轮），只想要快速总结时用它。
 
@@ -91,6 +97,7 @@ URL 末尾的 `/` 不能省（服务端 streamable handler 挂在 mount 根）�
 
 ## 注意
 
-- 时区按服务端本地时区；ISO 时间串形如 `2026-06-01 14:30:00`。
+- 时区按请求头 `X-Timezone`，没传则按服务端时区；ISO 时间串形如 `2026-06-01 14:30:00`。
+- 多台设备同时在用时，按分类/应用/设备相加的时长会超过实际经过时间；"总共用了多久"用 `query_stats(metric="active_seconds")`。
 - 数据不足以回答时**如实说明**，不要硬凑。
 - 涉及隐私：这些是用户本人电脑上的真实活动记录，回答时尊重、克制，别外传。

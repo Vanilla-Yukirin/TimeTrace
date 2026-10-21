@@ -344,6 +344,23 @@ _FTS_MIN_LEN = 3
 # ``records.device_id``). Never guessed onto a real device.
 UNKNOWN_DEVICE = "_unknown_device"
 
+
+def normalize_device_filter(device_id: str | None) -> str | None:
+    """Validate a read-side device scope: ``None`` (all devices), the
+    ``UNKNOWN_DEVICE`` sentinel, or a canonical UUID. Raises ``ValueError``."""
+    if device_id is None or device_id == "":
+        return None
+    if device_id == UNKNOWN_DEVICE:
+        return device_id
+    try:
+        parsed = uuid.UUID(device_id)
+    except ValueError as exc:
+        raise ValueError("device_id must be a UUID or _unknown_device") from exc
+    if str(parsed) != device_id:
+        raise ValueError("device_id must be a canonical lowercase UUID")
+    return device_id
+
+
 # Flat, intent-based 6-category taxonomy. Kept deliberately small + mutually
 # exclusive so the VLM can pick exactly one reliably. The id is the stored
 # value (category_final / VLM enum); the name is the Chinese display label.
@@ -1006,6 +1023,14 @@ class SqliteDatabase:
             # The fingerprint is an internal binding primitive, not admin API data.
             device.pop("token_fingerprint", None)
         return devices
+
+    async def count_unknown_device_records(self) -> int:
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT COUNT(*) FROM records WHERE device_id IS NULL"
+            ) as cur:
+                row = await cur.fetchone()
+        return int(row[0]) if row else 0
 
     async def device_labels(self) -> dict[str, str]:
         """``{device_id: human label}`` for prompts and read-side grouping.
@@ -1677,7 +1702,7 @@ class SqliteDatabase:
         async with self._lock:
             async with self.conn.execute(
                 f"""SELECT s.id AS screenshot_id, s.record_id, s.thumb_path,
-                           r.ts_start, r.ts_end, r.app_name, r.window_title, r.url,
+                           r.ts_start, r.ts_end, r.app_name, r.window_title, r.url, r.device_id,
                            a.vlm_desc, a.category_final, a.confidence
                     FROM screenshots s
                     JOIN records r ON r.id = s.record_id

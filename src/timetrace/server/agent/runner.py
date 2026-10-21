@@ -140,6 +140,27 @@ class AgentRunner:
             extra["extra_body"] = {"enable_thinking": False}
         return extra
 
+    async def _device_context(self) -> str:
+        """Name + owner description of each device, so phrases like "办公电脑"
+        can be mapped to a device_id scope without an extra tool call."""
+        try:
+            devices = (await agent_tools.list_devices(self._db))["items"]
+        except Exception:  # noqa: BLE001 — context is a hint, never fatal
+            logger.warning("agent.device_context_failed", exc_info=True)
+            return ""
+        active = [d for d in devices if not d["revoked"]]
+        if len(active) < 2:
+            return ""
+        lines = [
+            f"- {d['name']}（device_id={d['device_id']}）"
+            + (f"：{d['description']}" if d["description"] else "")
+            for d in active
+        ]
+        return (
+            "\n\n用户有多台设备，数据默认是全部设备合在一起；问题指向某台设备时，"
+            "把对应 device_id 传给工具：\n" + "\n".join(lines)
+        )
+
     async def run(
         self,
         messages: list[dict],
@@ -153,6 +174,7 @@ class AgentRunner:
             system_content = f"{self._system_prompt}\n\n当前时间：{now}。"
         else:
             system_content = _SYSTEM_PROMPT.format(now=now)
+        system_content += await self._device_context()
         convo: list[dict] = [{"role": "system", "content": system_content}]
         convo.extend({"role": m["role"], "content": m["content"]} for m in messages)
         extra = self._extra_body()

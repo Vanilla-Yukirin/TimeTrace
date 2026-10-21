@@ -14,6 +14,8 @@ External agents see these tools:
   - ``get_app_breakdown`` / ``get_category_stats`` — duration aggregates
   - ``search_summaries`` — the memory-pyramid narrative layer (per-window
     流水账/重点/评价), fold coarse→fine; the efficient "what did I do" path
+  - ``list_devices`` — capture devices (id / name / owner description) for
+    the ``device_id`` scope the read tools accept
   - ``apply_label`` — the only write tool (set a record's category)
   - ``ask_agent`` — the server-side agent (same tool loop as the web chat):
     summaries first, then stats / retrieval, then a synthesized answer
@@ -107,6 +109,7 @@ def build_mcp_server(
         hours_back: int | None = None,
         start_iso: str | None = None,
         end_iso: str | None = None,
+        device_id: str | None = None,
     ) -> dict:
         """Find activity records by content — keyword AND meaning.
 
@@ -124,6 +127,8 @@ def build_mcp_server(
             hours_back: if set, limit to the last N hours. Otherwise all-time.
             start_iso/end_iso: absolute window ('YYYY-MM-DD HH:MM:SS' in the
                 request's X-Timezone, else the server zone); wins over hours_back.
+            device_id: optional device scope from ``list_devices`` (or
+                ``_unknown_device``); omitted = all devices.
 
         Returns:
             dict with relevance-ranked ``items`` (each with ``matched_by``),
@@ -136,6 +141,7 @@ def build_mcp_server(
             hours_back=hours_back,
             start_iso=start_iso,
             end_iso=end_iso,
+            device_id=device_id,
             embedding=embedding,
         )
 
@@ -146,6 +152,7 @@ def build_mcp_server(
         start_iso: str | None = None,
         end_iso: str | None = None,
         cursor: str | None = None,
+        device_id: str | None = None,
     ) -> dict:
         """Return a chronological snapshot of activity (oldest→newest in window).
 
@@ -171,6 +178,7 @@ def build_mcp_server(
             start_iso=start_iso,
             end_iso=end_iso,
             cursor=cursor,
+            device_id=device_id,
         )
 
     @mcp.tool()
@@ -180,6 +188,7 @@ def build_mcp_server(
         period: str | None = None,
         start_iso: str | None = None,
         end_iso: str | None = None,
+        device_id: str | None = None,
     ) -> dict:
         """Aggregate captured active duration per app, descending.
 
@@ -201,6 +210,7 @@ def build_mcp_server(
             period=period,
             start_iso=start_iso,
             end_iso=end_iso,
+            device_id=device_id,
         )
 
     @mcp.tool()
@@ -210,6 +220,7 @@ def build_mcp_server(
         period: str | None = None,
         start_iso: str | None = None,
         end_iso: str | None = None,
+        device_id: str | None = None,
     ) -> dict:
         """Aggregate captured active duration per category (the AI-assigned
         label). ``_unclassified`` is a not-yet-analyzed backlog, distinct from
@@ -228,6 +239,7 @@ def build_mcp_server(
             period=period,
             start_iso=start_iso,
             end_iso=end_iso,
+            device_id=device_id,
         )
 
     @mcp.tool()
@@ -274,6 +286,50 @@ def build_mcp_server(
             query=query,
             limit=limit,
         )
+
+    @mcp.tool()
+    async def query_stats(
+        metric: str = "seconds_by_category",
+        period: str = "today",
+        start_iso: str | None = None,
+        end_iso: str | None = None,
+        filter_category: str | None = None,
+        top_n: int = 20,
+        device_id: str | None = None,
+    ) -> dict:
+        """Aggregate captured time/count over a named civil period.
+
+        Reads a precomputed pyramid row when the period is exactly a closed
+        day/week (all devices), otherwise aggregates live. ``active_seconds`` is
+        the wall-clock union (parallel devices counted once);
+        ``seconds_by_device`` splits time per device.
+
+        Args:
+            metric: seconds_by_category / seconds_by_app / seconds_by_device /
+                active_seconds / record_count.
+            period: today / this_week / this_month / custom (request zone, 4AM cut).
+            start_iso/end_iso: bounds for period='custom' (end exclusive).
+            filter_category: optional single category id.
+            top_n: max items (default 20, cap 50).
+            device_id: optional device scope from ``list_devices``.
+        """
+        return await agent_tools.query_stats(
+            db,
+            metric=metric,
+            period=period,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            filter_category=filter_category,
+            top_n=top_n,
+            device_id=device_id,
+        )
+
+    @mcp.tool()
+    async def list_devices() -> dict:
+        """List the user's capture devices: ``device_id``, display name and the
+        owner's description. Use it to map "办公电脑"/"家里那台" to a
+        ``device_id`` for the other tools' ``device_id`` scope."""
+        return await agent_tools.list_devices(db)
 
     @mcp.tool()
     async def apply_label(record_id: str, category: str, note: str | None = None) -> dict:
