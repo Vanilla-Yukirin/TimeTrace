@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useApps } from '@/hooks/useApps'
 import { useCategories } from '@/hooks/useCategories'
 import { toDateParam } from '@/lib/dateUtils'
+import { DeviceSelect } from '@/components/devices/DeviceSelect'
 
 interface FilterPanelProps {
   startDate: string | null       // YYYY-MM-DD
@@ -13,6 +14,8 @@ interface FilterPanelProps {
   onEndDate: (s: string | null) => void
   onApps: (next: string[]) => void
   onCategories: (next: string[]) => void
+  device: string | null
+  onDevice: (next: string | null) => void
 }
 
 const PRESETS: { label: string; days: number }[] = [
@@ -97,6 +100,9 @@ export function FilterPanel(props: FilterPanelProps) {
               />
             </div>
           </Section>
+
+          {/* Device (hidden on single-device installs) */}
+          <DeviceSelect value={props.device} onChange={props.onDevice} />
 
           {/* Apps */}
           <Section title={`应用${props.apps.length ? `（已选 ${props.apps.length}）` : ''}`}>

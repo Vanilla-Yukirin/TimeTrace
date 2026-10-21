@@ -1,5 +1,7 @@
 export const queryKeys = {
-  records: (dateStr: string) => ['records', dateStr] as const,
+  records: (dateStr: string, device: string | null = null) => ['records', dateStr, device] as const,
+  devices: () => ['devices'] as const,
+  adminDevices: () => ['admin', 'devices'] as const,
   record: (id: string) => ['record', id] as const,
   audit: (limit: number) => ['audit', limit] as const,
   llmRequests: (caller: string | null, limit: number) => ['llm-requests', caller, limit] as const,

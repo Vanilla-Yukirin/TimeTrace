@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { SearchResultItem } from '@/types/api'
+import { DeviceBadge } from '@/components/devices/DeviceSelect'
 import { formatTime, toDateParam } from '@/lib/dateUtils'
 
 interface ResultRowProps {
@@ -124,6 +125,7 @@ export function ResultRow({ item, onZoom }: ResultRowProps) {
             <span>{date.toLocaleDateString()}</span>
             <span>{formatTime(item.ts_start)}</span>
             <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{item.app_name}</span>
+            <DeviceBadge deviceId={item.device_id} />
             {item.match.reasons.map((r) => (
               <ReasonBadge key={r} text={r} />
             ))}

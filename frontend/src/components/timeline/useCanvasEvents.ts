@@ -1,10 +1,10 @@
 import { useRef, useCallback, useEffect } from 'react'
 import type { ApiRecord } from '@/types/api'
 import type { TimelineViewport } from '@/hooks/useTimelineState'
-import { hitTest, type SortedRecords } from './useCanvasRenderer'
+import { hitTest, type TimelineModel } from './useCanvasRenderer'
 
 interface UseCanvasEventsOptions {
-  sorted: SortedRecords
+  model: TimelineModel
   viewport: TimelineViewport
   zoom: (factor: number, mouseX: number) => void
   pan: (deltaX: number) => void
@@ -18,25 +18,27 @@ interface UseCanvasEventsOptions {
 // (mouse wheels on some platforms); normalise to pixels.
 const LINE_PX = 16
 const ZOOM_PER_PX = 0.0015
+// Left strip (device labels) where the wheel scrolls lanes instead of zooming.
+const WHEEL_GUTTER_PX = 72
 
 /** Pointer/wheel handling for the timeline canvas. Everything that changes
  *  React state (zoom, pan, hover) is coalesced to at most once per animation
  *  frame — a trackpad fires dozens of wheel events per gesture and mousemove
  *  fires faster than the display refreshes. */
 export function useCanvasEvents({
-  sorted, viewport, zoom, pan, onHover, onClick, onPointer,
+  model, viewport, zoom, pan, onHover, onClick, onPointer,
 }: UseCanvasEventsOptions) {
   const dragging = useRef(false)
   const lastX = useRef(0)
   const moved = useRef(false)
 
   // Latest values for the rAF flush (which runs outside React's render).
-  const sortedRef = useRef(sorted)
+  const modelRef = useRef(model)
   const viewportRef = useRef(viewport)
   useEffect(() => {
-    sortedRef.current = sorted
+    modelRef.current = model
     viewportRef.current = viewport
-  }, [sorted, viewport])
+  }, [model, viewport])
 
   const pending = useRef({ zoom: 1, zoomAnchor: 0, pan: 0, hover: null as null | { x: number; y: number } })
   const frame = useRef<number | null>(null)
@@ -53,7 +55,7 @@ export function useCanvasEvents({
       p.pan = 0
     }
     if (p.hover) {
-      const hit = hitTest(p.hover.x, p.hover.y, sortedRef.current, viewportRef.current)
+      const hit = hitTest(p.hover.x, p.hover.y, modelRef.current, viewportRef.current)
       onHover(hit?.record.id ?? null)
       p.hover = null
     }
@@ -68,6 +70,15 @@ export function useCanvasEvents({
   }, [])
 
   const onWheel = useCallback((e: WheelEvent) => {
+    // Many device lanes make the canvas taller than its scroll container. The
+    // left label gutter then passes the wheel through so the lanes can be
+    // scrolled vertically; everywhere else the wheel zooms/pans the time axis.
+    const el = e.currentTarget as HTMLElement
+    const scroller = el.parentElement
+    if (
+      scroller && scroller.scrollHeight > scroller.clientHeight &&
+      e.clientX - el.getBoundingClientRect().left < WHEEL_GUTTER_PX
+    ) return
     e.preventDefault()
     const unit = e.deltaMode === 1 ? LINE_PX : 1
     const dx = e.deltaX * unit
@@ -112,7 +123,7 @@ export function useCanvasEvents({
   const onMouseUp = useCallback((e: MouseEvent) => {
     if (!moved.current) {
       const rect = (e.target as HTMLElement).getBoundingClientRect()
-      const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top, sortedRef.current, viewportRef.current)
+      const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top, modelRef.current, viewportRef.current)
       onClick(hit?.record ?? null)
     }
     dragging.current = false

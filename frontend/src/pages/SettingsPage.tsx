@@ -4,6 +4,7 @@ import { queryKeys } from '@/lib/queryKeys'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { AccountSection } from '@/components/admin/AccountSection'
 import { TokenManager } from '@/components/admin/TokenManager'
+import { DeviceManager } from '@/components/admin/DeviceManager'
 import { EmbeddingDiagnostics } from '@/components/admin/EmbeddingDiagnostics'
 import { AppOverridesSection } from '@/components/admin/AppOverridesSection'
 import { Card, Section } from '@/components/ui/Card'
@@ -39,6 +40,8 @@ export function SettingsPage() {
       <AccountSection />
 
       <TokenManager />
+
+      <DeviceManager />
 
       <EmbeddingDiagnostics />
 

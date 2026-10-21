@@ -1,4 +1,5 @@
 import type {
+  AdminDevice,
   ApiRecordDetail,
   AppOverrides,
   AuditResponse,
@@ -198,6 +199,21 @@ export const api = {
 
   revokeToken: (label: string) =>
     apiFetch<void>(`/v1/admin/tokens/${encodeURIComponent(label)}`, {
+      method: 'DELETE',
+    }),
+
+  // ---- admin: capture devices ------------------------------------------
+  listAdminDevices: () =>
+    apiFetch<AdminDevice[]>('/v1/admin/devices'),
+
+  updateDevice: (id: string, body: { name: string; description: string }) =>
+    apiFetch<AdminDevice>(`/v1/admin/devices/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  revokeDevice: (id: string) =>
+    apiFetch<void>(`/v1/admin/devices/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
 

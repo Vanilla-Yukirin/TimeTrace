@@ -1,6 +1,7 @@
 import type { ApiRecord } from '@/types/api'
 import { formatTime, formatDurationMs } from '@/lib/dateUtils'
 import { useNow } from '@/hooks/useNow'
+import { DeviceBadge } from '@/components/devices/DeviceSelect'
 
 interface RecordMetaProps {
   record: ApiRecord
@@ -23,6 +24,11 @@ export function RecordMeta({ record }: RecordMetaProps) {
         wordBreak: 'break-word',
       }}>
         {record.app_name}
+      </div>
+
+      {/* Capture device (only shown when several devices exist) */}
+      <div style={{ marginBottom: 6 }}>
+        <DeviceBadge deviceId={record.device_id} />
       </div>
 
       {/* Window title */}
