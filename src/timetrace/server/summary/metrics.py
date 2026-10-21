@@ -55,13 +55,29 @@ def merge_metrics(parts: list[dict]) -> dict:
     return out
 
 
-async def aggregate_frame_metrics(db: Database, start_ms: int, end_ms: int) -> dict:
+def device_condition(device_id: str | None, alias: str = "") -> tuple[str, list]:
+    """SQL fragment (``AND …``) scoping records to one device; empty for all."""
+    col = f"{alias}.device_id" if alias else "device_id"
+    if device_id is None:
+        return "", []
+    if device_id == UNKNOWN_DEVICE:
+        return f" AND {col} IS NULL", []
+    return f" AND {col} = ?", [device_id]
+
+
+async def aggregate_frame_metrics(
+    db: Database, start_ms: int, end_ms: int, *, device_id: str | None = None
+) -> dict:
     """Aggregate L1 frames whose ``ts_start`` ∈ ``[start_ms, end_ms)`` (half-open).
 
     Half-open so a frame on a window boundary is counted in exactly one window.
     Mirrors ``get_category_stats`` (the ``_unclassified`` CASE) and
     ``get_app_breakdown`` (``app_name != ''``) using the shared ``_clamped_dur_sql``.
+    ``device_id`` scopes a read-side query to one device (the cascade itself
+    always aggregates every device).
     """
+    r_dev, r_params = device_condition(device_id, "r")
+    dev, dev_params = device_condition(device_id)
     cat_ms: dict[str, int] = {}
     app_ms: dict[str, int] = {}
     device_ms: dict[str, int] = {}
@@ -78,9 +94,9 @@ async def aggregate_frame_metrics(db: Database, start_ms: int, end_ms: int) -> d
                       SUM({_clamped_dur_sql("r")}) AS total_ms
                FROM records r
                LEFT JOIN analysis_results a ON a.record_id = r.id
-               WHERE r.ts_start >= ? AND r.ts_start < ?
+               WHERE r.ts_start >= ? AND r.ts_start < ?{r_dev}
                GROUP BY category""",
-            (start_ms, end_ms),
+            (start_ms, end_ms, *r_params),
         ) as cur:
             for row in await cur.fetchall():
                 ms = int(row["total_ms"] or 0)
@@ -90,9 +106,9 @@ async def aggregate_frame_metrics(db: Database, start_ms: int, end_ms: int) -> d
         async with db.conn.execute(
             f"""SELECT app_name, SUM({_clamped_dur_sql()}) AS total_ms
                 FROM records
-                WHERE ts_start >= ? AND ts_start < ? AND app_name != ''
+                WHERE ts_start >= ? AND ts_start < ? AND app_name != ''{dev}
                 GROUP BY app_name""",
-            (start_ms, end_ms),
+            (start_ms, end_ms, *dev_params),
         ) as cur:
             for row in await cur.fetchall():
                 app_ms[row["app_name"]] = int(row["total_ms"] or 0)
@@ -103,9 +119,9 @@ async def aggregate_frame_metrics(db: Database, start_ms: int, end_ms: int) -> d
             f"""SELECT COALESCE(device_id, '{UNKNOWN_DEVICE}') AS device,
                        SUM({_clamped_dur_sql()}) AS total_ms
                 FROM records
-                WHERE ts_start >= ? AND ts_start < ?
+                WHERE ts_start >= ? AND ts_start < ?{dev}
                 GROUP BY device""",
-            (start_ms, end_ms),
+            (start_ms, end_ms, *dev_params),
         ) as cur:
             for row in await cur.fetchall():
                 device_ms[row["device"]] = int(row["total_ms"] or 0)
@@ -118,7 +134,9 @@ async def aggregate_frame_metrics(db: Database, start_ms: int, end_ms: int) -> d
     }
 
 
-async def active_wall_ms(db: Database, start_ms: int, end_ms: int) -> int:
+async def active_wall_ms(
+    db: Database, start_ms: int, end_ms: int, *, device_id: str | None = None
+) -> int:
     """Wall-clock active ms over ``[start_ms, end_ms)`` as the UNION of per-record
     capture intervals — overlapping captures count once (ActivityWatch-style).
 
@@ -136,11 +154,12 @@ async def active_wall_ms(db: Database, start_ms: int, end_ms: int) -> int:
     read-edge dedup, computed live over the exact span.
     """
     dur = _clamped_dur_sql()  # CASE WHEN span>cap THEN 0 ELSE MAX(0, span) END
+    dev, dev_params = device_condition(device_id)
     async with db.lock:
         async with db.conn.execute(
             f"""WITH clamped AS (
                     SELECT ts_start AS s, ts_start + ({dur}) AS e
-                    FROM records WHERE ts_start >= ? AND ts_start < ?
+                    FROM records WHERE ts_start >= ? AND ts_start < ?{dev}
                 ),
                 ordered AS (
                     SELECT s, e,
@@ -155,7 +174,7 @@ async def active_wall_ms(db: Database, start_ms: int, end_ms: int) -> int:
                 )
                 SELECT COALESCE(SUM(seg_e - seg_s), 0) AS wall_ms
                 FROM (SELECT MIN(s) AS seg_s, MAX(e) AS seg_e FROM grouped GROUP BY g)""",
-            (start_ms, end_ms),
+            (start_ms, end_ms, *dev_params),
         ) as cur:
             row = await cur.fetchone()
     return int(row["wall_ms"] or 0) if row else 0

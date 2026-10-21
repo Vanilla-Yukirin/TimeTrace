@@ -112,6 +112,12 @@
 
 ---
 
+## 设备范围（2026-10 W5）
+
+- `GET /v1/devices`（业务路由）：`{items:[{id,label,name,description,reported_name,last_seen_at,revoked_at}], unknown:{id:"_unknown_device",label,record_count}}`；不含 token 绑定信息。改名/停用仍走 `/v1/admin/devices`。
+- `device_id` 可选参数（规范小写 UUID 或 `_unknown_device`，非法 422，不传=全部设备）：`/v1/records`、`/v1/search/text`、`/v1/search/by-image`（form 字段）。文本检索在各通道候选阶段过滤；以图搜图的 pHash BK-tree 不分设备，在各通道 ×4 超取候选上、RRF 融合前过滤。结果项带 `device_id`。
+- Agent / MCP：`list_devices` 工具；`search_activity` / `get_recent_activity` / `get_app_breakdown` / `get_category_stats` / `query_stats` 接受 `device_id`，结果带 `device` 名称；`query_stats` 新增 `seconds_by_device`，`active_seconds` 始终是墙钟并集。设备 ≥2 台时 Agent system prompt 附设备名与描述。
+
 ## 时区契约（2026-10 W3）
 
 - 存储一律 UTC epoch ms；`/v1/records` 等接口的 `start`/`end` 本身就是 epoch，与时区无关。

@@ -135,6 +135,31 @@ def _resolve_window(
     return _window(hours_back)
 
 
+def _scope_device(device_id: str | None) -> str | None:
+    """Validate the optional device scope (raises ValueError → error dict)."""
+    from timetrace.server.db.sqlite import normalize_device_filter  # noqa: PLC0415
+
+    return normalize_device_filter(device_id)
+
+
+def _device_sql(device_id: str | None, alias: str = "") -> tuple[str, list]:
+    from timetrace.server.summary.metrics import device_condition  # noqa: PLC0415
+
+    return device_condition(device_id, alias)
+
+
+async def _labeler(db: Database):  # noqa: ANN202
+    """``device_id → display label`` for result rows (unknown → 未知设备)."""
+    labels = await db.device_labels()
+
+    def label(device_id: str | None) -> str:
+        if not device_id:
+            return "未知设备"
+        return labels.get(device_id) or f"设备 {device_id[:8]}"
+
+    return label
+
+
 # --------------------------------------------------------------------------- #
 # Read tools                                                                   #
 # --------------------------------------------------------------------------- #
@@ -147,6 +172,7 @@ async def search_activity(
     hours_back: int | None = None,
     start_iso: str | None = None,
     end_iso: str | None = None,
+    device_id: str | None = None,
     *,
     embedding: EmbeddingClient | None = None,
 ) -> dict:
@@ -165,10 +191,14 @@ async def search_activity(
     limit = min(max(1, int(limit)), _MAX_LIMIT)
     try:
         start_ms, end_ms = _resolve_window(hours_back, start_iso, end_iso)
+        device_id = _scope_device(device_id)
     except ValueError as exc:
         return {"error": str(exc)}
-    result = await retrieve_records(db, embedding, query, start_ms, end_ms, limit=limit)
+    result = await retrieve_records(
+        db, embedding, query, start_ms, end_ms, limit=limit, device_id=device_id
+    )
     meta = await fetch_records_by_ids(db, [rid for rid, _ in result.ranked])
+    label = await _labeler(db)
     items = []
     for rid, _score in result.ranked:
         r = meta.get(rid)
@@ -183,6 +213,7 @@ async def search_activity(
                 "window_title": r.get("window_title"),
                 "vlm_desc": r.get("vlm_desc"),
                 "category": r.get("category_final"),
+                "device": label(r.get("device_id")),
                 "matched_by": [
                     ch
                     for ch, ranks in (
@@ -224,6 +255,7 @@ async def get_recent_activity(
     start_iso: str | None = None,
     end_iso: str | None = None,
     cursor: str | None = None,
+    device_id: str | None = None,
 ) -> dict:
     """Chronological snapshot of activity (oldest→newest within the window).
 
@@ -236,9 +268,13 @@ async def get_recent_activity(
     limit = min(max(1, int(limit)), _MAX_LIMIT)
     try:
         start_ms, end_ms = _resolve_window(hours_back, start_iso, end_iso)
+        device_id = _scope_device(device_id)
     except ValueError as exc:
         return {"error": str(exc)}
-    rows = await db.query_records(start_ms=start_ms, end_ms=end_ms, limit=limit, cursor=cursor)
+    rows = await db.query_records(
+        start_ms=start_ms, end_ms=end_ms, limit=limit, cursor=cursor, device_id=device_id
+    )
+    label = await _labeler(db)
     # ASC order → last row is the latest in this page; a full page may have more.
     next_cursor = rows[-1]["id"] if len(rows) == limit else None
     return {
@@ -253,6 +289,7 @@ async def get_recent_activity(
                 "window_title": r.get("window_title"),
                 "vlm_desc": (r.get("vlm_desc") or "")[:200],
                 "category": r.get("category_final"),
+                "device": label(r.get("device_id")),
             }
             for r in rows
         ],
@@ -282,13 +319,16 @@ async def get_app_breakdown(
     period: str | None = None,
     start_iso: str | None = None,
     end_iso: str | None = None,
+    device_id: str | None = None,
 ) -> dict:
     """Aggregate active duration per app over the window (closed sessions only)."""
     top_n = min(max(1, int(top_n)), _MAX_TOP_N)
     try:
         start_ms, end_ms, hours_back = _stats_window(hours_back, period, start_iso, end_iso)
+        device_id = _scope_device(device_id)
     except ValueError as exc:
         return {"error": str(exc)}
+    dev_sql, dev_params = _device_sql(device_id)
     async with db.lock:
         async with db.conn.execute(
             # Per-record duration is clamped: negative spans floor to 0 and
@@ -306,11 +346,11 @@ async def get_app_breakdown(
                       COUNT(*) AS records,
                       SUM({_clamped_dur_sql()}) AS total_ms
                FROM records
-               WHERE ts_start BETWEEN ? AND ? AND app_name != ''
+               WHERE ts_start BETWEEN ? AND ? AND app_name != ''{dev_sql}
                GROUP BY app_name
                ORDER BY total_ms DESC
                LIMIT ?""",
-            (start_ms, end_ms, top_n),
+            (start_ms, end_ms, *dev_params, top_n),
         ) as cur:
             rows = await cur.fetchall()
     items = [
@@ -324,6 +364,7 @@ async def get_app_breakdown(
     return {
         "hours_back": None if period else hours_back,
         "period": period,
+        "device_id": device_id,
         "window_start_iso": ms_to_iso(start_ms),
         "window_end_iso": ms_to_iso(end_ms),
         "total_seconds": sum(it["total_seconds"] for it in items),
@@ -339,6 +380,7 @@ async def get_category_stats(
     period: str | None = None,
     start_iso: str | None = None,
     end_iso: str | None = None,
+    device_id: str | None = None,
 ) -> dict:
     """Aggregate active duration per category over the window.
 
@@ -359,8 +401,10 @@ async def get_category_stats(
     top_n = min(max(1, int(top_n)), _MAX_TOP_N)
     try:
         start_ms, end_ms, hours_back = _stats_window(hours_back, period, start_iso, end_iso)
+        device_id = _scope_device(device_id)
     except ValueError as exc:
         return {"error": str(exc)}
+    dev_sql, dev_params = _device_sql(device_id, "r")
     async with db.lock:
         async with db.conn.execute(
             f"""SELECT CASE
@@ -372,11 +416,11 @@ async def get_category_stats(
                       SUM({_clamped_dur_sql("r")}) AS total_ms
                FROM records r
                LEFT JOIN analysis_results a ON a.record_id = r.id
-               WHERE r.ts_start BETWEEN ? AND ?
+               WHERE r.ts_start BETWEEN ? AND ?{dev_sql}
                GROUP BY category
                ORDER BY total_ms DESC
                LIMIT ?""",
-            (start_ms, end_ms, top_n),
+            (start_ms, end_ms, *dev_params, top_n),
         ) as cur:
             rows = await cur.fetchall()
     items = []
@@ -396,6 +440,7 @@ async def get_category_stats(
     return {
         "hours_back": None if period else hours_back,
         "period": period,
+        "device_id": device_id,
         "window_start_iso": ms_to_iso(start_ms),
         "window_end_iso": ms_to_iso(end_ms),
         "total_seconds": sum(it["total_seconds"] for it in items),
@@ -409,7 +454,13 @@ async def get_category_stats(
 # query_stats — cascade-first aggregate stats over named periods               #
 # --------------------------------------------------------------------------- #
 
-_VALID_METRICS = ("seconds_by_category", "seconds_by_app", "active_seconds", "record_count")
+_VALID_METRICS = (
+    "seconds_by_category",
+    "seconds_by_app",
+    "seconds_by_device",
+    "active_seconds",
+    "record_count",
+)
 _VALID_PERIODS = ("today", "this_week", "this_month", "custom")
 
 
@@ -500,6 +551,11 @@ def _duration_semantics(metric: str) -> dict:
         sem["aggregation"] = (
             "墙钟并集：重叠的采集区间已去重(union)，所以 active_seconds ≤ 各分类秒数之和。"
         )
+    elif metric == "seconds_by_device":
+        sem["aggregation"] = (
+            "每台设备各自的切片之和；多台设备同时在用时，各设备相加会超过实际经过时间，"
+            "实际经过时间请用 active_seconds（墙钟并集）。"
+        )
     elif metric in ("seconds_by_category", "seconds_by_app"):
         sem["aggregation"] = (
             "各记录 clamp 后切片之和(可加、可跨层 SUM)；短暂重叠会被轻微重复计，"
@@ -516,6 +572,7 @@ async def query_stats(
     end_iso: str | None = None,
     filter_category: str | None = None,
     top_n: int = 20,
+    device_id: str | None = None,
 ) -> dict:
     """Aggregate time/count over a named period, cascade-first, ZERO heavy reading.
 
@@ -539,6 +596,7 @@ async def query_stats(
         return {"error": f"unknown period: {period}", "valid_periods": list(_VALID_PERIODS)}
     try:
         start_ms, end_ms = _period_bounds(period, start_iso, end_iso, cut_hour)
+        device_id = _scope_device(device_id)
     except ValueError as exc:
         return {"error": str(exc)}
     top_n = min(max(1, int(top_n)), _MAX_TOP_N)
@@ -549,10 +607,11 @@ async def query_stats(
         # (union is not additive across windows), and cheap enough live anyway.
         from timetrace.server.summary.metrics import active_wall_ms  # noqa: PLC0415
 
-        wall_ms = await active_wall_ms(db, start_ms, end_ms)
+        wall_ms = await active_wall_ms(db, start_ms, end_ms, device_id=device_id)
         return {
             "metric": metric,
             "period": period,
+            "device_id": device_id,
             "source": "live",
             "period_start_iso": ms_to_iso(start_ms),
             "period_end_iso": ms_to_iso(end_ms),
@@ -560,18 +619,25 @@ async def query_stats(
             "semantics": _duration_semantics(metric),
         }
 
-    m = await _try_cascade_metrics(db, start_ms, end_ms, cut_hour)
+    # The cascade aggregates every device, so a device-scoped query is always
+    # live; so is seconds_by_device over digest rows built before device_ms existed.
+    m = None
+    if device_id is None:
+        m = await _try_cascade_metrics(db, start_ms, end_ms, cut_hour)
+        if m is not None and metric == "seconds_by_device" and "device_ms" not in m:
+            m = None
     if m is not None:
         source = "digest"
     else:
         from timetrace.server.summary.metrics import aggregate_frame_metrics  # noqa: PLC0415
 
-        m = await aggregate_frame_metrics(db, start_ms, end_ms)
+        m = await aggregate_frame_metrics(db, start_ms, end_ms, device_id=device_id)
         source = "live"
 
     out: dict = {
         "metric": metric,
         "period": period,
+        "device_id": device_id,
         "source": source,
         "period_start_iso": ms_to_iso(start_ms),
         "period_end_iso": ms_to_iso(end_ms),
@@ -583,7 +649,14 @@ async def query_stats(
         out["record_count"] = m["record_count"]
         return out
 
-    key_ms: dict[str, int] = m["cat_ms"] if metric == "seconds_by_category" else m["app_ms"]
+    if metric == "seconds_by_device":
+        label = await _labeler(db)
+        key_ms = {
+            label(None if k == "_unknown_device" else k): v
+            for k, v in (m.get("device_ms") or {}).items()
+        }
+    else:
+        key_ms = m["cat_ms"] if metric == "seconds_by_category" else m["app_ms"]
     if metric == "seconds_by_category":
         out["categories_legend"] = _CATEGORY_LEGEND
     if filter_category:
@@ -711,6 +784,33 @@ async def search_summaries(
     return out
 
 
+async def list_devices(db: Database) -> dict:
+    """The user's capture devices: id, display name and the owner's own
+    description (e.g. "办公室台式机，主要写代码"), so questions like "在家用电脑
+    上做了什么" can be mapped to a ``device_id`` scope."""
+    label = await _labeler(db)
+    items = [
+        {
+            "device_id": d["id"],
+            "name": label(d["id"]),
+            "description": d["description"] or d["reported_description"] or "",
+            "last_seen_iso": ms_to_iso(d["last_seen_at"]),
+            "revoked": d["revoked_at"] is not None,
+        }
+        for d in await db.list_devices()
+    ]
+    unknown = await db.count_unknown_device_records()
+    out: dict = {"count": len(items), "items": items}
+    if unknown:
+        out["unknown_device"] = {
+            "device_id": "_unknown_device",
+            "name": "未知设备",
+            "record_count": unknown,
+            "note": "设备身份上线前的历史记录，不猜测其归属。",
+        }
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Write tool (the ONLY one) — label only, never destructive                    #
 # --------------------------------------------------------------------------- #
@@ -783,6 +883,10 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "device_id": _str_param(
+                        "可选：只看某台设备（list_devices 返回的 device_id；"
+                        "_unknown_device=身份上线前的旧记录）。不传=全部设备"
+                    ),
                     "query": {
                         "type": "string",
                         "description": "要找的内容，可以是关键词或一句描述",
@@ -804,6 +908,10 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "device_id": _str_param(
+                        "可选：只看某台设备（list_devices 返回的 device_id；"
+                        "_unknown_device=身份上线前的旧记录）。不传=全部设备"
+                    ),
                     "hours_back": _int_param("窗口小时数，默认 24，最大 720"),
                     "limit": _int_param("返回条数，默认 50，最大 2000"),
                     "start_iso": _str_param("绝对起始时间（本地），优先于 hours_back"),
@@ -824,6 +932,10 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "device_id": _str_param(
+                        "可选：只看某台设备（list_devices 返回的 device_id；"
+                        "_unknown_device=身份上线前的旧记录）。不传=全部设备"
+                    ),
                     "period": {
                         "type": "string",
                         "enum": list(_VALID_PERIODS),
@@ -849,6 +961,10 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "device_id": _str_param(
+                        "可选：只看某台设备（list_devices 返回的 device_id；"
+                        "_unknown_device=身份上线前的旧记录）。不传=全部设备"
+                    ),
                     "period": {
                         "type": "string",
                         "enum": list(_VALID_PERIODS),
@@ -874,6 +990,10 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "device_id": _str_param(
+                        "可选：只看某台设备（list_devices 返回的 device_id；"
+                        "_unknown_device=身份上线前的旧记录）。不传=全部设备"
+                    ),
                     "metric": {
                         "type": "string",
                         "enum": list(_VALID_METRICS),
@@ -939,6 +1059,18 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "list_devices",
+            "description": (
+                "列出用户的采集设备（device_id、名称、用户写的设备描述）。"
+                "问题涉及某台电脑（如『办公电脑』『家里那台』）时先用它找到 device_id，"
+                "再把 device_id 传给其它工具。"
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "apply_label",
             "description": (
                 "给某条记录打/改分类标签。这是你唯一的写权限，不能删除或修改记录本身。"
@@ -964,6 +1096,7 @@ _IMPLS = {
     "get_category_stats": get_category_stats,
     "query_stats": query_stats,
     "search_summaries": search_summaries,
+    "list_devices": list_devices,
     "apply_label": apply_label,
 }
 

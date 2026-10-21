@@ -33,6 +33,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from PIL import Image
 
 from timetrace.common.phash_hash import compute_phash
+from timetrace.server.api.routes.records import device_filter
+from timetrace.server.db.sqlite import UNKNOWN_DEVICE
 from timetrace.server.retrieval import fetch_records_by_ids, retrieve_records
 from timetrace.server.vlm.client import VLMError, format_description
 
@@ -137,6 +139,28 @@ async def _embedding_screenshot_search(
         ) as cur:
             first_sid = {row["record_id"]: row["sid"] for row in await cur.fetchall()}
     return [(first_sid[rid], score) for rid, score in hits if rid in first_sid]
+
+
+async def _screenshots_on_device(db: Any, sids: set[str], device_id: str) -> set[str]:
+    """Subset of screenshot ids whose record belongs to ``device_id``.
+
+    The pHash BK-tree is device-agnostic, so the image channels are scoped here
+    on their over-fetched (limit×4) candidates, before RRF fusion."""
+    if not sids:
+        return set()
+    ids = list(sids)
+    placeholders = ",".join("?" * len(ids))
+    if device_id == UNKNOWN_DEVICE:
+        cond, params = "r.device_id IS NULL", ids
+    else:
+        cond, params = "r.device_id = ?", [*ids, device_id]
+    async with db.lock:
+        async with db.conn.execute(
+            f"""SELECT s.id FROM screenshots s JOIN records r ON r.id = s.record_id
+                WHERE s.id IN ({placeholders}) AND {cond}""",
+            params,
+        ) as cur:
+            return {row["id"] for row in await cur.fetchall()}
 
 
 async def _like_fallback(
@@ -260,6 +284,7 @@ async def _enrich_and_filter(
                 "app_name": meta["app_name"],
                 "window_title": meta["window_title"],
                 "url": meta.get("url"),
+                "device_id": meta.get("device_id"),
                 "thumb_path": _strip_thumb(meta.get("thumb_path")),
                 "vlm_desc": meta.get("vlm_desc"),
                 "category_final": meta.get("category_final"),
@@ -302,6 +327,7 @@ async def search_by_image(
     apps: str | None = Form(None),
     categories: str | None = Form(None),
     limit: int = Form(50),
+    device_id: str | None = Form(None),
 ) -> dict:
     """Multi-modal search combining pHash visual similarity + VLM semantic similarity."""
     db = request.app.state.db
@@ -332,6 +358,7 @@ async def search_by_image(
     limit = max(1, min(limit, 200))
     apps_list = _parse_csv(apps)
     cats_list = _parse_csv(categories)
+    device_id = device_filter(device_id)
 
     # ---------- Visual channel (pHash on first image only) ----------
     visual_hits: list[tuple[str, float]] = []
@@ -387,6 +414,15 @@ async def search_by_image(
     if q and not semantic:
         text_hits = await _like_fallback(db, q, ts_range, limit * 4)
 
+    # ---------- Device scope (per channel, before fusion) ----------
+    if device_id is not None:
+        allowed = await _screenshots_on_device(
+            db, {sid for ch in (visual_hits, semantic_hits, text_hits) for sid, _ in ch}, device_id
+        )
+        visual_hits = [h for h in visual_hits if h[0] in allowed]
+        semantic_hits = [h for h in semantic_hits if h[0] in allowed]
+        text_hits = [h for h in text_hits if h[0] in allowed]
+
     # ---------- Fuse ----------
     fused = _rrf_merge([visual_hits, semantic_hits, text_hits])
     # Bound the enrichment IN-clause regardless of channel widths.
@@ -426,6 +462,7 @@ async def search_text(
     apps: str | None = None,
     categories: str | None = None,
     limit: int = 50,
+    device_id: str | None = None,
 ) -> dict:
     """Pure-text search fusing a keyword and a semantic channel via RRF.
 
@@ -459,6 +496,7 @@ async def search_text(
         limit=_MAX_FUSED,
         apps=_parse_csv(apps),
         categories=_parse_csv(categories),
+        device_id=device_filter(device_id),
     )
     fused = result.ranked
     semantic_status = result.semantic_channel
@@ -488,6 +526,7 @@ async def search_text(
                 "app_name": row["app_name"],
                 "window_title": row["window_title"],
                 "url": row.get("url"),
+                "device_id": row.get("device_id"),
                 "thumb_path": _strip_thumb(row.get("thumb_path")),
                 "vlm_desc": row.get("vlm_desc"),
                 "category_final": row.get("category_final"),

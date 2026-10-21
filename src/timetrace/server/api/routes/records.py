@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import uuid
-
 from fastapi import APIRouter, HTTPException, Request
+
+from timetrace.server.db.sqlite import UNKNOWN_DEVICE, normalize_device_filter
 
 router = APIRouter(tags=["records"])
 
@@ -68,13 +68,7 @@ async def list_records(
     - **q**: keyword over window_title OR vlm_desc (LIKE %q%)
     """
     db = request.app.state.db
-    if device_id is not None and device_id != "_unknown_device":
-        try:
-            parsed = uuid.UUID(device_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail="device_id must be a UUID") from exc
-        if str(parsed) != device_id:
-            raise HTTPException(status_code=422, detail="device_id must be canonical")
+    device_id = device_filter(device_id)
     limit = min(limit, 500)
     rows = await db.query_records(
         start,
@@ -89,6 +83,46 @@ async def list_records(
     )
     next_cursor = rows[-1]["id"] if len(rows) == limit else None
     return {"items": [_strip_thumbs_prefix(r) for r in rows], "next_cursor": next_cursor}
+
+
+def device_filter(device_id: str | None) -> str | None:
+    """Route-level wrapper: invalid device scope → 422."""
+    try:
+        return normalize_device_filter(device_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/devices")
+async def list_devices(request: Request) -> dict:
+    """Devices for read-side scoping (selector, badges, lanes).
+
+    Business-route view of the device registry: display ``label`` plus the
+    owner-written name/description, never token bindings. ``unknown`` is the
+    bucket for records captured before device identity existed.
+    """
+    db = request.app.state.db
+    labels = await db.device_labels()
+    items = [
+        {
+            "id": d["id"],
+            "label": labels.get(d["id"], d["id"][:8]),
+            "name": d["name"],
+            "description": d["description"],
+            "reported_name": d["reported_name"],
+            "last_seen_at": d["last_seen_at"],
+            "revoked_at": d["revoked_at"],
+        }
+        for d in await db.list_devices()
+    ]
+    return {
+        "items": items,
+        "unknown": {
+            "id": UNKNOWN_DEVICE,
+            "label": "未知设备",
+            "record_count": await db.count_unknown_device_records(),
+        },
+    }
 
 
 @router.get("/apps")
