@@ -1,7 +1,7 @@
 # TimeTrace 滚动 TODO / Plan
 
-**最后更新：** 2026-10-22
-**验证基线：** PR #9 已合并为 `d4af2f2`；Windows 客户端安装与 Release 自动发布已闭环；两台客户端的设备身份、上传与服务端入库已验证，设备维度的查询、统计与摘要仍待补齐
+**最后更新：** 2026-10-22（W1–W6 合入）
+**验证基线：** `main` 含 PR #14–#21（2026-10 owner review W1–W6）；Linux 本地后端 652 passed / 7 skipped，CI（Windows 测试 + 客户端打包、前端、Docker 冒烟）全绿；设备维度的查询、统计、时间轴与设备级摘要金字塔已在代码层闭环，**尚未部署**
 
 > 本文是项目唯一的「现在做到哪、下一步做什么」入口，只保留未完成项、运行约束和近期顺序。
 > 已完成过程移到 [`devlogs/README.md`](./README.md)；架构入口看 [`infra/readme.md`](../infra/readme.md)。
@@ -27,7 +27,7 @@ TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证�
 | AI 上下文 | ✅ 上线 | Web Agent、报告、MCP 7 工具；`search_summaries` 支持粗→细下钻，`apply_label` 是唯一写工具 |
 | 可观测性 | 🟡 主链上线 | `/audit`、`/pyramid`、`/llm-log`；账本覆盖 worker/narrative/ask_agent，尚缺 report 与 Web Agent streaming |
 | 生产发布 | ✅ pull-based Docker 已正式验收 | `deploy` 只发布 server + SPA 单一不可变镜像；部署机以独占锁执行 `timetrace-update` 主动拉取、原子切换和自动回滚，不依赖 Actions 经 FRP SSH 入站；`e8b2cae` 的镜像、容器、runtime/web 指针、nginx 与公网均已验收 |
-| 多设备 | 🟡 身份与入库完成、读侧未闭环 | 两个客户端使用独立 `device_id` / token / outbox 向同一后端上传；服务端已持久化设备与 `records.device_id`，普通记录 REST 可筛选；前端、MCP、Agent、搜索、统计和摘要仍缺设备维度 |
+| 多设备 | 🟡 代码闭环、待部署 | 设备身份与入库已生产验证；2026-10 W5/W6 补齐前端泳道与筛选、REST/MCP/Agent/搜索/统计的 `device_id`、设备级摘要金字塔（全局摘要按设备分段拼装），尚未部署 |
 | 用户界面 | 🟡 Web 已有、原生客户端 GUI 缺失 | 服务端已经是 FastAPI；已有 React/Vite SPA（时间轴、搜索、设置、Agent、报告、审计等），但没有设备管理页，双进程客户端也没有完整桌面配置/诊断界面 |
 | Classifier V2 | ⚠️ 未实现 | 225 帧校准支持保守 KNN 加速器方向；正式设计、代码和生产验证均未开始 |
 
@@ -39,14 +39,16 @@ TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证�
 
 ### 2026-10 owner review 执行序列（W1–W6）
 
-依据与根因见 [`infra/PLAN-OWNER-REVIEW-2026-10.md`](../infra/PLAN-OWNER-REVIEW-2026-10.md)。每个工作包一个 PR，只合入 `main`，本轮不推进 `deploy`。
+依据与根因见 [`infra/PLAN-OWNER-REVIEW-2026-10.md`](../infra/PLAN-OWNER-REVIEW-2026-10.md)。每个工作包一个 PR，只合入 `main`，本轮不推进 `deploy`。**W1–W6 已全部合入 main（PR #14–#21），尚未部署**；过程与遗留见 [`archive-202610220210-owner-review-w1-w6.md`](infra/archive-202610220210-owner-review-w1-w6.md)。
 
-- [ ] **W1 前端性能**：今天视图每秒整页重渲染、mousemove 全树 setState + O(N) hitTest、30s 全量重拉（含历史日）、樱花动画 + fixed 背景 + backdrop blur、全局 transition、wheel 未节流。
-- [ ] **W2 多设备叙述过渡修复**：叶子上下文按设备分组带设备名、prompt 去掉「这台电脑」、按设备公平截断、指标补逐设备时长与墙钟、父窗读子窗 key_points。不改 schema。
-- [ ] **W3 时区契约**：UTC epoch ms 存储；涉及日/周/本地时刻的接口接受 IANA `tz`（参数或 `X-Timezone`），服务端用 `zoneinfo` 计算；前端随请求携带浏览器时区；未携带时回退 `TIMETRACE_TZ`/运行环境。
-- [ ] **W4 统一检索层与 Agent**：`retrieve()` 融合关键词 + 向量 + 摘要 FTS，REST/MCP/Agent 共用；统计工具支持逻辑日；Agent「先摘要后下钻」；`search_summaries` 走 FTS；报告先读 day/6h 叙述；图搜文本通道改 FTS。
-- [ ] **W5 设备查询闭环 + 多设备时间轴 + 交互**：即下方原 PR 2，并补键盘导航、选中自动定位、筛选/搜索状态进 URL、头部时长改墙钟。
-- [ ] **W6 设备级摘要金字塔 v2**：即下方原 PR 3（从「暂缓」提前到本轮）。
+- [ ] **发布 + 历史回填（需 owner 授权）**：`git push origin main:deploy` → 部署机 `timetrace-update`；再对历史范围 `backfill` + `narrate` 生成设备金字塔（写生产库前先备份）。
+
+- [x] **W1 前端性能**：今天视图每秒整页重渲染、mousemove 全树 setState + O(N) hitTest、30s 全量重拉（含历史日）、樱花动画 + fixed 背景 + backdrop blur、全局 transition、wheel 未节流。
+- [x] **W2 多设备叙述过渡修复**：叶子上下文按设备分组带设备名、prompt 去掉「这台电脑」、按设备公平截断、指标补逐设备时长与墙钟、父窗读子窗 key_points。不改 schema。
+- [x] **W3 时区契约**：UTC epoch ms 存储；涉及日/周/本地时刻的接口接受 IANA `tz`（参数或 `X-Timezone`），服务端用 `zoneinfo` 计算；前端随请求携带浏览器时区；未携带时回退 `TIMETRACE_TZ`/运行环境。
+- [x] **W4 统一检索层与 Agent**：`retrieve()` 融合关键词 + 向量 + 摘要 FTS，REST/MCP/Agent 共用；统计工具支持逻辑日；Agent「先摘要后下钻」；`search_summaries` 走 FTS；报告先读 day/6h 叙述；图搜文本通道改 FTS。
+- [x] **W5 设备查询闭环 + 多设备时间轴 + 交互**：即下方原 PR 2，并补键盘导航、选中自动定位、筛选/搜索状态进 URL、头部时长改墙钟。
+- [x] **W6 设备级摘要金字塔 v2**：即下方原 PR 3（从「暂缓」提前到本轮）。
 - [ ] **图标替换**：只维护 TODO 清单，等 owner 方案（见 review 文档 §2）。
 
 ### 当前执行序列：三个独立 PR
@@ -67,7 +69,7 @@ TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证�
 - [x] **隐私边界**：审计和修复只查关系/状态元数据，不打开、不读取、不删除原图；疑似模型拒答记录保留原状，待 owner 后续自行确认。
 - [ ] **测试门槛**：覆盖休眠十几小时后恢复、Outbox 延迟上传/重放、客户端崩溃、服务端长期不重启、成功重试、空模型输出和重复修复幂等；验证时间轴不再产生跨日长条。
 
-#### PR 2：设备查询闭环与多设备时间轴
+#### PR 2：设备查询闭环与多设备时间轴（✅ 2026-10 W5 已实现，PR #19/#20；待部署验收）
 
 不传 `device_id` 时继续保持“全部设备”兼容行为；传 UUID 时限定单台设备；迁移前无身份记录统一使用 `_unknown_device`，不猜测归属。
 
@@ -79,7 +81,7 @@ TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证�
 - [ ] **多设备日时间轴**：同一日期使用共享横向时间刻度，每台设备占一条独立 lane；所有 lane 同步横向缩放/滚动，设备较多时容器支持鼠标滚轮纵向滚动。重叠活动保持平行显示，使交错使用与同时使用可直接比较。
 - [ ] **测试门槛**：至少覆盖两台设备 + legacy NULL、不传过滤器、单设备、未知设备、非法/不存在 UUID、同一时刻双设备活动、设备改名、撤销后的历史可读性，以及双进程 smoke 最终归属断言。
 
-#### PR 3：设备级摘要金字塔 v2（暂缓，不在下一次实现）
+#### PR 3：设备级摘要金字塔 v2（✅ 2026-10 W6 已实现，PR #21；待部署 + 历史回填）
 
 当前全局摘要已经混合多台设备，无法在读取阶段可靠拆开。该工作包等 PR 1、PR 2 稳定后再启动。
 
