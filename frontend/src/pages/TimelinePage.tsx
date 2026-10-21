@@ -81,10 +81,6 @@ export function TimelinePage() {
       ),
     [shownRecords],
   )
-  const now = useNow(durationSummary.activeCount > 0)
-  const totalMs =
-    durationSummary.closedTotal +
-    (now == null ? 0 : durationSummary.activeCount * now - durationSummary.activeStartTotal)
 
   const handleDateChange = useCallback((date: Date) => {
     setSelectedDate(date)
@@ -200,7 +196,7 @@ export function TimelinePage() {
         <TimelineHeader
           date={selectedDate}
           count={shownRecords.length}
-          totalMs={totalMs}
+          summary={durationSummary}
           onToday={handleGoToday}
           isMobile
           filtersOpen={mobileFiltersOpen}
@@ -264,7 +260,7 @@ export function TimelinePage() {
         <TimelineHeader
           date={selectedDate}
           count={shownRecords.length}
-          totalMs={totalMs}
+          summary={durationSummary}
           onToday={handleGoToday}
         />
         <div style={{ marginTop: 18 }}>{canvasArea}</div>
@@ -278,10 +274,26 @@ export function TimelinePage() {
   )
 }
 
+interface DurationSummary {
+  closedTotal: number
+  activeCount: number
+  activeStartTotal: number
+}
+
+/** The only part of the page that depends on the wall clock: isolating the 1s
+ *  tick here keeps it from re-rendering the whole page (and canvas) each second. */
+function TrackedTotal({ summary }: { summary: DurationSummary }) {
+  const now = useNow(summary.activeCount > 0)
+  const totalMs =
+    summary.closedTotal + (now == null ? 0 : summary.activeCount * now - summary.activeStartTotal)
+  if (totalMs <= 0) return null
+  return <> · 共记录 {formatDurationMs(totalMs)}</>
+}
+
 function TimelineHeader({
   date,
   count,
-  totalMs,
+  summary,
   onToday,
   isMobile = false,
   filtersOpen = false,
@@ -289,7 +301,7 @@ function TimelineHeader({
 }: {
   date: Date
   count: number
-  totalMs: number
+  summary: DurationSummary
   onToday: () => void
   isMobile?: boolean
   filtersOpen?: boolean
@@ -323,7 +335,7 @@ function TimelineHeader({
         </div>
         <div style={{ marginTop: 5, fontSize: 12.5, color: 'var(--text-muted)' }}>
           {count} 条活动
-          {totalMs > 0 && <> · 共记录 {formatDurationMs(totalMs)}</>}
+          <TrackedTotal summary={summary} />
         </div>
       </div>
 

@@ -27,11 +27,16 @@ async function fetchAllRecords(start: number, end: number): Promise<ApiRecord[]>
 export function useRecords(date: Date) {
   const [start, end] = dayRange(date)
   const dateStr = toDateParam(date)
+  // A past day no longer changes (barring late outbox uploads, picked up after
+  // staleTime), so only today polls — and only while the tab is visible.
+  // Re-pulling a whole day every 30s re-rendered the timeline for nothing.
+  const isPast = () => end < Date.now()
   return useQuery({
     queryKey: queryKeys.records(dateStr),
     queryFn: () => fetchAllRecords(start, end),
-    staleTime: 30_000,
-    refetchInterval: 30_000,
+    staleTime: () => (isPast() ? 10 * 60_000 : 30_000),
+    refetchInterval: () => (isPast() ? false : 60_000),
+    refetchIntervalInBackground: false,
     gcTime: 5 * 60_000,
     retry: 2,
   })

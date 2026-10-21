@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -31,12 +32,30 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   // Reflect the theme onto <html> + persist. The bootstrap script handles the
   // very first paint; this keeps the attribute in sync on every later change.
+  // The color cross-fade is only enabled for the moment of a flip (via the
+  // html.theme-transition class) — a permanent `* { transition }` made every
+  // layout/hover change pay for transitions on every element.
+  const firstThemeRef = useRef(true)
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme)
+    const root = document.documentElement
+    let timer: number | undefined
+    if (firstThemeRef.current) {
+      firstThemeRef.current = false
+    } else {
+      root.classList.add('theme-transition')
+      timer = window.setTimeout(() => root.classList.remove('theme-transition'), 320)
+    }
+    root.setAttribute('data-theme', theme)
     try {
       localStorage.setItem(STORAGE_KEY, theme)
     } catch {
       /* ignore */
+    }
+    return () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+        root.classList.remove('theme-transition')
+      }
     }
   }, [theme])
 
