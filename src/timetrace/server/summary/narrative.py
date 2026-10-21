@@ -24,7 +24,9 @@ from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
+from timetrace.server.db.sqlite import UNKNOWN_DEVICE
 from timetrace.server.llm_log import timed_chat_completion
+from timetrace.server.summary.metrics import active_wall_ms
 from timetrace.server.summary.windows import CHILD_OF, GRAINS
 
 if TYPE_CHECKING:
@@ -69,8 +71,11 @@ _GRAIN_SCOPE = {
 }
 
 _SYSTEM_PROMPT = (
-    "你是个人活动记忆的叙述助手。给你某个时间窗内这台电脑的活动"
+    "你是个人活动记忆的叙述助手。给你某个时间窗内用户一台或多台设备的活动"
     "（指标 + 逐帧描述或下层摘要），你生成一段结构化的中文总结。"
+    "多台设备时，材料按设备分组；不同设备可能被同时使用（例如一台在跑任务、"
+    "另一台在查资料），不同设备之间的交错不是窗口切换，不要据此判断分心，"
+    "叙述时注明各项活动发生在哪台设备上。"
     "三部分都要，尽量详细、尽量具体：\n"
     "1. description（流水账）：按时间顺序客观叙述这段时间在做什么，"
     "落到具体的应用/文件/网页/话题。\n"
@@ -127,7 +132,18 @@ def _fmt_hm(ms: int) -> str:
     return time.strftime("%H:%M", time.localtime(ms / 1000))
 
 
-def _metrics_line(metrics: dict) -> str:
+_UNKNOWN_DEVICE_LABEL = "未知设备"
+
+
+def _device_label(device_id: str | None, labels: dict[str, str]) -> str:
+    if not device_id or device_id == UNKNOWN_DEVICE:
+        return _UNKNOWN_DEVICE_LABEL
+    return labels.get(device_id) or f"设备 {device_id[:8]}"
+
+
+def _metrics_line(
+    metrics: dict, labels: dict[str, str] | None = None, wall_ms: int | None = None
+) -> str:
     cat = metrics.get("cat_ms") or {}
     top = sorted(cat.items(), key=lambda kv: -kv[1])[:6]
     cats = "、".join(f"{k} {round(v / 1000)}s" for k, v in top) or "（无）"
@@ -135,10 +151,20 @@ def _metrics_line(metrics: dict) -> str:
     top_apps = sorted(apps.items(), key=lambda kv: -kv[1])[:6]
     app_s = "、".join(f"{k} {round(v / 1000)}s" for k, v in top_apps) or "（无）"
     active = round((metrics.get("active_ms") or 0) / 1000)
-    return (
+    line = (
         f"分类时长: {cats}\n应用时长: {app_s}\n"
         f"活跃(切片之和): {active}s | 记录数: {metrics.get('record_count', 0)}"
     )
+    devices = metrics.get("device_ms") or {}
+    if len(devices) > 1:
+        dev_s = "、".join(
+            f"{_device_label(d, labels or {})} {round(ms / 1000)}s"
+            for d, ms in sorted(devices.items(), key=lambda kv: -kv[1])
+        )
+        line += f"\n设备时长: {dev_s}（多台设备并行时，切片之和会超过实际经过时间）"
+    if wall_ms is not None:
+        line += f"\n墙钟活跃(并行只算一次): {round(wall_ms / 1000)}s"
+    return line
 
 
 def _metrics_only_narrative(metrics: dict, n_src: int) -> dict:
@@ -258,8 +284,9 @@ class NarrativeBuilder:
         """
         grain = summary["grain"]
         metrics = json.loads(summary.get("metrics_json") or "{}")
+        labels = await self._db.device_labels()
         if grain == "5min":
-            context, n_src, n_desc = await self._leaf_context(summary)
+            context, n_src, n_desc = await self._leaf_context(summary, labels)
             if n_desc == 0:
                 # No describable frames — don't spend the GPU (or the loop's
                 # retries) on a window that can only ever come back empty.
@@ -271,9 +298,12 @@ class NarrativeBuilder:
 
         scope = _GRAIN_SCOPE.get(grain, grain)
         span = f"{_fmt_hm(summary['window_start'])}–{_fmt_hm(summary['window_end'])}"
+        wall = None
+        if len(metrics.get("device_ms") or {}) > 1:
+            wall = await active_wall_ms(self._db, summary["window_start"], summary["window_end"])
         user = (
             f"时间窗：{scope}（{summary.get('day_local', '')} {span}，grain={grain}）\n\n"
-            f"【指标】\n{_metrics_line(metrics)}\n\n"
+            f"【指标】\n{_metrics_line(metrics, labels, wall)}\n\n"
             f"【{'逐帧描述' if grain == '5min' else '下层摘要'}】（共 {n_src} 条）\n{context}"
         )
         budget = self._max_tokens_override or _GRAIN_MAX_TOKENS.get(grain, _DEFAULT_MAX_TOKENS)
@@ -301,18 +331,24 @@ class NarrativeBuilder:
             "compression_ratio": round(out_tokens / src_tokens, 4) if src_tokens else None,
         }
 
-    async def _leaf_context(self, summary: dict) -> tuple[str, int, int]:
-        """Chronological frame lines for a 5min window. Only frames WITH a VLM
-        description are fed (they carry the story); no-description window_switch
-        rows are dropped from the context but still counted in ``n_src``. Capped
-        to ``_MAX_LEAF_CONTEXT_CHARS`` to stay inside the model context.
+    async def _leaf_context(
+        self, summary: dict, labels: dict[str, str] | None = None
+    ) -> tuple[str, int, int]:
+        """Frame lines for a 5min window, grouped per device. Only frames WITH a
+        VLM description are fed (they carry the story); no-description
+        window_switch rows are dropped from the context but still counted in
+        ``n_src``. Capped to ``_MAX_LEAF_CONTEXT_CHARS`` overall, split evenly
+        across devices so a busy machine can't crowd the other one out, and
+        each device's slice stays chronological.
 
         Returns ``(context, n_total, n_described)`` — the caller skips the LLM
         entirely when ``n_described`` is 0.
         """
+        labels = labels or {}
         async with self._db.lock:
             async with self._db.conn.execute(
-                """SELECT r.ts_start, r.app_name, r.window_title, a.vlm_desc, a.category_final
+                """SELECT r.ts_start, r.app_name, r.window_title, r.device_id,
+                          a.vlm_desc, a.category_final
                    FROM records r LEFT JOIN analysis_results a ON a.record_id = r.id
                    WHERE r.ts_start >= ? AND r.ts_start < ?
                    ORDER BY r.ts_start""",
@@ -320,25 +356,33 @@ class NarrativeBuilder:
             ) as cur:
                 rows = await cur.fetchall()
         described = [r for r in rows if (r["vlm_desc"] or "").strip()]
-        lines, used, shown = [], 0, 0
+        groups: dict[str, list] = {}
         for r in described:
-            desc = (r["vlm_desc"] or "").strip().replace("\n", " ")
-            cat = r["category_final"] or "?"
-            line = (
-                f"{_fmt_hm(r['ts_start'])} | {r['app_name'] or ''} | "
-                f"{(r['window_title'] or '')[:50]} | [{cat}] {desc[:140]}"
-            )
-            if used + len(line) > _MAX_LEAF_CONTEXT_CHARS and lines:
-                break
-            lines.append(line)
-            used += len(line)
-            shown += 1
-        if shown < len(described):
-            lines.append(
-                f"…（窗内共 {len(rows)} 条、{len(described)} 条有描述，上下文截断到前 "
-                f"{shown}；调大 LM Studio 上下文可全量）"
-            )
-        return ("\n".join(lines) or "（无逐帧描述）"), len(rows), len(described)
+            groups.setdefault(r["device_id"] or UNKNOWN_DEVICE, []).append(r)
+        multi = len(groups) > 1
+        budget = _MAX_LEAF_CONTEXT_CHARS // max(1, len(groups))
+        sections: list[str] = []
+        for device, frames in groups.items():
+            lines, used = [], 0
+            for r in frames:
+                desc = (r["vlm_desc"] or "").strip().replace("\n", " ")
+                cat = r["category_final"] or "?"
+                line = (
+                    f"{_fmt_hm(r['ts_start'])} | {r['app_name'] or ''} | "
+                    f"{(r['window_title'] or '')[:50]} | [{cat}] {desc[:140]}"
+                )
+                if used + len(line) > budget and lines:
+                    break
+                lines.append(line)
+                used += len(line)
+            if len(lines) < len(frames):
+                lines.append(
+                    f"…（该设备窗内 {len(frames)} 条有描述，上下文截断到前 {len(lines)} 条）"
+                )
+            if multi:
+                lines.insert(0, f"【设备：{_device_label(device, labels)}】")
+            sections.append("\n".join(lines))
+        return ("\n\n".join(sections) or "（无逐帧描述）"), len(rows), len(described)
 
     async def _rollup_context(self, summary: dict) -> tuple[str, int]:
         """Child-grain narratives feeding a higher window (summary-of-summaries)."""
@@ -350,7 +394,19 @@ class NarrativeBuilder:
         for c in children:
             span = f"{_fmt_hm(c['window_start'])}–{_fmt_hm(c['window_end'])}"
             desc = (c["description"] or "").strip().replace("\n", " ")
-            lines.append(f"[{span}] {desc[:400]}" if desc else f"[{span}] （下层暂无叙述，仅指标）")
+            if not desc:
+                lines.append(f"[{span}] （下层暂无叙述，仅指标）")
+                continue
+            line = f"[{span}] {desc[:400]}"
+            # Key points are the child's own distillation — pass them up so the
+            # parent isn't limited to a clipped description.
+            try:
+                kps = json.loads(c.get("body_json") or "{}").get("key_points") or []
+            except (json.JSONDecodeError, AttributeError):
+                kps = []
+            if kps:
+                line += " 重点：" + "；".join(str(k)[:60] for k in kps[:4])
+            lines.append(line)
         return ("\n".join(lines) or "（无下层摘要）"), len(children)
 
 

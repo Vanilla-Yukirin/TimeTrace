@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 # the canonical helpers; importing them keeps a single source of truth (a future
 # refactor may relocate them to a neutral db helper).
 from timetrace.server.agent.tools import _UNCLASSIFIED, _clamped_dur_sql
+from timetrace.server.db.sqlite import UNKNOWN_DEVICE
 
 if TYPE_CHECKING:
     from timetrace.server.db import Database
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 
 def empty_metrics() -> dict:
     """A zeroed metrics dict (ms-based)."""
-    return {"cat_ms": {}, "app_ms": {}, "active_ms": 0, "record_count": 0}
+    return {"cat_ms": {}, "app_ms": {}, "device_ms": {}, "active_ms": 0, "record_count": 0}
 
 
 def merge_metrics(parts: list[dict]) -> dict:
@@ -46,6 +47,9 @@ def merge_metrics(parts: list[dict]) -> dict:
             out["cat_ms"][cat] = out["cat_ms"].get(cat, 0) + ms
         for app, ms in (p.get("app_ms") or {}).items():
             out["app_ms"][app] = out["app_ms"].get(app, 0) + ms
+        # Rows built before device metrics existed simply lack the key.
+        for dev, ms in (p.get("device_ms") or {}).items():
+            out["device_ms"][dev] = out["device_ms"].get(dev, 0) + ms
         out["active_ms"] += p.get("active_ms") or 0
         out["record_count"] += p.get("record_count") or 0
     return out
@@ -60,6 +64,7 @@ async def aggregate_frame_metrics(db: Database, start_ms: int, end_ms: int) -> d
     """
     cat_ms: dict[str, int] = {}
     app_ms: dict[str, int] = {}
+    device_ms: dict[str, int] = {}
     active_ms = 0
     record_count = 0
     async with db.lock:
@@ -91,9 +96,23 @@ async def aggregate_frame_metrics(db: Database, start_ms: int, end_ms: int) -> d
         ) as cur:
             for row in await cur.fetchall():
                 app_ms[row["app_name"]] = int(row["total_ms"] or 0)
+        # Per-device Σ own-span. Additive like cat/app, so it rolls up the
+        # cascade; parallel use of two devices shows up here instead of being
+        # mistaken for one machine with more active time than the window.
+        async with db.conn.execute(
+            f"""SELECT COALESCE(device_id, '{UNKNOWN_DEVICE}') AS device,
+                       SUM({_clamped_dur_sql()}) AS total_ms
+                FROM records
+                WHERE ts_start >= ? AND ts_start < ?
+                GROUP BY device""",
+            (start_ms, end_ms),
+        ) as cur:
+            for row in await cur.fetchall():
+                device_ms[row["device"]] = int(row["total_ms"] or 0)
     return {
         "cat_ms": cat_ms,
         "app_ms": app_ms,
+        "device_ms": device_ms,
         "active_ms": active_ms,
         "record_count": record_count,
     }

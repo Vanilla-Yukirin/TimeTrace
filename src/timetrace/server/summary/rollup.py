@@ -192,19 +192,26 @@ class MetricsCascadeBuilder:
         re-stamp of a contributing frame flips it → re-emission. Mirrors
         ``aggregate_frame_metrics``' window predicate so hash and metrics see the
         same rows; the hashed fields are exactly those the metrics depend on
-        (span via ts_start/ts_end, app_name, category_final).
+        (span via ts_start/ts_end, app_name, category_final) plus the device
+        the frame came from (narratives are grouped per device).
         """
         async with self._db.lock:
             async with self._db.conn.execute(
-                """SELECT r.id, r.ts_start, r.ts_end, r.app_name, a.category_final AS cat
+                """SELECT r.id, r.ts_start, r.ts_end, r.app_name, r.device_id,
+                          a.category_final AS cat
                    FROM records r LEFT JOIN analysis_results a ON a.record_id = r.id
                    WHERE r.ts_start >= ? AND r.ts_start < ?
                    ORDER BY r.id""",
                 (start_ms, end_ms),
             ) as cur:
                 rows = await cur.fetchall()
+        # The device suffix is appended only when known: legacy (NULL) rows keep
+        # their historical hash, so this change does not re-queue old history,
+        # while a window whose frames gain/change a device re-narrates per device.
         payload = "\n".join(
-            f"{r['id']}|{r['ts_start']}|{r['ts_end']}|{r['app_name']}|{r['cat']}" for r in rows
+            f"{r['id']}|{r['ts_start']}|{r['ts_end']}|{r['app_name']}|{r['cat']}"
+            + (f"|{r['device_id']}" if r["device_id"] else "")
+            for r in rows
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
