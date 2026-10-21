@@ -1,6 +1,6 @@
 # TimeTrace 滚动 TODO / Plan
 
-**最后更新：** 2026-08-30
+**最后更新：** 2026-10-22
 **验证基线：** PR #9 已合并为 `d4af2f2`；Windows 客户端安装与 Release 自动发布已闭环；两台客户端的设备身份、上传与服务端入库已验证，设备维度的查询、统计与摘要仍待补齐
 
 > 本文是项目唯一的「现在做到哪、下一步做什么」入口，只保留未完成项、运行约束和近期顺序。
@@ -36,6 +36,18 @@ TimeTrace 已越过 MVP 和演示阶段，并完成过个人生产环境验证�
 ---
 
 ## 当前最高优先级
+
+### 2026-10 owner review 执行序列（W1–W6）
+
+依据与根因见 [`infra/PLAN-OWNER-REVIEW-2026-10.md`](../infra/PLAN-OWNER-REVIEW-2026-10.md)。每个工作包一个 PR，只合入 `main`，本轮不推进 `deploy`。
+
+- [ ] **W1 前端性能**：今天视图每秒整页重渲染、mousemove 全树 setState + O(N) hitTest、30s 全量重拉（含历史日）、樱花动画 + fixed 背景 + backdrop blur、全局 transition、wheel 未节流。
+- [ ] **W2 多设备叙述过渡修复**：叶子上下文按设备分组带设备名、prompt 去掉「这台电脑」、按设备公平截断、指标补逐设备时长与墙钟、父窗读子窗 key_points。不改 schema。
+- [ ] **W3 时区契约**：UTC epoch ms 存储；涉及日/周/本地时刻的接口接受 IANA `tz`（参数或 `X-Timezone`），服务端用 `zoneinfo` 计算；前端随请求携带浏览器时区；未携带时回退 `TIMETRACE_TZ`/运行环境。
+- [ ] **W4 统一检索层与 Agent**：`retrieve()` 融合关键词 + 向量 + 摘要 FTS，REST/MCP/Agent 共用；统计工具支持逻辑日；Agent「先摘要后下钻」；`search_summaries` 走 FTS；报告先读 day/6h 叙述；图搜文本通道改 FTS。
+- [ ] **W5 设备查询闭环 + 多设备时间轴 + 交互**：即下方原 PR 2，并补键盘导航、选中自动定位、筛选/搜索状态进 URL、头部时长改墙钟。
+- [ ] **W6 设备级摘要金字塔 v2**：即下方原 PR 3（从「暂缓」提前到本轮）。
+- [ ] **图标替换**：只维护 TODO 清单，等 owner 方案（见 review 文档 §2）。
 
 ### 当前执行序列：三个独立 PR
 

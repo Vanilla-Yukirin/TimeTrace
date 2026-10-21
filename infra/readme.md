@@ -67,6 +67,7 @@
 
 | 文件 | 内容 |
 |------|------|
+| [PLAN-OWNER-REVIEW-2026-10.md](PLAN-OWNER-REVIEW-2026-10.md) | **执行中**：2026-10 owner review —— 前端性能、图标 TODO、交互、多设备摘要、统一检索/Agent、时区契约（UTC 存储 + 请求携带 IANA 时区） |
 | [PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) | **总纲**：分层记忆 + 薄路由器 agent；时间窗金字塔主链已落地，其余仍作演进参考 |
 | [storage/pyramid-schema.md](storage/pyramid-schema.md) | `summaries` 五层时间窗、指标/叙述/source_hash/回填与运维说明；`signals` 等扩展仍是规划 |
 | [architecture/episode-and-rollup-pipeline.md](architecture/episode-and-rollup-pipeline.md) | 时间窗 rollup 与调度设计；当前实际实现见 `server/summary/` 与 `bootstrap.py` |
