@@ -3,8 +3,10 @@ import type { ApiRecord } from '@/types/api'
 import { useTimelineState } from '@/hooks/useTimelineState'
 import { useTheme } from '@/contexts/theme'
 import { formatTime } from '@/lib/dateUtils'
+import { UNKNOWN_DEVICE } from '@/hooks/useDevices'
 import {
-  renderTimeline, hitTest, sortRecords, visibleRange, CANVAS_H, TIMELINE_PALETTES,
+  renderTimeline, hitTest, buildTimelineModel, visibleRange, canvasHeight, recordEnd,
+  TIMELINE_PALETTES,
 } from './useCanvasRenderer'
 import { useCanvasEvents } from './useCanvasEvents'
 import { TimelineTooltip } from './TimelineTooltip'
@@ -14,6 +16,19 @@ interface TimelineCanvasProps {
   date: Date
   selectedRecordId: string | null
   onSelectRecord: (id: string | null) => void
+  /** Device keys in lane order (uuid or UNKNOWN_DEVICE); stable reference. */
+  deviceOrder?: string[]
+  /** Device key → display label; stable reference. */
+  deviceLabels?: Record<string, string>
+}
+
+const EMPTY_ORDER: string[] = []
+const EMPTY_LABELS: Record<string, string> = {}
+// Taller than this (many device lanes) → the canvas box scrolls vertically.
+const MAX_VISIBLE_H = 420
+
+function deviceKey(rec: ApiRecord): string {
+  return rec.device_id ?? UNKNOWN_DEVICE
 }
 
 // Cap for the screen-reader mirror list: only the records in view are mirrored
@@ -24,6 +39,7 @@ const OPEN_RECORD_REDRAW_MS = 30_000
 
 export const TimelineCanvas = memo(function TimelineCanvas({
   records, date, selectedRecordId, onSelectRecord,
+  deviceOrder = EMPTY_ORDER, deviceLabels = EMPTY_LABELS,
 }: TimelineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -35,7 +51,11 @@ export const TimelineCanvas = memo(function TimelineCanvas({
   const tooltipElRef = useRef<HTMLDivElement>(null)
   const pointerRef = useRef({ x: 0, y: 0 })
 
-  const sorted = useMemo(() => sortRecords(records), [records])
+  const model = useMemo(
+    () => buildTimelineModel(records, deviceKey, deviceOrder, (k) => deviceLabels[k] ?? (k === UNKNOWN_DEVICE ? '未知设备' : k.slice(0, 8))),
+    [records, deviceOrder, deviceLabels],
+  )
+  const height = canvasHeight(model.lanes.length)
 
   const { viewport, setViewport, initViewport, zoom, pan, goToday } = useTimelineState(date)
   const { theme } = useTheme()
@@ -45,16 +65,34 @@ export const TimelineCanvas = memo(function TimelineCanvas({
   // every pan/zoom, so this can't live in the touch effect's closure). records /
   // viewport are read via refs so tap-hit-testing always sees current values.
   const touchRef = useRef({ mode: 'none' as 'none' | 'pan' | 'pinch', lastX: 0, lastDist: 0, startX: 0, startY: 0, moved: false })
-  const sortedRef = useRef(sorted)
+  const modelRef = useRef(model)
   const viewportRef = useRef(viewport)
 
   useLayoutEffect(() => {
-    sortedRef.current = sorted
+    modelRef.current = model
     viewportRef.current = viewport
-  }, [sorted, viewport])
+  }, [model, viewport])
 
   // Track whether the canvas has been initialized at least once
   const initializedRef = useRef(false)
+
+  // Backing-store size follows container width (ResizeObserver) and the lane
+  // count (height). Do NOT call ctx.scale here — draw() applies setTransform.
+  const widthRef = useRef(0)
+  const heightRef = useRef(height)
+  const applySize = useCallback((width: number, h: number) => {
+    const canvas = canvasRef.current
+    if (!canvas || width <= 0) return
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = width * dpr
+    canvas.height = h * dpr
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${h}px`
+  }, [])
+  useLayoutEffect(() => {
+    heightRef.current = height
+    applySize(widthRef.current, height)
+  }, [height, applySize])
 
   // Init on mount and resize
   useEffect(() => {
@@ -62,14 +100,8 @@ export const TimelineCanvas = memo(function TimelineCanvas({
     if (!el) return
     const obs = new ResizeObserver(entries => {
       const { width } = entries[0].contentRect
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const dpr = window.devicePixelRatio || 1
-      canvas.width = width * dpr
-      canvas.height = CANVAS_H * dpr
-      canvas.style.width = `${width}px`
-      canvas.style.height = `${CANVAS_H}px`
-      // Do NOT call ctx.scale here — the render effect applies setTransform on every frame
+      widthRef.current = width
+      applySize(width, heightRef.current)
       if (!initializedRef.current) {
         initializedRef.current = true
         initViewport(width)
@@ -79,7 +111,7 @@ export const TimelineCanvas = memo(function TimelineCanvas({
     })
     obs.observe(el)
     return () => { obs.disconnect(); initializedRef.current = false }
-  }, [initViewport, setViewport])
+  }, [initViewport, setViewport, applySize])
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -88,9 +120,24 @@ export const TimelineCanvas = memo(function TimelineCanvas({
     const dpr = window.devicePixelRatio || 1
     ctx.save()
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    renderTimeline(ctx, viewport, sorted, hoverRecordId, selectedRecordId, palette, theme)
+    renderTimeline(ctx, viewport, model, hoverRecordId, selectedRecordId, palette, theme)
     ctx.restore()
-  }, [viewport, sorted, hoverRecordId, selectedRecordId, palette, theme])
+  }, [viewport, model, hoverRecordId, selectedRecordId, palette, theme])
+
+  // Keep the selected record in view: when the selection changes (click,
+  // keyboard ←/→, ?highlight= on load) and the record is off-screen, pan so it
+  // sits a third of the way in. Zoom is left alone.
+  useEffect(() => {
+    if (!selectedRecordId) return
+    const rec = modelRef.current.all.items.find((r) => r.id === selectedRecordId)
+    const vp = viewportRef.current
+    if (!rec || vp.canvasWidth <= 0) return
+    const viewEnd = vp.offsetMs + vp.canvasWidth * vp.scaleMs
+    const end = recordEnd(rec, Date.now())
+    if (rec.ts_start >= vp.offsetMs && end <= viewEnd) return
+    if (end > vp.offsetMs && rec.ts_start < viewEnd) return // partly visible is enough
+    setViewport((v) => ({ ...v, offsetMs: rec.ts_start - (v.canvasWidth / 3) * v.scaleMs }))
+  }, [selectedRecordId, model, setViewport])
 
   // Render on every state change
   useEffect(() => {
@@ -125,7 +172,7 @@ export const TimelineCanvas = memo(function TimelineCanvas({
   }, [onSelectRecord])
 
   const { onWheel, onMouseDown, onMouseMove, onMouseUp, onMouseLeave } = useCanvasEvents({
-    sorted, viewport, zoom, pan,
+    model, viewport, zoom, pan,
     onHover: handleHover,
     onClick: handleClick,
     onPointer: handlePointer,
@@ -179,7 +226,7 @@ export const TimelineCanvas = memo(function TimelineCanvas({
       if (g.mode === 'pan' && !g.moved && e.changedTouches.length >= 1) {
         const t = e.changedTouches[0]
         const rect = canvas.getBoundingClientRect()
-        const hit = hitTest(t.clientX - rect.left, t.clientY - rect.top, sortedRef.current, viewportRef.current)
+        const hit = hitTest(t.clientX - rect.left, t.clientY - rect.top, modelRef.current, viewportRef.current)
         onSelectRecord(hit?.record.id ?? null)
       }
       if (e.touches.length === 0) g.mode = 'none'
@@ -203,9 +250,9 @@ export const TimelineCanvas = memo(function TimelineCanvas({
   )
 
   const srRecords = useMemo(() => {
-    const [lo, hi] = visibleRange(sorted, viewport, 0)
-    return sorted.items.slice(lo, Math.min(hi, lo + SR_LIST_MAX))
-  }, [sorted, viewport])
+    const [lo, hi] = visibleRange(model.all, viewport, 0)
+    return model.all.items.slice(lo, Math.min(hi, lo + SR_LIST_MAX))
+  }, [model, viewport])
 
   return (
     <div style={{ position: 'relative', width: '100%' }}>
@@ -216,7 +263,11 @@ export const TimelineCanvas = memo(function TimelineCanvas({
           cursor: hoverRecordId ? 'pointer' : 'default',
           borderRadius: 'var(--radius-lg)',
           border: '1px solid var(--bg-border)',
-          overflow: 'hidden',
+          // Many device lanes: scroll vertically (wheel over the left label
+          // gutter, or the scrollbar); the time axis zoom/pan stays on the canvas.
+          maxHeight: MAX_VISIBLE_H,
+          overflowX: 'hidden',
+          overflowY: height > MAX_VISIBLE_H ? 'auto' : 'hidden',
           boxShadow: 'var(--shadow-sm)',
         }}
       >
@@ -265,7 +316,7 @@ export const TimelineCanvas = memo(function TimelineCanvas({
               type="button"
               onClick={() => onSelectRecord(rec.id)}
             >
-              {`${formatTime(rec.ts_start)} ${rec.app_name}${rec.window_title ? ' — ' + rec.window_title : ''}`}
+              {`${formatTime(rec.ts_start)} ${model.lanes.length > 1 ? `[${deviceLabels[deviceKey(rec)] ?? '未知设备'}] ` : ''}${rec.app_name}${rec.window_title ? ' — ' + rec.window_title : ''}`}
             </button>
           </li>
         ))}

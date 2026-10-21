@@ -21,6 +21,39 @@ export interface ApiRecord {
   // "screenshots/2026/06/01/...png") — served via /blob for lightbox zoom
   image_path: string | null
   screenshot_count: number
+  // capture device (uuid); null = recorded before device identity existed
+  device_id: string | null
+}
+
+/** GET /v1/devices — read-side device directory for selectors and badges. */
+export interface ApiDevice {
+  id: string
+  label: string
+  name: string
+  description: string
+  reported_name: string
+  last_seen_at: number
+  revoked_at: number | null
+}
+
+export interface DevicesResponse {
+  items: ApiDevice[]
+  unknown: { id: '_unknown_device'; label: string; record_count: number }
+}
+
+/** GET /v1/admin/devices — full admin view. */
+export interface AdminDevice {
+  id: string
+  token_label: string | null
+  name: string
+  description: string
+  reported_name: string
+  reported_description: string
+  client_version: string
+  capabilities: string[]
+  first_seen_at: number
+  last_seen_at: number
+  revoked_at: number | null
 }
 
 export interface RecordsResponse {
@@ -111,6 +144,30 @@ export interface SearchResultItem {
   vlm_desc: string | null
   category_final: string | null
   match: SearchMatchInfo
+  /** capture device (uuid); null/absent = unknown */
+  device_id?: string | null
+}
+
+/** Single item returned by GET /v1/search/text (keyword + semantic, RRF). */
+export interface TextSearchItem {
+  record_id: string
+  ts_start: number
+  ts_end: number | null
+  app_name: string
+  window_title: string
+  url: string | null
+  thumb_path: string | null
+  vlm_desc: string | null
+  category_final: string | null
+  device_id?: string | null
+  match: { rrf_score: number; keyword_rank: number | null; semantic_rank: number | null }
+}
+
+export interface TextSearchResponse {
+  items: TextSearchItem[]
+  total: number
+  keyword_channel: ChannelStatus
+  semantic_channel: ChannelStatus
 }
 
 export type ChannelStatus = 'ok' | 'disabled' | 'unavailable'

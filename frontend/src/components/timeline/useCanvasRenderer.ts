@@ -8,9 +8,26 @@ const LANE_Y_AXIS = 0       // top of time axis labels
 const AXIS_H = 28
 const ACTIVITY_Y = AXIS_H + 6
 const ACTIVITY_H = 42
-const FRAMES_Y = ACTIVITY_Y + ACTIVITY_H + 12
+// Vertical distance between two device lanes: block height + room for the
+// next lane's label (drawn 4px above its blocks).
+const LANE_STRIDE = ACTIVITY_H + 18
 const FRAMES_H = 18
-export const CANVAS_H = FRAMES_Y + FRAMES_H + 16
+
+/** y of lane ``i``'s activity blocks. */
+function laneY(i: number): number {
+  return ACTIVITY_Y + i * LANE_STRIDE
+}
+
+/** y of the shared screenshot-marker row below ``laneCount`` lanes. */
+function framesY(laneCount: number): number {
+  return laneY(Math.max(1, laneCount) - 1) + ACTIVITY_H + 12
+}
+
+/** Canvas height for ``laneCount`` device lanes (1 lane = the classic layout). */
+export function canvasHeight(laneCount: number): number {
+  return framesY(laneCount) + FRAMES_H + 16
+}
+export const CANVAS_H = canvasHeight(1)
 
 const BLOCK_RADIUS = 7
 
@@ -63,7 +80,22 @@ export interface SortedRecords {
   firstOpenIdx: number // -1 when every record is closed
 }
 
-function recordEnd(rec: ApiRecord, now: number): number {
+/** One activity lane per device. ``label`` null = single-device layout (the
+ *  lane is just "活动", no device name). */
+export interface TimelineLane {
+  key: string
+  label: string | null
+  sorted: SortedRecords
+}
+
+/** Everything the renderer / hit-test needs: per-device lanes plus all records
+ *  merged (for the shared screenshot-marker row). */
+export interface TimelineModel {
+  lanes: TimelineLane[]
+  all: SortedRecords
+}
+
+export function recordEnd(rec: ApiRecord, now: number): number {
   return rec.ts_end ?? now
 }
 
@@ -79,6 +111,30 @@ export function sortRecords(records: ApiRecord[]): SortedRecords {
     }
   })
   return { items, maxClosedSpanMs, firstOpenIdx }
+}
+
+/** Build lanes from ``records``. ``laneOrder`` lists device keys in display
+ *  order (unknown keys are appended); ``labelOf`` maps a key to its label.
+ *  Lanes without records are omitted; a single lane gets no device label. */
+export function buildTimelineModel(
+  records: ApiRecord[],
+  keyOf: (rec: ApiRecord) => string,
+  laneOrder: string[],
+  labelOf: (key: string) => string,
+): TimelineModel {
+  const groups = new Map<string, ApiRecord[]>()
+  for (const r of records) {
+    const k = keyOf(r)
+    const g = groups.get(k)
+    if (g) g.push(r)
+    else groups.set(k, [r])
+  }
+  const order = [...laneOrder.filter((k) => groups.has(k)), ...[...groups.keys()].filter((k) => !laneOrder.includes(k))]
+  const multi = order.length > 1
+  return {
+    lanes: order.map((k) => ({ key: k, label: multi ? labelOf(k) : null, sorted: sortRecords(groups.get(k)!) })),
+    all: sortRecords(records),
+  }
 }
 
 /** First index whose ts_start >= ts (binary search over sorted items). */
@@ -159,18 +215,18 @@ function roundRect(
 export function renderTimeline(
   ctx: CanvasRenderingContext2D,
   vp: TimelineViewport,
-  sorted: SortedRecords,
+  model: TimelineModel,
   hoverRecordId: string | null,
   selectedRecordId: string | null,
   palette: TimelinePalette,
   theme: Theme,
 ): void {
   const { canvasWidth: w, scaleMs, offsetMs } = vp
-  const h = CANVAS_H
+  const laneCount = Math.max(1, model.lanes.length)
+  const h = canvasHeight(laneCount)
+  const fy = framesY(laneCount)
   const isLight = theme === 'light'
   const now = Date.now()
-  const [lo, hi] = visibleRange(sorted, vp)
-  const records = sorted.items.slice(lo, hi)
 
   // Background
   ctx.fillStyle = palette.bg
@@ -196,69 +252,28 @@ export function renderTimeline(
     ctx.fillText(interval < 60_000 ? formatTime(ts) : formatHM(ts), x, LANE_Y_AXIS + 14)
   }
 
-  // Lane labels
+  // Lane labels (device name per lane when several devices are shown)
   ctx.textAlign = 'left'
   ctx.font = '10px Inter, system-ui, sans-serif'
   ctx.fillStyle = palette.laneLabel
-  ctx.fillText('活动', 4, ACTIVITY_Y - 4)
-  ctx.fillText('截图', 4, FRAMES_Y - 4)
+  if (model.lanes.length === 0) ctx.fillText('活动', 4, ACTIVITY_Y - 4)
+  model.lanes.forEach((lane, i) => ctx.fillText(lane.label ?? '活动', 4, laneY(i) - 4))
+  ctx.fillText('截图', 4, fy - 4)
 
-  // --- Activity lane ---
-  for (const rec of records) {
-    const x1 = (rec.ts_start - offsetMs) / scaleMs
-    const x2 = (recordEnd(rec, now) - offsetMs) / scaleMs
-    const w2 = Math.max(x2 - x1, 2)
+  // --- Activity lanes ---
+  model.lanes.forEach((lane, i) => {
+    const [lo, hi] = visibleRange(lane.sorted, vp)
+    drawActivityLane(ctx, lane.sorted.items.slice(lo, hi), laneY(i), vp, now, hoverRecordId, selectedRecordId, palette, isLight)
+  })
 
-    if (x1 > w || x2 < 0) continue
-
-    const baseColor = getAppColor(rec.app_name)
-    const selected = rec.id === selectedRecordId
-    const hovered = rec.id === hoverRecordId
-
-    // App colors are mid-saturation; on the light canvas, drawing them faint
-    // (the dark-theme alpha) made them wash out, so bump alpha in light mode.
-    roundRect(ctx, x1, ACTIVITY_Y, w2, ACTIVITY_H, BLOCK_RADIUS)
-    ctx.fillStyle = baseColor
-    ctx.globalAlpha = selected ? 1.0 : hovered ? (isLight ? 1.0 : 0.92) : isLight ? 0.9 : 0.78
-    ctx.fill()
-    ctx.globalAlpha = 1.0
-
-    // subtle top sheen for depth (only on blocks wide enough to notice)
-    if (w2 > 10) {
-      roundRect(ctx, x1, ACTIVITY_Y, w2, ACTIVITY_H * 0.5, BLOCK_RADIUS)
-      ctx.fillStyle = isLight ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.10)'
-      ctx.globalAlpha = selected ? 0.9 : hovered ? 0.7 : 0.45
-      ctx.fill()
-      ctx.globalAlpha = 1.0
-    }
-
-    // Hover overlay — lighten on dark, darken on light so it reads either way.
-    if (hovered && !selected) {
-      roundRect(ctx, x1, ACTIVITY_Y, w2, ACTIVITY_H, BLOCK_RADIUS)
-      ctx.fillStyle = isLight ? 'rgba(0,0,0,0.07)' : 'rgba(255,255,255,0.14)'
-      ctx.fill()
-    }
-
-    // Selected: bright border + glow
-    if (selected) {
-      ctx.save()
-      roundRect(ctx, x1 + 1, ACTIVITY_Y + 1, w2 - 2, ACTIVITY_H - 2, BLOCK_RADIUS - 1)
-      ctx.strokeStyle = palette.selBorder
-      ctx.lineWidth = 2
-      ctx.shadowColor = baseColor
-      ctx.shadowBlur = 10
-      ctx.stroke()
-      ctx.restore()
-    }
-  }
-
-  // --- Frames lane (screenshot markers) ---
-  for (const rec of records) {
+  // --- Frames lane (screenshot markers, shared by all devices) ---
+  const [flo, fhi] = visibleRange(model.all, vp)
+  for (const rec of model.all.items.slice(flo, fhi)) {
     if (!rec.screenshot_count) continue
     const cx = (rec.ts_start - offsetMs) / scaleMs
     if (cx < -4 || cx > w + 4) continue
 
-    const cy = FRAMES_Y + FRAMES_H / 2
+    const cy = fy + FRAMES_H / 2
     const size = 5
     ctx.fillStyle = rec.id === selectedRecordId ? palette.frameSel : palette.frame
     ctx.globalAlpha = 0.92
@@ -273,18 +288,83 @@ export function renderTimeline(
   }
 }
 
+function drawActivityLane(
+  ctx: CanvasRenderingContext2D,
+  records: ApiRecord[],
+  laneTop: number,
+  vp: TimelineViewport,
+  now: number,
+  hoverRecordId: string | null,
+  selectedRecordId: string | null,
+  palette: TimelinePalette,
+  isLight: boolean,
+): void {
+  const { canvasWidth: w, scaleMs, offsetMs } = vp
+  for (const rec of records) {
+    const x1 = (rec.ts_start - offsetMs) / scaleMs
+    const x2 = (recordEnd(rec, now) - offsetMs) / scaleMs
+    const w2 = Math.max(x2 - x1, 2)
+
+    if (x1 > w || x2 < 0) continue
+
+    const baseColor = getAppColor(rec.app_name)
+    const selected = rec.id === selectedRecordId
+    const hovered = rec.id === hoverRecordId
+
+    // App colors are mid-saturation; on the light canvas, drawing them faint
+    // (the dark-theme alpha) made them wash out, so bump alpha in light mode.
+    roundRect(ctx, x1, laneTop, w2, ACTIVITY_H, BLOCK_RADIUS)
+    ctx.fillStyle = baseColor
+    ctx.globalAlpha = selected ? 1.0 : hovered ? (isLight ? 1.0 : 0.92) : isLight ? 0.9 : 0.78
+    ctx.fill()
+    ctx.globalAlpha = 1.0
+
+    // subtle top sheen for depth (only on blocks wide enough to notice)
+    if (w2 > 10) {
+      roundRect(ctx, x1, laneTop, w2, ACTIVITY_H * 0.5, BLOCK_RADIUS)
+      ctx.fillStyle = isLight ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.10)'
+      ctx.globalAlpha = selected ? 0.9 : hovered ? 0.7 : 0.45
+      ctx.fill()
+      ctx.globalAlpha = 1.0
+    }
+
+    // Hover overlay — lighten on dark, darken on light so it reads either way.
+    if (hovered && !selected) {
+      roundRect(ctx, x1, laneTop, w2, ACTIVITY_H, BLOCK_RADIUS)
+      ctx.fillStyle = isLight ? 'rgba(0,0,0,0.07)' : 'rgba(255,255,255,0.14)'
+      ctx.fill()
+    }
+
+    // Selected: bright border + glow
+    if (selected) {
+      ctx.save()
+      roundRect(ctx, x1 + 1, laneTop + 1, w2 - 2, ACTIVITY_H - 2, BLOCK_RADIUS - 1)
+      ctx.strokeStyle = palette.selBorder
+      ctx.lineWidth = 2
+      ctx.shadowColor = baseColor
+      ctx.shadowBlur = 10
+      ctx.stroke()
+      ctx.restore()
+    }
+  }
+}
+
 export function hitTest(
   mouseX: number,
   mouseY: number,
-  sorted: SortedRecords,
+  model: TimelineModel,
   vp: TimelineViewport,
 ): HitResult | null {
   const { scaleMs, offsetMs } = vp
   const now = Date.now()
+  const laneCount = Math.max(1, model.lanes.length)
 
-  // Check activity lane first. Walk newest-start → oldest so the record drawn
-  // on top (the later one) wins when blocks overlap.
-  if (mouseY >= ACTIVITY_Y && mouseY <= ACTIVITY_Y + ACTIVITY_H) {
+  // Which activity lane is under the pointer? Walk newest-start → oldest so the
+  // record drawn on top (the later one) wins when blocks overlap.
+  const laneIdx = Math.floor((mouseY - ACTIVITY_Y) / LANE_STRIDE)
+  const lane = model.lanes[laneIdx]
+  if (lane && mouseY >= laneY(laneIdx) && mouseY <= laneY(laneIdx) + ACTIVITY_H) {
+    const sorted = lane.sorted
     const ts = offsetMs + mouseX * scaleMs
     const slack = 2 * scaleMs // blocks are drawn at least 2px wide
     const [lo, hi] = rangeIn(sorted, ts - slack, ts)
@@ -299,13 +379,15 @@ export function hitTest(
   }
 
   // Check frames lane (nearest marker within 10px)
-  if (mouseY >= FRAMES_Y - 8 && mouseY <= FRAMES_Y + FRAMES_H + 8) {
-    const lo = lowerBound(sorted.items, offsetMs + (mouseX - 10) * scaleMs)
-    const hi = lowerBound(sorted.items, offsetMs + (mouseX + 10) * scaleMs + 1)
+  const fy = framesY(laneCount)
+  if (mouseY >= fy - 8 && mouseY <= fy + FRAMES_H + 8) {
+    const items = model.all.items
+    const lo = lowerBound(items, offsetMs + (mouseX - 10) * scaleMs)
+    const hi = lowerBound(items, offsetMs + (mouseX + 10) * scaleMs + 1)
     let best: ApiRecord | null = null
     let bestDist = 10
     for (let i = lo; i < hi; i++) {
-      const rec = sorted.items[i]
+      const rec = items[i]
       if (!rec.screenshot_count) continue
       const cx = (rec.ts_start - offsetMs) / scaleMs
       const dist = Math.abs(mouseX - cx)

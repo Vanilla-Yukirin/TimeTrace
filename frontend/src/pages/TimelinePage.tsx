@@ -4,6 +4,8 @@ import { format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useRecords } from '@/hooks/useRecords'
+import { deviceKeyOf, useDeviceDirectory } from '@/hooks/useDevices'
+import { DeviceSelect } from '@/components/devices/DeviceSelect'
 import { useNow } from '@/hooks/useNow'
 import { TimelineCanvas } from '@/components/timeline/TimelineCanvas'
 import { CategoryFilter, UNCATEGORIZED } from '@/components/timeline/CategoryFilter'
@@ -15,27 +17,57 @@ import { Divider } from '@/components/ui/PageShell'
 import { ErrorBanner } from '@/components/ui/Feedback'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { toDateParam, fromDateParam, formatDurationMs } from '@/lib/dateUtils'
+import type { ApiRecord } from '@/types/api'
+
+/** Patch the current URL's query (null deletes a key). Date changes push a
+ *  history entry; selection / filter tweaks replace it so back isn't spammed. */
+function patchUrl(patch: Record<string, string | null>, push = false): void {
+  const params = new URLSearchParams(window.location.search)
+  for (const [k, v] of Object.entries(patch)) {
+    if (v == null) params.delete(k)
+    else params.set(k, v)
+  }
+  const qs = params.toString()
+  const url = `${window.location.pathname}${qs ? `?${qs}` : ''}`
+  if (push) window.history.pushState({}, '', url)
+  else window.history.replaceState(window.history.state, '', url)
+}
+
+function urlParam(key: string): string | null {
+  return new URLSearchParams(window.location.search).get(key)
+}
+
+/** Focus is in something that owns arrow keys (inputs, selects, editors). */
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
+}
 
 export function TimelinePage() {
   const [selectedDate, setSelectedDate] = useState(() => {
-    const params = new URLSearchParams(window.location.search)
-    const dateStr = params.get('date')
+    const dateStr = urlParam('date')
     return dateStr ? fromDateParam(dateStr) : new Date()
   })
 
-  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(() => {
-    const params = new URLSearchParams(window.location.search)
-    return params.get('highlight')
-  })
+  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(() => urlParam('highlight'))
 
   // null = 全部; otherwise a category_final value (or UNCATEGORIZED sentinel).
-  const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(() => urlParam('cat'))
+  // null = all devices (one lane per device); uuid / _unknown_device = one device.
+  const [deviceFilter, setDeviceFilter] = useState<string | null>(() => urlParam('device'))
+  const devices = useDeviceDirectory()
+
+  // Mirror selection / filters into the URL (replace, not push).
+  useEffect(() => {
+    patchUrl({ highlight: selectedRecordId, cat: categoryFilter, device: deviceFilter })
+  }, [selectedRecordId, categoryFilter, deviceFilter])
 
   const isMobile = useIsMobile()
   // Mobile only: the calendar + quick-filters live in a collapsible panel.
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
 
-  const { data: records, isLoading, isError, error, refetch, isRefetching } = useRecords(selectedDate)
+  const { data: records, isLoading, isError, error, refetch, isRefetching } = useRecords(selectedDate, deviceFilter)
   const allRecords = useMemo(() => records ?? [], [records])
 
   const shownRecords = useMemo(() => {
@@ -64,32 +96,22 @@ export function TimelinePage() {
     [shownRecords],
   )
 
-  // Day summary: count + total tracked time across the shown records.
-  const durationSummary = useMemo(
-    () =>
-      shownRecords.reduce(
-        (summary, record) => {
-          if (record.ts_end == null) {
-            summary.activeCount += 1
-            summary.activeStartTotal += record.ts_start
-          } else {
-            summary.closedTotal += record.ts_end - record.ts_start
-          }
-          return summary
-        },
-        { closedTotal: 0, activeCount: 0, activeStartTotal: 0 },
-      ),
+  // Day summary: wall-clock union across devices (parallel use counts once)
+  // plus the plain per-record sum, which exceeds it when devices overlap.
+  const durationSummary = useMemo(() => summarizeDurations(shownRecords), [shownRecords])
+
+  // Records in time order (all lanes) for keyboard left/right navigation.
+  const navOrder = useMemo(
+    () => [...shownRecords].sort((a, b) => a.ts_start - b.ts_start || a.id.localeCompare(b.id)),
     [shownRecords],
   )
 
   const handleDateChange = useCallback((date: Date) => {
     setSelectedDate(date)
     setSelectedRecordId(null)
-    setCategoryFilter(null)
+    // The category filter is kept across days (it lives in the URL too).
     setLightboxIndex(-1)
-    const params = new URLSearchParams(window.location.search)
-    params.set('date', toDateParam(date))
-    window.history.pushState({}, '', `${window.location.pathname}?${params.toString()}`)
+    patchUrl({ date: toDateParam(date), highlight: null }, true)
   }, [])
 
   const handleSelectRecord = useCallback((id: string | null) => {
@@ -123,20 +145,47 @@ export function TimelinePage() {
 
   useEffect(() => {
     const handler = () => {
-      const params = new URLSearchParams(window.location.search)
-      const dateStr = params.get('date')
+      const dateStr = urlParam('date')
       setSelectedDate(dateStr ? fromDateParam(dateStr) : new Date())
-      setSelectedRecordId(params.get('highlight'))
-      setCategoryFilter(null)
+      setSelectedRecordId(urlParam('highlight'))
+      setCategoryFilter(urlParam('cat'))
+      setDeviceFilter(urlParam('device'))
     }
     window.addEventListener('popstate', handler)
     return () => window.removeEventListener('popstate', handler)
   }, [])
 
+  // Keyboard: left/right = previous/next record in time order (across device
+  // lanes, respecting filters); Esc clears the selection. Ignored while typing
+  // and while the lightbox (which owns the arrows) is open.
+  const lightboxOpen = lightboxIndex >= 0
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (lightboxOpen || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return
+      if (isTypingTarget(e.target)) return
+      if (e.key === 'Escape') {
+        setSelectedRecordId(null)
+        return
+      }
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+      if (navOrder.length === 0) return
+      e.preventDefault()
+      setSelectedRecordId((cur) => {
+        const idx = cur ? navOrder.findIndex((r) => r.id === cur) : -1
+        if (idx < 0) return (e.key === 'ArrowLeft' ? navOrder[navOrder.length - 1] : navOrder[0]).id
+        const next = e.key === 'ArrowLeft' ? Math.max(0, idx - 1) : Math.min(navOrder.length - 1, idx + 1)
+        return navOrder[next].id
+      })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [navOrder, lightboxOpen])
+
   const filtersPanel = (
     <>
       <DatePicker value={selectedDate} onChange={handleDateChange} />
       <Divider />
+      <DeviceSelect value={deviceFilter} onChange={setDeviceFilter} />
       <CategoryFilter records={allRecords} selected={categoryFilter} onSelect={setCategoryFilter} />
     </>
   )
@@ -177,6 +226,8 @@ export function TimelinePage() {
       date={selectedDate}
       selectedRecordId={selectedRecordId}
       onSelectRecord={handleSelectRecord}
+      deviceOrder={devices.order}
+      deviceLabels={devices.labels}
     />
   )
 
@@ -275,19 +326,86 @@ export function TimelinePage() {
 }
 
 interface DurationSummary {
+  /** Sum of closed spans (per-device sum, double-counts parallel use). */
   closedTotal: number
   activeCount: number
   activeStartTotal: number
+  /** Wall-clock union of closed spans, clipped before the first open record. */
+  unionBeforeOpen: number
+  /** Earliest still-open record's start; it runs to "now" (null = none open). */
+  firstOpenStart: number | null
+  /** Records come from more than one device. */
+  multiDevice: boolean
+}
+
+/** One pass over the day's records. Open records all run to "now", so their
+ *  union is simply [earliest open start, now]; closed spans contribute their
+ *  union up to that point. */
+function summarizeDurations(records: ApiRecord[]): DurationSummary {
+  let closedTotal = 0
+  let activeCount = 0
+  let activeStartTotal = 0
+  let firstOpenStart: number | null = null
+  const devices = new Set<string>()
+  const closed: [number, number][] = []
+  for (const r of records) {
+    devices.add(deviceKeyOf(r))
+    if (r.ts_end == null) {
+      activeCount += 1
+      activeStartTotal += r.ts_start
+      firstOpenStart = firstOpenStart == null ? r.ts_start : Math.min(firstOpenStart, r.ts_start)
+    } else if (r.ts_end > r.ts_start) {
+      closedTotal += r.ts_end - r.ts_start
+      closed.push([r.ts_start, r.ts_end])
+    }
+  }
+  closed.sort((a, b) => a[0] - b[0])
+  const limit = firstOpenStart ?? Infinity
+  let unionBeforeOpen = 0
+  let curS = -Infinity
+  let curE = -Infinity
+  for (const [s, e0] of closed) {
+    if (s >= limit) break
+    const e = Math.min(e0, limit)
+    if (s > curE) {
+      if (curE > curS) unionBeforeOpen += curE - curS
+      curS = s
+      curE = e
+    } else if (e > curE) {
+      curE = e
+    }
+  }
+  if (curE > curS) unionBeforeOpen += curE - curS
+  return {
+    closedTotal,
+    activeCount,
+    activeStartTotal,
+    unionBeforeOpen,
+    firstOpenStart,
+    multiDevice: devices.size > 1,
+  }
 }
 
 /** The only part of the page that depends on the wall clock: isolating the 1s
  *  tick here keeps it from re-rendering the whole page (and canvas) each second. */
 function TrackedTotal({ summary }: { summary: DurationSummary }) {
   const now = useNow(summary.activeCount > 0)
-  const totalMs =
+  const openMs =
+    summary.firstOpenStart != null && now != null ? Math.max(0, now - summary.firstOpenStart) : 0
+  const wallMs = summary.unionBeforeOpen + openMs
+  const sumMs =
     summary.closedTotal + (now == null ? 0 : summary.activeCount * now - summary.activeStartTotal)
-  if (totalMs <= 0) return null
-  return <> · 共记录 {formatDurationMs(totalMs)}</>
+  if (wallMs <= 0) return null
+  return (
+    <>
+      {' · '}共记录 {formatDurationMs(wallMs)}
+      {summary.multiDevice && sumMs - wallMs >= 60_000 && (
+        <span title="多台设备同时使用的时段按每台分别计入" style={{ opacity: 0.75 }}>
+          （各设备合计 {formatDurationMs(sumMs)}）
+        </span>
+      )}
+    </>
+  )
 }
 
 function TimelineHeader({

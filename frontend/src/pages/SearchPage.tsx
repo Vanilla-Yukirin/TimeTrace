@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Search as SearchIcon } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { CatMascot } from '@/components/brand/CatMascot'
@@ -12,20 +12,111 @@ import { SkeletonRows } from '@/components/ui/Skeleton'
 import { useSearchQuery, type SearchParams } from '@/hooks/useSearchQuery'
 import { fromDateParam } from '@/lib/dateUtils'
 
-export function SearchPage() {
-  // Pending inputs (controlled by the user; not yet submitted)
-  const [q, setQ] = useState('')
-  const [images, setImages] = useState<File[]>([])
-  const [visual, setVisual] = useState(true)
-  const [semantic, setSemantic] = useState(true)
-  const [startDate, setStartDate] = useState<string | null>(null)
-  const [endDate, setEndDate] = useState<string | null>(null)
-  const [apps, setApps] = useState<string[]>([])
-  const [categories, setCategories] = useState<string[]>([])
+/** Text inputs of the search form. Everything except reference images is
+ *  mirrored into the URL so a search survives refresh / back / sharing. */
+interface SearchInputs {
+  q: string
+  visual: boolean
+  semantic: boolean
+  startDate: string | null
+  endDate: string | null
+  apps: string[]
+  categories: string[]
+  device: string | null
+}
 
-  // Committed params (only changes on Submit — avoids querying on every keystroke)
-  const [submitted, setSubmitted] = useState<SearchParams | null>(null)
+function csv(v: string | null): string[] {
+  return v ? v.split(',').filter(Boolean) : []
+}
+
+function readSearchUrl(): { inputs: SearchInputs; active: boolean } {
+  const sp = new URLSearchParams(window.location.search)
+  const inputs: SearchInputs = {
+    q: sp.get('q') ?? '',
+    visual: sp.get('visual') !== '0',
+    semantic: sp.get('semantic') !== '0',
+    startDate: sp.get('from'),
+    endDate: sp.get('to'),
+    apps: csv(sp.get('apps')),
+    categories: csv(sp.get('cats')),
+    device: sp.get('device'),
+  }
+  const active = ['q', 'from', 'to', 'apps', 'cats', 'device'].some((k) => sp.get(k))
+  return { inputs, active }
+}
+
+function writeSearchUrl(i: SearchInputs): void {
+  const sp = new URLSearchParams()
+  if (i.q) sp.set('q', i.q)
+  if (i.startDate) sp.set('from', i.startDate)
+  if (i.endDate) sp.set('to', i.endDate)
+  if (i.apps.length) sp.set('apps', i.apps.join(','))
+  if (i.categories.length) sp.set('cats', i.categories.join(','))
+  if (i.device) sp.set('device', i.device)
+  if (!i.visual) sp.set('visual', '0')
+  if (!i.semantic) sp.set('semantic', '0')
+  const qs = sp.toString()
+  const url = `${window.location.pathname}${qs ? `?${qs}` : ''}`
+  if (url !== `${window.location.pathname}${window.location.search}`) {
+    window.history.pushState({}, '', url)
+  }
+}
+
+function toParams(i: SearchInputs, images: File[]): SearchParams {
+  const dayMs = 86_400_000
+  return {
+    q: i.q.trim(),
+    images,
+    visual: i.visual,
+    semantic: i.semantic,
+    radius: 10,
+    start: i.startDate ? fromDateParam(i.startDate).getTime() : null,
+    end: i.endDate ? fromDateParam(i.endDate).getTime() + dayMs - 1 : null,
+    apps: i.apps,
+    categories: i.categories,
+    device: i.device,
+    limit: 50,
+  }
+}
+
+export function SearchPage() {
+  const [initial] = useState(readSearchUrl)
+  // Pending inputs (controlled by the user; not yet submitted)
+  const [q, setQ] = useState(initial.inputs.q)
+  const [images, setImages] = useState<File[]>([])
+  const [visual, setVisual] = useState(initial.inputs.visual)
+  const [semantic, setSemantic] = useState(initial.inputs.semantic)
+  const [startDate, setStartDate] = useState<string | null>(initial.inputs.startDate)
+  const [endDate, setEndDate] = useState<string | null>(initial.inputs.endDate)
+  const [apps, setApps] = useState<string[]>(initial.inputs.apps)
+  const [categories, setCategories] = useState<string[]>(initial.inputs.categories)
+  const [device, setDevice] = useState<string | null>(initial.inputs.device)
+
+  // Committed params (only changes on Submit — avoids querying on every keystroke).
+  // A URL carrying a search (refresh / shared link / back) runs it right away.
+  const [submitted, setSubmitted] = useState<SearchParams | null>(() =>
+    initial.active ? toParams(initial.inputs, []) : null,
+  )
   const isMobile = useIsMobile()
+
+  // Back / forward: restore the form from the URL and re-run that search.
+  useEffect(() => {
+    const onPop = () => {
+      const { inputs, active } = readSearchUrl()
+      setQ(inputs.q)
+      setVisual(inputs.visual)
+      setSemantic(inputs.semantic)
+      setStartDate(inputs.startDate)
+      setEndDate(inputs.endDate)
+      setApps(inputs.apps)
+      setCategories(inputs.categories)
+      setDevice(inputs.device)
+      setImages([])
+      setSubmitted(active ? toParams(inputs, []) : null)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
 
   const { data, isFetching, error } = useSearchQuery(submitted)
 
@@ -60,29 +151,18 @@ export function SearchPage() {
       apps.length > 0 ||
       categories.length > 0 ||
       startDate !== null ||
-      endDate !== null,
-    [q, images, apps, categories, startDate, endDate],
+      endDate !== null ||
+      device !== null,
+    [q, images, apps, categories, startDate, endDate, device],
   )
 
   const submit = () => {
     if (!hasAnyInput) return
     // Old indices may collide with the next result set.
     setLightboxIndex(-1)
-    const dayMs = 86_400_000
-    const start = startDate ? fromDateParam(startDate).getTime() : null
-    const end = endDate ? fromDateParam(endDate).getTime() + dayMs - 1 : null
-    setSubmitted({
-      q: q.trim(),
-      images,
-      visual,
-      semantic,
-      radius: 10,
-      start,
-      end,
-      apps,
-      categories,
-      limit: 50,
-    })
+    const inputs: SearchInputs = { q: q.trim(), visual, semantic, startDate, endDate, apps, categories, device }
+    writeSearchUrl(inputs)
+    setSubmitted(toParams(inputs, images))
   }
 
   return (
@@ -137,7 +217,7 @@ export function SearchPage() {
               aria-label="搜索关键词"
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="关键词（标题/应用/进程/URL/画面描述都搜）。中文 ≥3 字走 FTS5 BM25 排序"
+              placeholder="关键词或一句描述（标题/应用/URL/画面描述 + 语义相似一起搜）"
               style={{
                 flex: 1,
                 background: 'transparent',
@@ -184,7 +264,7 @@ export function SearchPage() {
               checked={semantic}
               onChange={setSemantic}
               label="语义相似"
-              hint="VLM + BM25 · 内容一致"
+              hint="VLM 描述 + 语义检索 · 内容一致"
               warning={
                 data?.semanticChannel === 'unavailable' ? '需 VLM，当前未配置' : undefined
               }
@@ -202,6 +282,8 @@ export function SearchPage() {
           onEndDate={setEndDate}
           onApps={setApps}
           onCategories={setCategories}
+          device={device}
+          onDevice={setDevice}
         />
 
         {/* Results */}
@@ -259,6 +341,11 @@ export function SearchPage() {
             <>
               <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 2px' }}>
                 共 {data.total} 条
+                {data.source === 'text' && (
+                  <>
+                    {' · '}语义通道：{channelLabel(data.semanticChannel)}
+                  </>
+                )}
                 {data.source === 'image' && (
                   <>
                     {' · '}视觉通道：{channelLabel(data.visualChannel)}
