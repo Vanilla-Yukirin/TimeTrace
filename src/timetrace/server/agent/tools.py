@@ -25,11 +25,17 @@ import structlog
 # is cycle-free. aggregate_frame_metrics is imported function-locally in
 # query_stats instead, because server/summary/metrics.py imports THIS module
 # (_clamped_dur_sql/_UNCLASSIFIED) — a top-level import there would be circular.
+from timetrace.server.retrieval import (
+    fetch_records_by_ids,
+    retrieve_records,
+    retrieve_summaries,
+)
 from timetrace.server.summary.windows import CHILD_OF, GRAINS, scope_key, window_bounds
 from timetrace.server.tz import format_ms, from_local, to_local, view_tz, view_tz_name
 
 if TYPE_CHECKING:
     from timetrace.server.db import Database
+    from timetrace.server.embedding.client import EmbeddingClient
 
 logger = structlog.get_logger(__name__)
 
@@ -141,36 +147,73 @@ async def search_activity(
     hours_back: int | None = None,
     start_iso: str | None = None,
     end_iso: str | None = None,
+    *,
+    embedding: EmbeddingClient | None = None,
 ) -> dict:
-    """Keyword search over activity records (FTS5 trigram / multi-field LIKE).
+    """Find records by meaning AND wording: keyword (FTS5 trigram / LIKE) +
+    semantic (text-embedding cosine) fused with RRF — the same retrieval path
+    as REST ``/v1/search/text``. Also returns the narrated pyramid windows whose
+    summary mentions the query (``related_summaries``), so the caller can jump
+    to the surrounding story instead of paging raw frames.
 
-    Window: explicit ``start_iso``/``end_iso`` (local time) take precedence over
-    the relative ``hours_back``. Results are BM25-relevance-ordered, so to pull
-    more, narrow the window + raise ``limit`` (no ts_start cursor here — keyset
-    pagination doesn't compose with relevance ranking; use ``get_recent_activity``
-    for full chronological pulls).
+    Window: explicit ``start_iso``/``end_iso`` (view zone) take precedence over
+    the relative ``hours_back``; neither → all time.
     """
+    query = (query or "").strip()
+    if not query:
+        return {"error": "query must not be empty"}
     limit = min(max(1, int(limit)), _MAX_LIMIT)
     try:
         start_ms, end_ms = _resolve_window(hours_back, start_iso, end_iso)
     except ValueError as exc:
         return {"error": str(exc)}
-    rows = await db.query_records(start_ms=start_ms, end_ms=end_ms, limit=limit, keyword=query)
-    return {
-        "query": query,
-        "count": len(rows),
-        "items": [
+    result = await retrieve_records(db, embedding, query, start_ms, end_ms, limit=limit)
+    meta = await fetch_records_by_ids(db, [rid for rid, _ in result.ranked])
+    items = []
+    for rid, _score in result.ranked:
+        r = meta.get(rid)
+        if r is None:
+            continue
+        items.append(
             {
-                "id": r["id"],
+                "id": rid,
                 "ts_start_iso": ms_to_iso(r.get("ts_start")),
                 "ts_end_iso": ms_to_iso(r.get("ts_end")),
                 "app_name": r.get("app_name"),
                 "window_title": r.get("window_title"),
                 "vlm_desc": r.get("vlm_desc"),
                 "category": r.get("category_final"),
+                "matched_by": [
+                    ch
+                    for ch, ranks in (
+                        ("keyword", result.keyword_ranks),
+                        ("semantic", result.semantic_ranks),
+                    )
+                    if rid in ranks
+                ],
             }
-            for r in rows
+        )
+    summaries = await retrieve_summaries(
+        db, query, start_ms, end_ms, grains=["1h", "6h", "day"], limit=5
+    )
+    return {
+        "query": query,
+        "count": len(items),
+        "semantic_channel": result.semantic_channel,
+        "items": items,
+        "related_summaries": [
+            {
+                "grain": r["grain"],
+                "window_start_iso": ms_to_iso(r["window_start"]),
+                "window_end_iso": ms_to_iso(r["window_end"]),
+                "description": (r.get("description") or "")[:300],
+            }
+            for r in summaries
         ],
+        "note": (
+            "按相关度排序（关键词 + 语义融合），不是时间顺序。"
+            "related_summaries 是叙述里提到该关键词的时间窗，可用 search_summaries 下钻。"
+        ),
     }
 
 
@@ -216,11 +259,36 @@ async def get_recent_activity(
     }
 
 
-async def get_app_breakdown(db: Database, hours_back: int = 24, top_n: int = 20) -> dict:
-    """Aggregate active duration per app over the window (closed sessions only)."""
+def _stats_window(
+    hours_back: int, period: str | None, start_iso: str | None, end_iso: str | None
+) -> tuple[int, int, int]:
+    """Window for the breakdown tools: a named ``period`` (civil, view zone,
+    4AM cut — so "today" means today, not the last 24h) wins over
+    ``hours_back``. Returns ``(start_ms, end_ms, hours_back)``; raises ValueError."""
     hours_back = min(max(1, int(hours_back)), _MAX_HOURS)
-    top_n = min(max(1, int(top_n)), _MAX_TOP_N)
+    if period:
+        if period not in _VALID_PERIODS:
+            raise ValueError(f"unknown period: {period}; valid: {list(_VALID_PERIODS)}")
+        start_ms, end_ms = _period_bounds(period, start_iso, end_iso, 4)
+        return start_ms, end_ms, hours_back
     start_ms, end_ms = _window(hours_back)
+    return start_ms, end_ms, hours_back
+
+
+async def get_app_breakdown(
+    db: Database,
+    hours_back: int = 24,
+    top_n: int = 20,
+    period: str | None = None,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+) -> dict:
+    """Aggregate active duration per app over the window (closed sessions only)."""
+    top_n = min(max(1, int(top_n)), _MAX_TOP_N)
+    try:
+        start_ms, end_ms, hours_back = _stats_window(hours_back, period, start_iso, end_iso)
+    except ValueError as exc:
+        return {"error": str(exc)}
     async with db.lock:
         async with db.conn.execute(
             # Per-record duration is clamped: negative spans floor to 0 and
@@ -254,14 +322,24 @@ async def get_app_breakdown(db: Database, hours_back: int = 24, top_n: int = 20)
         for r in rows
     ]
     return {
-        "hours_back": hours_back,
+        "hours_back": None if period else hours_back,
+        "period": period,
+        "window_start_iso": ms_to_iso(start_ms),
+        "window_end_iso": ms_to_iso(end_ms),
         "total_seconds": sum(it["total_seconds"] for it in items),
         "capped_per_record_seconds": _MAX_PLAUSIBLE_RECORD_MS // 1000,
         "items": items,
     }
 
 
-async def get_category_stats(db: Database, hours_back: int = 24, top_n: int = 20) -> dict:
+async def get_category_stats(
+    db: Database,
+    hours_back: int = 24,
+    top_n: int = 20,
+    period: str | None = None,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+) -> dict:
     """Aggregate active duration per category over the window.
 
     ``category_final`` is the AI-assigned label (rule override, else the VLM's
@@ -278,9 +356,11 @@ async def get_category_stats(db: Database, hours_back: int = 24, top_n: int = 20
     close artifacts don't inflate totals. ``categories_legend`` maps the flat-6
     ids to their 中文 names so a caller never has to guess what a category means.
     """
-    hours_back = min(max(1, int(hours_back)), _MAX_HOURS)
     top_n = min(max(1, int(top_n)), _MAX_TOP_N)
-    start_ms, end_ms = _window(hours_back)
+    try:
+        start_ms, end_ms, hours_back = _stats_window(hours_back, period, start_iso, end_iso)
+    except ValueError as exc:
+        return {"error": str(exc)}
     async with db.lock:
         async with db.conn.execute(
             f"""SELECT CASE
@@ -314,7 +394,10 @@ async def get_category_stats(db: Database, hours_back: int = 24, top_n: int = 20
             item["is_genuinely_uncategorized"] = True
         items.append(item)
     return {
-        "hours_back": hours_back,
+        "hours_back": None if period else hours_back,
+        "period": period,
+        "window_start_iso": ms_to_iso(start_ms),
+        "window_end_iso": ms_to_iso(end_ms),
         "total_seconds": sum(it["total_seconds"] for it in items),
         "capped_per_record_seconds": _MAX_PLAUSIBLE_RECORD_MS // 1000,
         "categories_legend": _CATEGORY_LEGEND,
@@ -569,16 +652,20 @@ async def search_summaries(
         return {"error": str(exc)}
     limit = min(max(1, int(limit)), _MAX_LIMIT)
 
-    rows = await db.get_summaries_in_range(grain, start_ms, end_ms)
-    q = (query or "").strip().lower()
+    q = (query or "").strip()
+    if q:
+        # Indexed narrative search (summaries_fts, BM25) instead of scanning
+        # every window's text in Python; overlap semantics so a coarse window
+        # containing the period still matches.
+        rows = await db.search_summaries_text(q, start_ms, end_ms, grains=[grain], limit=limit)
+    else:
+        rows = await db.get_summaries_in_range(grain, start_ms, end_ms)
     items: list[dict] = []
     for r in rows:
         body = json.loads(r.get("body_json") or "{}")
         key_points = body.get("key_points") or []
         desc = r.get("description") or ""
         evaluation = r.get("evaluation") or ""
-        if q and q not in (desc + " " + evaluation + " " + " ".join(key_points)).lower():
-            continue
         metrics = json.loads(r.get("metrics_json") or "{}")
         items.append(
             {
@@ -688,11 +775,18 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_activity",
-            "description": "按关键词检索活动记录（标题/应用/进程/URL/AI 描述）。找具体内容用它。",
+            "description": (
+                "按内容检索活动记录：关键词（标题/应用/进程/URL/AI 描述）+ 语义相似度融合，"
+                "同义说法也能命中。结果按相关度排序；related_summaries 给出叙述里提到它的时间窗。"
+                "找『什么时候做过 X / 看过 X』用它。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "搜索关键词；多词空格分隔按 AND"},
+                    "query": {
+                        "type": "string",
+                        "description": "要找的内容，可以是关键词或一句描述",
+                    },
                     "limit": _int_param("返回条数，默认 20，最大 2000"),
                     "hours_back": _int_param("只看最近 N 小时，不传则全时段"),
                     "start_iso": _str_param("绝对起始时间（本地），优先于 hours_back"),
@@ -723,11 +817,21 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_app_breakdown",
-            "description": "统计某时间窗内每个应用的累计时长（秒），降序。",
+            "description": (
+                "统计某时间窗内每个应用的累计时长（秒），降序。"
+                "『今天/本周』请传 period，不要用 hours_back 近似。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "hours_back": _int_param("窗口小时数，默认 24，最大 720"),
+                    "period": {
+                        "type": "string",
+                        "enum": list(_VALID_PERIODS),
+                        "description": "today/this_week/this_month/custom；给了就优先于 hours_back",
+                    },
+                    "start_iso": _str_param("period=custom 起，本地 'YYYY-MM-DD HH:MM:SS'"),
+                    "end_iso": _str_param("period=custom 止（不含）"),
+                    "hours_back": _int_param("最近 N 小时（滚动窗口），默认 24，最大 720"),
                     "top_n": _int_param("返回前 N 个应用，默认 20，最大 50"),
                 },
             },
@@ -745,7 +849,14 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "hours_back": _int_param("窗口小时数，默认 24，最大 720"),
+                    "period": {
+                        "type": "string",
+                        "enum": list(_VALID_PERIODS),
+                        "description": "today/this_week/this_month/custom；给了就优先于 hours_back",
+                    },
+                    "start_iso": _str_param("period=custom 起，本地 'YYYY-MM-DD HH:MM:SS'"),
+                    "end_iso": _str_param("period=custom 止（不含）"),
+                    "hours_back": _int_param("最近 N 小时（滚动窗口），默认 24，最大 720"),
                     "top_n": _int_param("返回前 N 个分类，默认 20，最大 50"),
                 },
             },
@@ -818,7 +929,7 @@ TOOL_SCHEMAS = [
                         "custom 起，本地 'YYYY-MM-DD HH:MM:SS'；下钻时传上层窗口的 start"
                     ),
                     "end_iso": _str_param("custom 止（不含）；下钻时传上层窗口的 end"),
-                    "query": _str_param("可选：只返回叙述里含该关键词的窗口"),
+                    "query": _str_param("可选：只返回叙述里含该关键词的窗口（全文索引，按相关度）"),
                     "limit": _int_param("返回窗口数，默认 50，最大 2000"),
                 },
                 "required": ["grain", "period"],
@@ -857,13 +968,23 @@ _IMPLS = {
 }
 
 
-async def dispatch_tool(db: Database, name: str, arguments: dict) -> dict:
+# Tools that use the text-embedding endpoint; the dependency is injected by the
+# caller (never taken from model-supplied arguments).
+_NEEDS_EMBEDDING = {"search_activity"}
+
+
+async def dispatch_tool(
+    db: Database, name: str, arguments: dict, *, embedding: EmbeddingClient | None = None
+) -> dict:
     """Run a tool by name with a (parsed) arguments dict. Never raises — returns
     an ``error`` dict so the agent loop can feed it back and self-correct."""
     fn = _IMPLS.get(name)
     if fn is None:
         return {"error": f"unknown tool: {name}"}
+    arguments = {k: v for k, v in arguments.items() if k != "embedding"}
     try:
+        if name in _NEEDS_EMBEDDING:
+            return await fn(db, **arguments, embedding=embedding)
         return await fn(db, **arguments)
     except TypeError as exc:
         return {"error": f"bad arguments for {name}: {exc}"}

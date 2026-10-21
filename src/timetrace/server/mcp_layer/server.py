@@ -1,6 +1,6 @@
 """TimeTrace MCP server — exposes activity context to external AI agents.
 
-``build_mcp_server(db, vlm_cfg)`` returns a configured FastMCP instance;
+``build_mcp_server(db, vlm_cfg, embedding)`` returns a configured FastMCP instance;
 ``server/api/app.py::create_app`` mounts it at ``/mcp`` and drives its
 session manager from the FastAPI lifespan (required even with
 ``stateless_http=True`` — see the comment inline). Same process, same port,
@@ -8,46 +8,40 @@ same SSH-tunnel as the REST API — no extra wiring for clients (Claude
 Code / Desktop).
 
 External agents see these tools:
-  - ``search_activity`` — keyword search backed by FTS5 trigram + multi-field
-    LIKE (server-side), returns the same shape /v1/records does
+  - ``search_activity`` — keyword + semantic retrieval (RRF), shared with the
+    web search page and the web agent (``server/retrieval.py``)
   - ``get_recent_activity`` — recent-N-hours snapshot, no keyword
   - ``get_app_breakdown`` / ``get_category_stats`` — duration aggregates
   - ``search_summaries`` — the memory-pyramid narrative layer (per-window
     流水账/重点/评价), fold coarse→fine; the efficient "what did I do" path
   - ``apply_label`` — the only write tool (set a record's category)
-  - ``ask_agent`` — internal Qwen3-35BA3B agent: takes a natural-language
-    question, retrieves relevant records, asks the LLM to synthesize a
-    natural-language answer. Single LLM round-trip (no tool-calling loop)
-    keeps demo latency tight and is easier to debug.
+  - ``ask_agent`` — the server-side agent (same tool loop as the web chat):
+    summaries first, then stats / retrieval, then a synthesized answer
+
+Time zone: callers may send ``X-Timezone`` (IANA); see ``server/tz.py``.
 """
 
 from __future__ import annotations
 
-import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from openai import AsyncOpenAI
 
 from timetrace.server.agent import tools as agent_tools
-from timetrace.server.llm_log import timed_chat_completion
-from timetrace.server.tz import format_ms, view_tz
+from timetrace.server.agent.runner import AgentRunner
 
 if TYPE_CHECKING:
     from timetrace.common.config import VLMConfig
     from timetrace.server.db import Database
+    from timetrace.server.embedding.client import EmbeddingClient
 
 logger = structlog.get_logger(__name__)
 
-# Context budget for ask_agent. Assumes LM Studio loaded the model with
-# context ≥16K (`lms load <model> -c 16384` or via GUI). Default 4096
-# overflows easily; user is expected to bump on deploy.
-# 80 records × ~160 chars ≈ 13 KB ≈ ~5K tokens, leaves ~10K for prompt/answer.
-_ASK_AGENT_MAX_RECORDS = 80
-_ASK_AGENT_RECORD_DESC_CHARS = 160
-_ASK_AGENT_TIMEOUT_S = 180.0
+# ask_agent runs the shared tool loop; fewer turns than the web chat keeps an
+# MCP call (which blocks the calling agent) bounded on the single shared GPU.
+_ASK_AGENT_MAX_ITER = 4
 
 # DNS-rebinding allowlist for the streamable-HTTP transport. FastMCP silently
 # turns DNS-rebinding protection ON whenever no transport_security is passed and
@@ -73,28 +67,9 @@ _MCP_ALLOWED_ORIGINS = [
 ]
 
 
-def _ms_to_iso(ms: int | None) -> str:
-    """epoch-ms → 'YYYY-MM-DD HH:MM:SS' in the request's view zone."""
-    if ms is None:
-        return ""
-    return format_ms(ms, tz=view_tz())
-
-
-def _format_record_for_llm(r: dict) -> str:
-    """Compact one-line text representation of a record for LLM consumption."""
-    ts = _ms_to_iso(r.get("ts_start"))
-    app = r.get("app_name") or ""
-    title = r.get("window_title") or ""
-    desc = r.get("vlm_desc") or ""
-    if len(desc) > _ASK_AGENT_RECORD_DESC_CHARS:
-        desc = desc[:_ASK_AGENT_RECORD_DESC_CHARS] + "..."
-    duration_s: int | float = 0
-    if r.get("ts_end") and r.get("ts_start"):
-        duration_s = max(0, (r["ts_end"] - r["ts_start"]) / 1000)
-    return f"{ts} | {app} | {title[:80]} | {int(duration_s)}s | {desc}"
-
-
-def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
+def build_mcp_server(
+    db: Database, vlm_cfg: VLMConfig | None, embedding: EmbeddingClient | None = None
+) -> FastMCP:
     """Construct a FastMCP server wired to a Database and optional VLM endpoint.
 
     Tool implementations close over ``db`` (synchronous reads via the same
@@ -124,11 +99,6 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             allowed_origins=_MCP_ALLOWED_ORIGINS,
         ),
     )
-    # Cache an OpenAI client per server (not per tool call) so the underlying
-    # httpx connection pool gets reused across requests. None if VLM unset.
-    chat_client: AsyncOpenAI | None = None
-    if vlm_cfg is not None:
-        chat_client = AsyncOpenAI(base_url=vlm_cfg.base_url, api_key=vlm_cfg.api_key)
 
     @mcp.tool()
     async def search_activity(
@@ -138,27 +108,26 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
         start_iso: str | None = None,
         end_iso: str | None = None,
     ) -> dict:
-        """Keyword search over activity records.
+        """Find activity records by content — keyword AND meaning.
 
-        Searches across window title, app name, process name, URL, and VLM
-        description. ≥3 char queries use FTS5 trigram + BM25 ranking
-        (CJK-friendly); shorter queries fall back to multi-field LIKE.
-        Multi-word queries (whitespace-separated) match records containing ALL
-        the words, in any order.
+        Fuses a keyword channel (FTS5 trigram + BM25 over window title, app,
+        process, URL and the AI description; LIKE for <3-char queries) with a
+        semantic channel (text-embedding cosine, when an embedding endpoint is
+        configured) via RRF — the same retrieval as the web search page. Also
+        returns ``related_summaries``: narrated pyramid windows that mention the
+        query, to drill into with ``search_summaries``.
 
         Args:
-            query: search keyword(s). Examples: "鸣潮", "judge replay history",
-                "Code.exe", "github.com".
+            query: keywords or a short description. Examples: "鸣潮",
+                "judge replay history", "在看 SQLite 文档".
             limit: max records to return (default 20, cap 2000).
             hours_back: if set, limit to the last N hours. Otherwise all-time.
-            start_iso/end_iso: absolute local-time window
-                ('YYYY-MM-DD HH:MM:SS'); takes precedence over hours_back.
-                Results are relevance-ranked — narrow the window + raise limit
-                to pull more (no cursor; use get_recent_activity to page a full
-                day chronologically).
+            start_iso/end_iso: absolute window ('YYYY-MM-DD HH:MM:SS' in the
+                request's X-Timezone, else the server zone); wins over hours_back.
 
         Returns:
-            dict with ``items``, ``query`` echoed back, and ``count``.
+            dict with relevance-ranked ``items`` (each with ``matched_by``),
+            ``semantic_channel`` status and ``related_summaries``.
         """
         return await agent_tools.search_activity(
             db,
@@ -167,6 +136,7 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             hours_back=hours_back,
             start_iso=start_iso,
             end_iso=end_iso,
+            embedding=embedding,
         )
 
     @mcp.tool()
@@ -204,32 +174,61 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
         )
 
     @mcp.tool()
-    async def get_app_breakdown(hours_back: int = 24, top_n: int = 20) -> dict:
-        """Aggregate active duration per app over the last N hours.
+    async def get_app_breakdown(
+        hours_back: int = 24,
+        top_n: int = 20,
+        period: str | None = None,
+        start_iso: str | None = None,
+        end_iso: str | None = None,
+    ) -> dict:
+        """Aggregate captured active duration per app, descending.
 
-        Sums (ts_end - ts_start) for each app. Records still open (no ts_end)
-        are included in the ``records`` count but contribute 0 to
-        ``total_seconds`` (SQL uses ``COALESCE(ts_end, ts_start)``), so the
-        time totals only reflect closed sessions. Use this for "how much
-        time did I spend in X".
+        Per-record spans are clamped (sleep/lid artifacts contribute 0). Use for
+        "how much time did I spend in X".
 
         Args:
-            hours_back: time window (default 24, cap 720).
-            top_n: max apps to return, sorted by duration desc (default 20).
+            period: today / this_week / this_month / custom — civil periods in
+                the request zone with a 4AM day cut. Wins over hours_back; use
+                it for "today", not hours_back=24.
+            start_iso/end_iso: bounds for period='custom'.
+            hours_back: rolling window in hours when no period (default 24).
+            top_n: max apps (default 20, cap 50).
         """
-        return await agent_tools.get_app_breakdown(db, hours_back=hours_back, top_n=top_n)
+        return await agent_tools.get_app_breakdown(
+            db,
+            hours_back=hours_back,
+            top_n=top_n,
+            period=period,
+            start_iso=start_iso,
+            end_iso=end_iso,
+        )
 
     @mcp.tool()
-    async def get_category_stats(hours_back: int = 24, top_n: int = 20) -> dict:
-        """Aggregate active duration per category (the AI-assigned label) over the
-        last N hours. Use for "how is my time split across kinds of activity".
-        Records not yet classified bucket under ``uncategorized``.
+    async def get_category_stats(
+        hours_back: int = 24,
+        top_n: int = 20,
+        period: str | None = None,
+        start_iso: str | None = None,
+        end_iso: str | None = None,
+    ) -> dict:
+        """Aggregate captured active duration per category (the AI-assigned
+        label). ``_unclassified`` is a not-yet-analyzed backlog, distinct from
+        the genuine ``uncategorized`` category.
 
         Args:
-            hours_back: time window (default 24, cap 720).
-            top_n: max categories, sorted by duration desc (default 20, cap 50).
+            period: today / this_week / this_month / custom (wins over hours_back).
+            start_iso/end_iso: bounds for period='custom'.
+            hours_back: rolling window in hours when no period (default 24).
+            top_n: max categories (default 20, cap 50).
         """
-        return await agent_tools.get_category_stats(db, hours_back=hours_back, top_n=top_n)
+        return await agent_tools.get_category_stats(
+            db,
+            hours_back=hours_back,
+            top_n=top_n,
+            period=period,
+            start_iso=start_iso,
+            end_iso=end_iso,
+        )
 
     @mcp.tool()
     async def search_summaries(
@@ -258,7 +257,7 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
             period: today / this_week / this_month / custom.
             start_iso/end_iso: custom-period bounds (local 'YYYY-MM-DD HH:MM:SS');
                 when drilling, pass the parent window's start/end here.
-            query: optional substring filter over description/key_points/evaluation.
+            query: optional full-text filter over the narratives (relevance-ranked).
             limit: max windows (default 50, cap 2000).
 
         Returns:
@@ -290,111 +289,50 @@ def build_mcp_server(db: Database, vlm_cfg: VLMConfig | None) -> FastMCP:
 
     @mcp.tool()
     async def ask_agent(question: str, hours_back: int = 24, ctx: Context | None = None) -> dict:
-        """Answer a natural-language question by retrieving + reasoning over
-        recent activity.
+        """Answer a natural-language question with the server-side agent.
 
-        Pipeline (single LLM round-trip for low latency):
-          1. Fetch recent activity (last ``hours_back`` hours, up to
-             ``_ASK_AGENT_MAX_RECORDS`` records)
-          2. Compact each record to one line
-          3. Ask the local Qwen3-35BA3B to read the timeline + answer
+        Runs the same tool-calling loop as the web chat: it reads the summary
+        pyramid first, pulls stats for named periods, and searches records by
+        keyword + meaning before answering. Slower than one direct tool call
+        (several LLM turns on the shared GPU), so prefer the specific tools when
+        you know what to fetch.
 
         Args:
             question: natural-language question, e.g.
                 "我昨天写了多久代码", "我今天在哪些代码仓库花了时间".
-            hours_back: time window for context retrieval (default 24).
+            hours_back: hint for the time range the question is about (default 24).
 
         Returns:
             dict with ``answer`` (str), ``records_consulted`` (int),
-            and ``model`` (str) for transparency.
+            ``tools_used`` and ``model`` for transparency.
         """
-        if chat_client is None or vlm_cfg is None:
+        if vlm_cfg is None:
             return {
                 "answer": "LLM endpoint not configured (set TIMETRACE_VLM_* env vars).",
                 "records_consulted": 0,
                 "model": None,
             }
         hours_back = min(max(1, hours_back), 720)
-        now_ms = int(time.time() * 1000)
-        start_ms = now_ms - hours_back * 3600 * 1000
-        rows = await db.query_records(
-            start_ms=start_ms,
-            end_ms=now_ms,
-            limit=_ASK_AGENT_MAX_RECORDS,
-        )
-        window_note = ""
-        if not rows:
-            # No data in the requested window. Fall back to the all-time DESC
-            # query so a demo against a stale DB still returns the *most
-            # recent* N records, not the oldest 80 (which is what the default
-            # ASC sort would give and was the whole bug we're avoiding).
-            rows = await db.query_records(
-                start_ms=0,
-                end_ms=now_ms,
-                limit=_ASK_AGENT_MAX_RECORDS,
-                order="desc",
-            )
-            if not rows:
-                return {
-                    "answer": (
-                        "数据库里还没有任何活动记录。先启动 timetrace-client 采集一段时间再试。"
-                    ),
-                    "records_consulted": 0,
-                    "model": vlm_cfg.model,
-                }
-            # Rows are DESC by ts_start, so rows[0] is newest, rows[-1] is oldest.
-            # actual_hours reports how far back our context now reaches.
-            oldest_ts = min(r["ts_start"] for r in rows)
-            actual_hours = max(1, int((now_ms - oldest_ts) / 3600_000))
-            window_note = (
-                f"（请求窗口 {hours_back}h 内无数据，已自动扩窗到 ~{actual_hours}h 找到 "
-                f"{len(rows)} 条历史记录用于回答）"
-            )
-        timeline = "\n".join(_format_record_for_llm(r) for r in rows)
-        system = (
-            "你是 TimeTrace 的活动记录助手。基于下面的活动时间线，"
-            "用中文简洁回答用户问题。如果数据不足以回答，明确指出。"
-            "涉及时长统计时，将秒数换算为更易读的分钟或小时。"
-        )
-        user = (
-            f"=== 活动时间线（最近 {hours_back} 小时，共 {len(rows)} 条）===\n"
-            f"格式: 时间 | 应用 | 窗口标题 | 持续秒 | 画面描述\n\n"
-            f"{timeline}\n\n"
-            f"=== 用户问题 ===\n{question}"
-        )
-        extra: dict[str, Any] = {}
-        if vlm_cfg.disable_thinking:
-            extra["extra_body"] = {"enable_thinking": False}
+        runner = AgentRunner(db, vlm_cfg, embedding=embedding, max_iterations=_ASK_AGENT_MAX_ITER)
+        prompt = f"{question}\n\n（问题涉及的时间范围提示：大约最近 {hours_back} 小时）"
+        parts: list[str] = []
+        done: dict = {}
         try:
-            resp = await timed_chat_completion(
-                chat_client,
-                caller="ask_agent",
-                model=vlm_cfg.model,
-                prompt_chars=len(system) + len(user),
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                timeout=_ASK_AGENT_TIMEOUT_S,
-                **extra,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("ask_agent.llm_failed")
-            return {
-                "answer": f"调用 LLM 失败: {exc}",
-                "records_consulted": len(rows),
-                "model": vlm_cfg.model,
-            }
-        msg = resp.choices[0].message
-        # LM Studio routes Qwen3+ output to reasoning_content; vanilla OpenAI
-        # uses content. Same fallback as vlm/client.py::_extract_message_content.
-        answer = getattr(msg, "content", None) or getattr(msg, "reasoning_content", None) or ""
-        final_answer = answer.strip()
-        if window_note:
-            final_answer = f"{window_note}\n\n{final_answer}"
+            async for ev in runner.run(
+                [{"role": "user", "content": prompt}], hours_back_hint=hours_back
+            ):
+                if ev["type"] == "token":
+                    parts.append(ev["text"])
+                elif ev["type"] == "done":
+                    done = ev
+                elif ev["type"] == "error":
+                    return {"answer": ev["message"], "records_consulted": 0, "model": vlm_cfg.model}
+        finally:
+            await runner.aclose()
         return {
-            "answer": final_answer,
-            "records_consulted": len(rows),
+            "answer": "".join(parts).strip(),
+            "records_consulted": done.get("records_consulted", 0),
+            "tools_used": done.get("tools_used", []),
             "model": vlm_cfg.model,
         }
 

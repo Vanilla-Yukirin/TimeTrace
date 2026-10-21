@@ -66,7 +66,7 @@ def create_app(
     # Build MCP first so we can wire its session manager into FastAPI lifespan.
     # FastMCP's streamable_http_app() needs the session manager's anyio task
     # group running for the whole app lifetime; mounting alone isn't enough.
-    mcp_server = build_mcp_server(db, vlm_cfg)
+    mcp_server = build_mcp_server(db, vlm_cfg, embedding_client)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

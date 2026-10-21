@@ -63,15 +63,15 @@ URL 末尾的 `/` 不能省（服务端 streamable handler 挂在 mount 根）�
 
 ### 只读
 
-- **`search_activity(query, limit=20, hours_back=None)`** — 关键词检索活动记录（窗口标题 / 应用名 / 进程名 / URL / AI 画面描述）。`query` ≥3 字走 FTS5 trigram + BM25 排序（中文友好），更短走多字段 LIKE。`hours_back` 不传则全时段。**找具体内容**（某网站、某游戏、某仓库）用它。返回每条含 `id`（打标签要用）/ `ts_start_iso` / `app_name` / `window_title` / `vlm_desc` / `category`。
+- **`search_activity(query, limit=20, hours_back=None)`** — 按内容检索活动记录：关键词（窗口标题 / 应用名 / 进程名 / URL / AI 画面描述；≥3 字 FTS5 trigram + BM25，更短 LIKE）与语义相似度（文本 embedding）RRF 融合，同义说法也能命中，结果按相关度排序；另返回 `related_summaries`（叙述里提到它的时间窗）。`hours_back` 不传则全时段。**找具体内容**（某网站、某游戏、某仓库）用它。返回每条含 `id`（打标签要用）/ `ts_start_iso` / `app_name` / `window_title` / `vlm_desc` / `category`。
 
 - **`get_recent_activity(hours_back=24, limit=50)`** — 按时间顺序拉取最近活动快照（无关键词）。**想先总览**再决定深挖什么时用。
 
-- **`get_app_breakdown(hours_back=24, top_n=20)`** — 统计某时间窗内每个应用的累计活跃时长（秒），降序。回答 **"在 X 上花了多久"** 用它。只统计已闭合的会话。
+- **`get_app_breakdown(period=None, hours_back=24, top_n=20)`** — 统计每个应用的累计活跃时长（秒），降序。回答 **"在 X 上花了多久"** 用它。「今天/本周/本月」传 `period=today/this_week/this_month`（按请求时区的自然日，4 点切日）；`hours_back` 只表示滚动的最近 N 小时。`get_category_stats` 同样支持 `period`。
 
 - **`get_category_stats(hours_back=24, top_n=20)`** — 统计某时间窗内每个**分类**（AI 自动打的标签，如 `work` 工作、`entertainment` 娱乐）的累计时长（秒）。回答 **"我把时间花在哪类事情上"** 用它。还没分类的记录归入 `uncategorized`。
 
-- **`ask_agent(question, hours_back=24)`** — 让 TimeTrace 服务端**自带的本地大模型**取数据并直接给一句话自然语言回答（单轮，低延迟）。当你只想要个快速总结、不需要自己逐步推理时用它。
+- **`ask_agent(question, hours_back=24)`** — 让 TimeTrace 服务端**自带的本地大模型**跑一遍与 Web 聊天相同的工具循环（先读摘要、再统计/检索）后给出自然语言回答。比直接调具体工具慢（单卡多轮），只想要快速总结时用它。
 
 ### 唯一的写操作
 
@@ -83,8 +83,8 @@ URL 末尾的 `/` 不能省（服务端 streamable handler 挂在 mount 根）�
 
 ## 典型用法
 
-- **"我今天主要在干嘛？"** → `get_recent_activity(hours_back=24)` 或 `get_app_breakdown(hours_back=24)`，综合后用中文一句话总结。
-- **"我这周在 VSCode 上花了多久？"** → `get_app_breakdown(hours_back=168)`，从结果里挑出对应应用，秒换算成小时。
+- **"我今天主要在干嘛？"** → `search_summaries(grain="6h", period="today")` 读叙述，再配 `get_app_breakdown(period="today")`，综合后用中文一句话总结。
+- **"我这周在 VSCode 上花了多久？"** → `get_app_breakdown(period="this_week")`，从结果里挑出对应应用，秒换算成小时。
 - **"我有没有在摸鱼？"** → `get_category_stats(hours_back=24)`，看 `entertainment` 占比。
 - **"把我下午查鸣潮攻略那几条标成娱乐"** → 先 `search_activity(query="鸣潮", hours_back=12)` 拿到各条 `id`，再对每条 `apply_label(record_id=..., category="entertainment", note="用户确认是查游戏攻略")`。
 - **快速总结** → `ask_agent(question="我昨天写了多久代码")`。

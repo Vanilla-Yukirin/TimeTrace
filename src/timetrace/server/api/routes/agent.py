@@ -52,7 +52,9 @@ async def agent_chat(req: ChatRequest, request: Request) -> StreamingResponse:
                 }
             )
             return
-        runner = AgentRunner(db, vlm_cfg)
+        runner = AgentRunner(
+            db, vlm_cfg, embedding=getattr(request.app.state, "embedding_client", None)
+        )
         try:
             async for ev in runner.run(
                 [m.model_dump() for m in req.messages],

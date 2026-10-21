@@ -29,19 +29,19 @@
 
 ## 当前工具集（7 个，均已实装）
 
-工具以 `build_mcp_server` 内 `@mcp.tool()` 装饰的闭包形式注册，真实读写实现主要复用 `server/agent/tools.py`。MCP 暴露的 7 个工具与 Web Agent 的 7 个 schema 并不完全相同：MCP 有高层 `ask_agent`，Web Agent 则有指标工具 `query_stats`；其余读写能力共享实现。`ask_agent` 的检索 + 推理逻辑仍内联在 `mcp_layer/server.py`。
+工具以 `build_mcp_server` 内 `@mcp.tool()` 装饰的闭包形式注册，真实读写实现主要复用 `server/agent/tools.py`。MCP 暴露的 7 个工具与 Web Agent 的 7 个 schema 并不完全相同：MCP 有高层 `ask_agent`，Web Agent 则有指标工具 `query_stats`；其余读写能力共享实现。`ask_agent`（2026-10 W4 起）复用 Web Agent 的 `AgentRunner` 工具循环（最多 4 轮），不再内联「最近 80 条记录一次性喂 LLM」。
 
 下表 7 个工具中，`apply_label` 是**唯一写面**（只改 `category_final` + 写 feedback 审计行，绝不删改记录/截图），其余 6 个全是只读。
 
 | 工具 | 签名要点 | 用途 |
 |------|----------|------|
-| `search_activity` | `query: str, limit=20(≤2000), hours_back/start_iso/end_iso` | 关键词检索活动记录；多词按 AND，可用绝对时间窗 |
+| `search_activity` | `query: str, limit=20(≤2000), hours_back/start_iso/end_iso` | 关键词 + 语义（embedding）RRF 融合检索，走 `server/retrieval.py::retrieve_records`（与 `/v1/search/text`、Web Agent 同一路径）；附 `related_summaries` |
 | `get_recent_activity` | `hours_back=24(≤720), limit=50(≤2000), cursor` | 无关键词时间序快照；支持绝对时间窗和游标分页 |
-| `get_app_breakdown` | `hours_back=24(≤720), top_n=20` | 按应用聚合活跃时长（`SUM(clamped duration)`：单条记录时长经 `_clamped_dur_sql` 封顶——负跨度归 0、超 5min 的休眠/合盖伪影贡献 0；返回里带 `capped_per_record_seconds`），回答「我在 X 上花了多久」 |
+| `get_app_breakdown` | `period?(today/this_week/this_month/custom), hours_back=24(≤720), top_n=20` | 按应用聚合活跃时长（`SUM(clamped duration)`：单条记录时长经 `_clamped_dur_sql` 封顶——负跨度归 0、超 5min 的休眠/合盖伪影贡献 0；返回里带 `capped_per_record_seconds`），回答「我在 X 上花了多久」 |
 | `get_category_stats` | `hours_back=24(≤720), top_n=20(≤50)` | 按分类聚合活跃时长（同样经 `_clamped_dur_sql("r")` 封顶），区分 `_unclassified`（系统内部尚未分类的积压桶）与 `uncategorized`（分类器真正判为「未分类」的桶）两个桶，返回带 `categories_legend` |
 | `search_summaries` | `grain, period, start_iso/end_iso, query, limit` | 读取 `5min/1h/6h/day/week` 叙述层；先 day/week 总览，再按返回时间窗下钻 |
 | `apply_label` | `record_id: str, category: str, note: str\|None` | **唯一写工具**：只改某条记录的 `category_final`（写一行 `feedback` 审计行，action=edit），绝不删改记录/截图；未知 record/category 返回 `error` dict 而不抛异常 |
-| `ask_agent` | `question: str, hours_back=24(≤720)` | 检索 + 推理：取最近活动喂给本地 LLM，直接产出中文自然语言回答 |
+| `ask_agent` | `question: str, hours_back=24(≤720)` | 服务端 Agent 工具循环（摘要优先 → 统计/检索 → 回答） |
 
 返回结构里时间戳统一经 `_ms_to_iso()` 转成本地时区可读字符串（`ts_start_iso` / `ts_end_iso`），方便 LLM 直接阅读，无需再做 epoch 换算。
 
