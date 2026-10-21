@@ -340,6 +340,10 @@ CREATE INDEX IF NOT EXISTS idx_llm_requests_caller_ts ON llm_requests(caller, ts
 # to multi-field LIKE so 2-char queries like "VS" / "鸣潮" still hit.
 _FTS_MIN_LEN = 3
 
+# Read-side bucket for records captured before device identity existed (NULL
+# ``records.device_id``). Never guessed onto a real device.
+UNKNOWN_DEVICE = "_unknown_device"
+
 # Flat, intent-based 6-category taxonomy. Kept deliberately small + mutually
 # exclusive so the VLM can pick exactly one reliably. The id is the stored
 # value (category_final / VLM enum); the name is the Chinese display label.
@@ -1003,6 +1007,21 @@ class SqliteDatabase:
             device.pop("token_fingerprint", None)
         return devices
 
+    async def device_labels(self) -> dict[str, str]:
+        """``{device_id: human label}`` for prompts and read-side grouping.
+
+        Prefers the admin-set ``name``, then the client-reported name, then a
+        short id — so an un-named device is still distinguishable. Records with
+        a NULL ``device_id`` are labelled by callers via ``UNKNOWN_DEVICE``.
+        """
+        async with self._lock:
+            async with self.conn.execute("SELECT id, name, reported_name FROM devices") as cur:
+                rows = await cur.fetchall()
+        return {
+            row["id"]: (row["name"] or row["reported_name"] or f"设备 {row['id'][:8]}")
+            for row in rows
+        }
+
     async def update_device(self, device_id: str, *, name: str, description: str) -> bool:
         async with self._lock:
             cur = await self.conn.execute(
@@ -1474,7 +1493,7 @@ class SqliteDatabase:
             conditions.append(f"a.category_final IN ({placeholders})")
             where_params.extend(categories)
 
-        if device_id == "_unknown_device":
+        if device_id == UNKNOWN_DEVICE:
             conditions.append("r.device_id IS NULL")
         elif device_id is not None:
             conditions.append("r.device_id = ?")

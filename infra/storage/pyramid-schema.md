@@ -173,6 +173,7 @@ drill_down_hint 示例：
 - **为什么是下限**：每条 record 只覆盖采集那一瞬的短切片（实测均 ~12.6s/条），采集间隔与 idle(>5min) 不计入；且本设备未必全程在用户身边——同一窗近 30 天**设备覆盖仅 17.6%**（720h 墙钟里捕到 126h），18/30 天有记录、最大断档 70h。所以「entertainment 2.5min/天」这种小数字是**设备覆盖不全**，不是用户真没做。这也是上层叙述必须**如实措辞**（"本机捕获活跃下限"，不写"总共/一共"）的原因；占比(share) 比绝对秒数可信。校准还证伪了三个误判：**clamp 没在砍东西**（无 record 跨度 >5min）、**ts_end 无缺失/无负值**、**session 拼接救不了**（66% 相邻间隔 ≤15s，cadence 已极密，拼到 30s 反而更低）。
 - **两种聚合，定义分工**：
   - `cat_seconds` / `app_seconds` = 各记录 clamp 后**切片之和（Σ own-span）**，**可加、可跨层 SUM**——这是 `metrics_json` 进级联的那套（保 SUM-invariant）。短暂重叠会被轻微重复计（实测 ~7% 高估）。
+  - `device_ms`（2026-10 W2）= 按 `records.device_id` 分桶的切片之和（NULL → `_unknown_device`），同样可加、随级联合并；旧行缺该键按空处理。多设备并行时 Σ 会超过窗长，叙述 prompt 额外给出读时现算的墙钟并集，并按设备分组逐帧上下文（每设备平分 3000 字符预算）。叶子 `source_hash` 仅在 `device_id` 非空时追加设备后缀，历史 NULL 行哈希不变、不会触发全量重叙述。
   - `active_seconds` = **读边墙钟并集（union）**，重叠采集区间去重，恒 `≤ Σ cat_seconds`。**不进级联**（union 跨窗不可加：跨窗口边界的区间会被子窗 SUM 多/少算），由 `query_stats` 用 `summary/metrics.py::active_wall_ms()` **每次 live 算**（一次 interval-merge SQL，便宜）。两条路用**同一个 `_clamped_dur_sql` clamp**，所以「union ≤ sum」恒成立。
 - **自描述契约**：`query_stats` 每个结果都带 `semantics` 块（definition / is_a_floor_because / how_to_phrase / aggregation），让外部 MCP agent 不靠读代码就知道该怎么如实表述这些数。
 - **设备覆盖**才是真正的精度前沿（多设备 ingest / 标注哪台机哪段没覆盖），单独大工程，排在叙述层之后。
