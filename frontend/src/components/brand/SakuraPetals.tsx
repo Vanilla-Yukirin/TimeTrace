@@ -1,3 +1,5 @@
+import { useSakuraEnabled } from '@/lib/preferences'
+
 /** A sparse, slow drift of cherry-blossom petals behind the whole app. Purely
  *  decorative (aria-hidden), sits at z-index:-1 so it shows through the
  *  transparent areas (timeline center, auth bg, gaps) but never over opaque
@@ -24,6 +26,9 @@ const PETALS: Petal[] = [
 ]
 
 export function SakuraPetals() {
+  // Opt-in (设置 → 外观): the always-running animations cost GPU every frame.
+  const [enabled] = useSakuraEnabled()
+  if (!enabled) return null
   return (
     <div className="sakura-layer" aria-hidden="true">
       {PETALS.map((p, i) => (

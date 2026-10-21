@@ -114,10 +114,9 @@ export function PyramidPage() {
                     position: 'sticky',
                     top: 0,
                     zIndex: 2,
-                    // Translucent + blur (same trick as the TopBar) so the sticky
-                    // band doesn't paint a solid patch over the page glow.
-                    background: 'color-mix(in srgb, var(--bg-base) 86%, transparent)',
-                    backdropFilter: 'blur(8px)',
+                    // Near-opaque, no backdrop blur (blur re-rasterizes on every
+                    // scroll frame of this large chart).
+                    background: 'color-mix(in srgb, var(--bg-base) 96%, transparent)',
                     paddingBottom: 4,
                   }}
                 >

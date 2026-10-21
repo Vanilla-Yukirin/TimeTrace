@@ -187,12 +187,13 @@
   box-sizing: border-box;
 }
 
-/* Gentle cross-fade when the theme flips. Scoped to color props only so it
-   never interferes with transform/opacity animations (lightbox) or the canvas. */
-*,
-*::before,
-*::after {
-  transition: background-color 0.22s ease, border-color 0.22s ease, color 0.18s ease;
+/* Gentle cross-fade when the theme flips. Only active while ThemeProvider has
+   html.theme-transition set (~300ms around a flip) — a permanent universal
+   transition made every element pay for it on each style change. */
+html.theme-transition *,
+html.theme-transition *::before,
+html.theme-transition *::after {
+  transition: background-color 0.22s ease, border-color 0.22s ease, color 0.18s ease !important;
 }
 
 html, body, #root {
@@ -203,7 +204,6 @@ html, body, #root {
 
 body {
   background: var(--app-glow), var(--bg-app);
-  background-attachment: fixed;
   color: var(--text-primary);
   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
     'Microsoft YaHei', sans-serif;

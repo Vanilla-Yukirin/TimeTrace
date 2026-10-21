@@ -54,6 +54,62 @@ interface HitResult {
   lane: 'activity' | 'frames'
 }
 
+/** Records sorted by ``ts_start``. ``maxClosedSpanMs`` bounds how far left of
+ *  the viewport a closed record can start and still be visible; open records
+ *  (still running, extend to now) are tracked by the earliest one's index. */
+export interface SortedRecords {
+  items: ApiRecord[]
+  maxClosedSpanMs: number
+  firstOpenIdx: number // -1 when every record is closed
+}
+
+function recordEnd(rec: ApiRecord, now: number): number {
+  return rec.ts_end ?? now
+}
+
+export function sortRecords(records: ApiRecord[]): SortedRecords {
+  const items = [...records].sort((a, b) => a.ts_start - b.ts_start)
+  let maxClosedSpanMs = 0
+  let firstOpenIdx = -1
+  items.forEach((r, i) => {
+    if (r.ts_end == null) {
+      if (firstOpenIdx < 0) firstOpenIdx = i
+    } else {
+      maxClosedSpanMs = Math.max(maxClosedSpanMs, r.ts_end - r.ts_start)
+    }
+  })
+  return { items, maxClosedSpanMs, firstOpenIdx }
+}
+
+/** First index whose ts_start >= ts (binary search over sorted items). */
+function lowerBound(items: ApiRecord[], ts: number): number {
+  let lo = 0
+  let hi = items.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (items[mid].ts_start < ts) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
+/** Half-open index range [lo, hi) of records that may intersect [fromMs, toMs].
+ *  Conservative: an open record extends to "now", so the range reaches back to
+ *  the earliest open record that starts before ``toMs``. */
+export function rangeIn(sorted: SortedRecords, fromMs: number, toMs: number): [number, number] {
+  let lo = lowerBound(sorted.items, fromMs - sorted.maxClosedSpanMs)
+  const hi = lowerBound(sorted.items, toMs + 1)
+  if (sorted.firstOpenIdx >= 0 && sorted.firstOpenIdx < Math.min(lo, hi)) lo = sorted.firstOpenIdx
+  return [lo, hi]
+}
+
+/** Records intersecting the viewport (plus a small pixel margin). */
+export function visibleRange(sorted: SortedRecords, vp: TimelineViewport, marginPx = 8): [number, number] {
+  const from = vp.offsetMs - marginPx * vp.scaleMs
+  const to = vp.offsetMs + (vp.canvasWidth + marginPx) * vp.scaleMs
+  return rangeIn(sorted, from, to)
+}
+
 // "Nice" tick intervals, ascending. The renderer picks the smallest one whose
 // on-screen width clears MIN_TICK_PX, so labels never crowd — when zoomed out
 // (or on a narrow phone) it naturally steps up to coarser intervals (…1h→2h→
@@ -103,7 +159,7 @@ function roundRect(
 export function renderTimeline(
   ctx: CanvasRenderingContext2D,
   vp: TimelineViewport,
-  records: ApiRecord[],
+  sorted: SortedRecords,
   hoverRecordId: string | null,
   selectedRecordId: string | null,
   palette: TimelinePalette,
@@ -112,6 +168,9 @@ export function renderTimeline(
   const { canvasWidth: w, scaleMs, offsetMs } = vp
   const h = CANVAS_H
   const isLight = theme === 'light'
+  const now = Date.now()
+  const [lo, hi] = visibleRange(sorted, vp)
+  const records = sorted.items.slice(lo, hi)
 
   // Background
   ctx.fillStyle = palette.bg
@@ -147,7 +206,7 @@ export function renderTimeline(
   // --- Activity lane ---
   for (const rec of records) {
     const x1 = (rec.ts_start - offsetMs) / scaleMs
-    const x2 = rec.ts_end ? (rec.ts_end - offsetMs) / scaleMs : (Date.now() - offsetMs) / scaleMs
+    const x2 = (recordEnd(rec, now) - offsetMs) / scaleMs
     const w2 = Math.max(x2 - x1, 2)
 
     if (x1 > w || x2 < 0) continue
@@ -217,27 +276,36 @@ export function renderTimeline(
 export function hitTest(
   mouseX: number,
   mouseY: number,
-  records: ApiRecord[],
+  sorted: SortedRecords,
   vp: TimelineViewport,
 ): HitResult | null {
   const { scaleMs, offsetMs } = vp
+  const now = Date.now()
 
-  // Check activity lane first
+  // Check activity lane first. Walk newest-start → oldest so the record drawn
+  // on top (the later one) wins when blocks overlap.
   if (mouseY >= ACTIVITY_Y && mouseY <= ACTIVITY_Y + ACTIVITY_H) {
-    for (const rec of records) {
+    const ts = offsetMs + mouseX * scaleMs
+    const slack = 2 * scaleMs // blocks are drawn at least 2px wide
+    const [lo, hi] = rangeIn(sorted, ts - slack, ts)
+    for (let i = hi - 1; i >= lo; i--) {
+      const rec = sorted.items[i]
       const x1 = (rec.ts_start - offsetMs) / scaleMs
-      const x2 = rec.ts_end ? (rec.ts_end - offsetMs) / scaleMs : (Date.now() - offsetMs) / scaleMs
+      const x2 = (recordEnd(rec, now) - offsetMs) / scaleMs
       if (mouseX >= x1 && mouseX <= Math.max(x2, x1 + 2)) {
         return { record: rec, lane: 'activity' }
       }
     }
   }
 
-  // Check frames lane
+  // Check frames lane (nearest marker within 10px)
   if (mouseY >= FRAMES_Y - 8 && mouseY <= FRAMES_Y + FRAMES_H + 8) {
+    const lo = lowerBound(sorted.items, offsetMs + (mouseX - 10) * scaleMs)
+    const hi = lowerBound(sorted.items, offsetMs + (mouseX + 10) * scaleMs + 1)
     let best: ApiRecord | null = null
     let bestDist = 10
-    for (const rec of records) {
+    for (let i = lo; i < hi; i++) {
+      const rec = sorted.items[i]
       if (!rec.screenshot_count) continue
       const cx = (rec.ts_start - offsetMs) / scaleMs
       const dist = Math.abs(mouseX - cx)

@@ -9,6 +9,20 @@ import { AppOverridesSection } from '@/components/admin/AppOverridesSection'
 import { Card, Section } from '@/components/ui/Card'
 import { ErrorBanner } from '@/components/ui/Feedback'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { useSakuraEnabled } from '@/lib/preferences'
+
+function AppearanceSection() {
+  const [sakura, setSakura] = useSakuraEnabled()
+  return (
+    <Section title="外观">
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13.5, color: 'var(--text-primary)', cursor: 'pointer', flexWrap: 'wrap' }}>
+        <input type="checkbox" checked={sakura} onChange={(e) => setSakura(e.target.checked)} />
+        樱花飘落动画
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>（常驻动画会持续占用 GPU，默认关闭）</span>
+      </label>
+    </Section>
+  )
+}
 
 export function SettingsPage() {
   const isMobile = useIsMobile()
@@ -29,6 +43,8 @@ export function SettingsPage() {
       <EmbeddingDiagnostics />
 
       <AppOverridesSection />
+
+      <AppearanceSection />
 
       <Section title="后端状态">
         {isLoading && (

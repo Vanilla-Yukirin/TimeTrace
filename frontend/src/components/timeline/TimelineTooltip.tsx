@@ -8,9 +8,12 @@ interface TimelineTooltipProps {
   record: ApiRecord
   x: number
   y: number
+  /** The canvas moves the tooltip by writing left/top on this element directly,
+   *  so pointer motion doesn't re-render the canvas component tree. */
+  elRef?: React.Ref<HTMLDivElement>
 }
 
-export function TimelineTooltip({ record, x, y }: TimelineTooltipProps) {
+export function TimelineTooltip({ record, x, y, elRef }: TimelineTooltipProps) {
   const now = useNow(record.ts_end == null)
   const duration = (record.ts_end ?? now ?? record.ts_start) - record.ts_start
   const startStr = formatTime(record.ts_start)
@@ -19,6 +22,7 @@ export function TimelineTooltip({ record, x, y }: TimelineTooltipProps) {
 
   const tooltip = (
     <div
+      ref={elRef}
       style={{
         position: 'fixed',
         left: x + 14,

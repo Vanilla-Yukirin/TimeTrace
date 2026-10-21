@@ -44,8 +44,9 @@ export function TopBar({ isMobile = false, onMenu }: { isMobile?: boolean; onMen
         height: 58,
         padding: '0 18px',
         borderBottom: '1px solid var(--bg-border)',
-        background: 'color-mix(in srgb, var(--bg-surface) 82%, transparent)',
-        backdropFilter: 'blur(10px)',
+        // Near-opaque instead of translucent + backdrop blur: the blur had to be
+        // recomputed every frame whenever anything animated underneath.
+        background: 'color-mix(in srgb, var(--bg-surface) 96%, transparent)',
       }}
     >
       {/* Left: hamburger (mobile) + current page */}

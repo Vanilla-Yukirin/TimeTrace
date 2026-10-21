@@ -1,9 +1,11 @@
-import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react'
+import { memo, useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react'
 import type { ApiRecord } from '@/types/api'
 import { useTimelineState } from '@/hooks/useTimelineState'
 import { useTheme } from '@/contexts/theme'
 import { formatTime } from '@/lib/dateUtils'
-import { renderTimeline, hitTest, CANVAS_H, TIMELINE_PALETTES } from './useCanvasRenderer'
+import {
+  renderTimeline, hitTest, sortRecords, visibleRange, CANVAS_H, TIMELINE_PALETTES,
+} from './useCanvasRenderer'
 import { useCanvasEvents } from './useCanvasEvents'
 import { TimelineTooltip } from './TimelineTooltip'
 
@@ -14,13 +16,26 @@ interface TimelineCanvasProps {
   onSelectRecord: (id: string | null) => void
 }
 
-export function TimelineCanvas({
+// Cap for the screen-reader mirror list: only the records in view are mirrored
+// (a full day is thousands of buttons, re-rendered on every viewport change).
+const SR_LIST_MAX = 200
+// How often an open (still-running) record's bar is re-extended to "now".
+const OPEN_RECORD_REDRAW_MS = 30_000
+
+export const TimelineCanvas = memo(function TimelineCanvas({
   records, date, selectedRecordId, onSelectRecord,
 }: TimelineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const [hoverRecordId, setHoverRecordId] = useState<string | null>(null)
-  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null)
+  // Hovered record + the pointer position when it became hovered (the tooltip's
+  // initial placement). Only changes when the hovered record changes.
+  const [hover, setHover] = useState<{ id: string; x: number; y: number } | null>(null)
+  const hoverRecordId = hover?.id ?? null
+  // Tooltip follows the pointer by direct DOM writes (no React state per move).
+  const tooltipElRef = useRef<HTMLDivElement>(null)
+  const pointerRef = useRef({ x: 0, y: 0 })
+
+  const sorted = useMemo(() => sortRecords(records), [records])
 
   const { viewport, setViewport, initViewport, zoom, pan, goToday } = useTimelineState(date)
   const { theme } = useTheme()
@@ -30,13 +45,13 @@ export function TimelineCanvas({
   // every pan/zoom, so this can't live in the touch effect's closure). records /
   // viewport are read via refs so tap-hit-testing always sees current values.
   const touchRef = useRef({ mode: 'none' as 'none' | 'pan' | 'pinch', lastX: 0, lastDist: 0, startX: 0, startY: 0, moved: false })
-  const recordsRef = useRef(records)
+  const sortedRef = useRef(sorted)
   const viewportRef = useRef(viewport)
 
   useLayoutEffect(() => {
-    recordsRef.current = records
+    sortedRef.current = sorted
     viewportRef.current = viewport
-  }, [records, viewport])
+  }, [sorted, viewport])
 
   // Track whether the canvas has been initialized at least once
   const initializedRef = useRef(false)
@@ -66,20 +81,43 @@ export function TimelineCanvas({
     return () => { obs.disconnect(); initializedRef.current = false }
   }, [initViewport, setViewport])
 
-  // Render on every state change
-  useEffect(() => {
+  const draw = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')!
     const dpr = window.devicePixelRatio || 1
     ctx.save()
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    renderTimeline(ctx, viewport, records, hoverRecordId, selectedRecordId, palette, theme)
+    renderTimeline(ctx, viewport, sorted, hoverRecordId, selectedRecordId, palette, theme)
     ctx.restore()
-  }, [viewport, records, hoverRecordId, selectedRecordId, palette, theme])
+  }, [viewport, sorted, hoverRecordId, selectedRecordId, palette, theme])
+
+  // Render on every state change
+  useEffect(() => {
+    draw()
+  }, [draw])
+
+  // An open record's bar ends at "now": re-extend it on a slow canvas-only
+  // timer instead of a page-level clock that re-renders React every second.
+  const hasOpenRecord = useMemo(() => records.some((r) => r.ts_end == null), [records])
+  useEffect(() => {
+    if (!hasOpenRecord) return
+    const id = window.setInterval(draw, OPEN_RECORD_REDRAW_MS)
+    return () => window.clearInterval(id)
+  }, [hasOpenRecord, draw])
 
   const handleHover = useCallback((id: string | null) => {
-    setHoverRecordId(id)
+    const { x, y } = pointerRef.current
+    setHover((prev) => (id == null ? null : prev?.id === id ? prev : { id, x, y }))
+  }, [])
+
+  const handlePointer = useCallback((x: number, y: number) => {
+    pointerRef.current = { x, y }
+    const el = tooltipElRef.current
+    if (el) {
+      el.style.left = `${x + 14}px`
+      el.style.top = `${y - 10}px`
+    }
   }, [])
 
   const handleClick = useCallback((record: ApiRecord | null) => {
@@ -87,9 +125,10 @@ export function TimelineCanvas({
   }, [onSelectRecord])
 
   const { onWheel, onMouseDown, onMouseMove, onMouseUp, onMouseLeave } = useCanvasEvents({
-    records, viewport, zoom, pan,
+    sorted, viewport, zoom, pan,
     onHover: handleHover,
     onClick: handleClick,
+    onPointer: handlePointer,
   })
 
   // Attach wheel with non-passive listener
@@ -116,7 +155,7 @@ export function TimelineCanvas({
         g.mode = 'pan'; g.lastX = t.clientX; g.startX = t.clientX; g.startY = t.clientY; g.moved = false
       } else if (e.touches.length >= 2) {
         g.mode = 'pinch'; g.lastDist = distOf(e.touches[0], e.touches[1])
-        setHoverRecordId(null)
+        setHover(null)
       }
       e.preventDefault()
     }
@@ -140,7 +179,7 @@ export function TimelineCanvas({
       if (g.mode === 'pan' && !g.moved && e.changedTouches.length >= 1) {
         const t = e.changedTouches[0]
         const rect = canvas.getBoundingClientRect()
-        const hit = hitTest(t.clientX - rect.left, t.clientY - rect.top, recordsRef.current, viewportRef.current)
+        const hit = hitTest(t.clientX - rect.left, t.clientY - rect.top, sortedRef.current, viewportRef.current)
         onSelectRecord(hit?.record.id ?? null)
       }
       if (e.touches.length === 0) g.mode = 'none'
@@ -158,7 +197,15 @@ export function TimelineCanvas({
     }
   }, [zoom, pan, onSelectRecord])
 
-  const hoverRecord = hoverRecordId ? records.find(r => r.id === hoverRecordId) : null
+  const hoverRecord = useMemo(
+    () => (hoverRecordId ? records.find(r => r.id === hoverRecordId) ?? null : null),
+    [hoverRecordId, records],
+  )
+
+  const srRecords = useMemo(() => {
+    const [lo, hi] = visibleRange(sorted, viewport, 0)
+    return sorted.items.slice(lo, Math.min(hi, lo + SR_LIST_MAX))
+  }, [sorted, viewport])
 
   return (
     <div style={{ position: 'relative', width: '100%' }}>
@@ -176,22 +223,12 @@ export function TimelineCanvas({
         <canvas
           ref={canvasRef}
           role="img"
-          aria-label={`活动时间轴，共 ${records.length} 条活动。键盘用户可用下方列表逐条查看。`}
+          aria-label={`活动时间轴，共 ${records.length} 条活动。键盘用户可用下方列表逐条查看当前可见范围内的活动。`}
           style={{ display: 'block', userSelect: 'none', touchAction: 'none' }}
           onMouseDown={e => onMouseDown(e.nativeEvent)}
-          onMouseMove={e => {
-            onMouseMove(e.nativeEvent)
-            if (hoverRecordId) {
-              setTooltipPos({ x: e.clientX, y: e.clientY })
-            } else {
-              setTooltipPos(null)
-            }
-          }}
+          onMouseMove={e => onMouseMove(e.nativeEvent)}
           onMouseUp={e => onMouseUp(e.nativeEvent)}
-          onMouseLeave={() => {
-            onMouseLeave()
-            setTooltipPos(null)
-          }}
+          onMouseLeave={() => onMouseLeave()}
         />
       </div>
 
@@ -222,7 +259,7 @@ export function TimelineCanvas({
           the same selection (→ populates the detail panel). Visually hidden but
           in the tab order (WCAG 2.1.1). */}
       <ul className="sr-only">
-        {records.map((rec) => (
+        {srRecords.map((rec) => (
           <li key={rec.id}>
             <button
               type="button"
@@ -234,12 +271,17 @@ export function TimelineCanvas({
         ))}
       </ul>
 
-      {hoverRecord && tooltipPos && (
-        <TimelineTooltip record={hoverRecord} x={tooltipPos.x} y={tooltipPos.y} />
+      {hoverRecord && hover && (
+        <TimelineTooltip
+          record={hoverRecord}
+          x={hover.x}
+          y={hover.y}
+          elRef={tooltipElRef}
+        />
       )}
     </div>
   )
-}
+})
 
 const iconBtn: React.CSSProperties = {
   display: 'inline-flex',
