@@ -1,6 +1,6 @@
 # TimeTrace DevLog 索引
 
-**最后更新：** 2026-09-01
+**最后更新：** 2026-10-22
 
 开发过程归档，按模块分类存放。每个子文件夹对应一个关注域，文件按时间戳命名。
 
@@ -88,6 +88,7 @@ devlogs/
 
 | 文件 | 摘要 |
 |------|------|
+| [archive-202610220210-owner-review-w1-w6.md](infra/archive-202610220210-owner-review-w1-w6.md) | 2026-10 owner review 执行：W1 前端性能 / W2 多设备叙述 / W3 时区契约（UTC 存储 + `X-Timezone`）/ W4 统一检索与 Agent / W5 设备查询闭环与多泳道时间轴 / W6 设备级金字塔 v2（全局摘要按设备拼装、不再 LLM 混写）；PR #14–#21 全部合入 main，未部署；遗留：发布与历史回填需授权、图标待 owner 方案 |
 | [archive-202605151200-client-server-split-kickoff.md](infra/archive-202605151200-client-server-split-kickoff.md) | 客户端 / 服务端架构分离重构的"宪法"：决策汇总、目标架构、wire 协议、鉴权 / outbox / 隐私管线设计、P0–P8 分阶段路线图。所有后续重构 PR 应能追溯到其中某个阶段 |
 | [archive-202605161000-deployment-architecture.md](infra/archive-202605161000-deployment-architecture.md) | 部署架构决策 v1：目标 = 家里小主机（NAT），云服务器只做 FRP SSH 跳板；选择理由（带宽 / 流量 / 所有权）、Auth 双层（浏览器密码 + 设备 token）、Web UI 永不公网（看页面走 ssh -L）、Fork 安全策略 |
 | [archive-202605161015-cicd-workflow.md](infra/archive-202605161015-cicd-workflow.md) | CI/CD 工作流设计 v1：仅 workflow_dispatch 手动触发、Secrets 清单与 fork 安全 repo guard、deploy.sh / systemd unit 职责、失败 rollback 与演进路线 |
