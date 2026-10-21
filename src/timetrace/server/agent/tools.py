@@ -702,6 +702,7 @@ async def search_summaries(
     end_iso: str | None = None,
     query: str | None = None,
     limit: int = 50,
+    device_id: str | None = None,
 ) -> dict:
     """Read the narrative pyramid: per-window 流水账/重点/评价 at a chosen grain.
 
@@ -721,16 +722,25 @@ async def search_summaries(
         return {"error": f"unknown period: {period}", "valid_periods": list(_VALID_PERIODS)}
     try:
         start_ms, end_ms = _period_bounds(period, start_iso, end_iso, cut_hour)
+        device_id = _scope_device(device_id)
     except ValueError as exc:
         return {"error": str(exc)}
     limit = min(max(1, int(limit)), _MAX_LIMIT)
 
     q = (query or "").strip()
-    if q:
+    # Global rows are composed per device (labelled sections); device_id reads
+    # that device's own pyramid instead.
+    if q and device_id is not None:
+        rows = await db.search_device_summaries_text(
+            q, start_ms, end_ms, device_scope=device_id, grains=[grain], limit=limit
+        )
+    elif q:
         # Indexed narrative search (summaries_fts, BM25) instead of scanning
         # every window's text in Python; overlap semantics so a coarse window
         # containing the period still matches.
         rows = await db.search_summaries_text(q, start_ms, end_ms, grains=[grain], limit=limit)
+    elif device_id is not None:
+        rows = await db.get_device_summaries(grain, start_ms, end_ms, device_scope=device_id)
     else:
         rows = await db.get_summaries_in_range(grain, start_ms, end_ms)
     items: list[dict] = []
@@ -766,6 +776,7 @@ async def search_summaries(
         "period_start_iso": ms_to_iso(start_ms),
         "period_end_iso": ms_to_iso(end_ms),
         "timezone": view_tz_name(),
+        "device_id": device_id,
         "count": len(items),
         "items": items,
         "note": (
@@ -1035,6 +1046,10 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "device_id": _str_param(
+                        "可选：只读某台设备自己的叙述金字塔（list_devices 的 device_id）。"
+                        "不传=全局视图（多设备时按设备分段）"
+                    ),
                     "grain": {
                         "type": "string",
                         "enum": list(GRAINS),

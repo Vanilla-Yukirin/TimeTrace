@@ -300,6 +300,7 @@ async def serve(
         from openai import AsyncOpenAI
 
         from timetrace.server.summary.narrative import (
+            DevicePyramidNarrator,
             NarrativeBuilder,
             NarrativeCascade,
             OpenAINarrativeLLM,
@@ -309,7 +310,14 @@ async def serve(
         llm = OpenAINarrativeLLM(
             client, config.vlm.model, disable_thinking=config.vlm.disable_thinking
         )
-        cascade = NarrativeCascade(components.db, NarrativeBuilder(components.db, llm))
+        builder = NarrativeBuilder(components.db, llm)
+        # Device pyramid on: the LLM narrates per-device rows and the global rows
+        # are composed from them (no second LLM pass, no mixed-device story).
+        cascade = (
+            DevicePyramidNarrator(components.db, builder)
+            if config.rollup.device_pyramid
+            else NarrativeCascade(components.db, builder)
+        )
         await asyncio.sleep(config.narrate.loop_initial_delay_s)
         logger.info("narrate.loop_started", interval_s=config.narrate.loop_interval_s)
         try:

@@ -312,6 +312,45 @@ CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
     summary_id UNINDEXED, grain UNINDEXED, description, evaluation, tokenize='trigram'
 );
 
+-- Per-device pyramid (v2, 2026-10 W6): the same window grid and columns as
+-- `summaries`, one row per (grain, window, device). `device_scope` is the
+-- device UUID or '_unknown_device' for records captured before device identity.
+-- Additive and parallel to `summaries` (which stays the global/compat view), so
+-- an older image that ignores this table can still roll back safely. Never
+-- backfilled by renaming global rows: rebuilt from records.
+CREATE TABLE IF NOT EXISTS device_summaries (
+    id                      TEXT PRIMARY KEY,
+    grain                   TEXT NOT NULL,
+    scope_key               TEXT NOT NULL,
+    device_scope            TEXT NOT NULL,
+    window_start            INTEGER NOT NULL,
+    window_end              INTEGER NOT NULL,
+    day_local               TEXT NOT NULL,
+    description             TEXT,
+    evaluation              TEXT,
+    body_json               TEXT,
+    metrics_json            TEXT,
+    record_count            INTEGER NOT NULL DEFAULT 0,
+    src_tokens              INTEGER,
+    out_tokens              INTEGER,
+    compression_ratio       REAL,
+    status                  TEXT NOT NULL DEFAULT 'pending_summary',
+    source_version          INTEGER NOT NULL DEFAULT 0,
+    source_hash             TEXT,
+    created_at              INTEGER NOT NULL,
+    updated_at              INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_device_summaries_key
+    ON device_summaries(grain, scope_key, device_scope);
+CREATE INDEX IF NOT EXISTS idx_device_summaries_grain_ts
+    ON device_summaries(grain, window_start, device_scope);
+CREATE INDEX IF NOT EXISTS idx_device_summaries_status
+    ON device_summaries(status) WHERE status LIKE 'pending_%';
+CREATE VIRTUAL TABLE IF NOT EXISTS device_summaries_fts USING fts5(
+    summary_id UNINDEXED, grain UNINDEXED, device_scope UNINDEXED,
+    description, evaluation, tokenize='trigram'
+);
+
 -- Unified LLM-request ledger: every LLM call (worker VLM describe / narrate /
 -- report / ask_agent) logs one row with timing + REAL token usage (from the
 -- response, not estimated) + content sizes. Powers the /llm-log panel.
@@ -2449,6 +2488,215 @@ class SqliteDatabase:
                 row = await cur.fetchone()
             await self.conn.commit()
         return row["id"] if row else new_id
+
+    # ------------------------------------------------------------------ #
+    # Per-device pyramid (device_summaries, W6)                            #
+    # ------------------------------------------------------------------ #
+
+    async def upsert_device_summary(
+        self,
+        *,
+        device_scope: str,
+        grain: str,
+        scope_key: str,
+        window_start: int,
+        window_end: int,
+        day_local: str,
+        metrics_json: str,
+        record_count: int = 0,
+        status: str = "pending_summary",
+        source_hash: str | None = None,
+    ) -> str:
+        """Per-device twin of :meth:`upsert_summary` (same re-emission rule:
+        status resets only when ``source_hash`` changed)."""
+        now = _now_ms()
+        new_id = _new_id()
+        async with self._lock:
+            async with self.conn.execute(
+                """INSERT INTO device_summaries
+                       (id, grain, scope_key, device_scope, window_start, window_end,
+                        day_local, metrics_json, record_count, status, source_hash,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(grain, scope_key, device_scope) DO UPDATE SET
+                       window_start = excluded.window_start,
+                       window_end   = excluded.window_end,
+                       day_local    = excluded.day_local,
+                       metrics_json = excluded.metrics_json,
+                       record_count = excluded.record_count,
+                       source_hash  = excluded.source_hash,
+                       source_version = device_summaries.source_version
+                           + (CASE WHEN device_summaries.source_hash IS NOT excluded.source_hash
+                                   THEN 1 ELSE 0 END),
+                       status = CASE
+                           WHEN device_summaries.source_hash IS NOT excluded.source_hash
+                               THEN excluded.status
+                           ELSE device_summaries.status
+                       END,
+                       updated_at   = excluded.updated_at
+                   RETURNING id""",
+                (
+                    new_id,
+                    grain,
+                    scope_key,
+                    device_scope,
+                    window_start,
+                    window_end,
+                    day_local,
+                    metrics_json,
+                    record_count,
+                    status,
+                    source_hash,
+                    now,
+                    now,
+                ),
+            ) as cur:
+                row = await cur.fetchone()
+            await self.conn.commit()
+        return row["id"] if row else new_id
+
+    async def get_device_summaries(
+        self,
+        grain: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        device_scope: str | None = None,
+        overlap: bool = False,
+        scope_key: str | None = None,
+    ) -> list[dict]:
+        """Device rows of ``grain``. Default selects ``window_start`` ∈
+        ``[start_ms, end_ms)`` (children of a parent); ``overlap=True`` selects
+        windows overlapping the range (day views). ``device_scope`` None = all
+        devices; ``scope_key`` pins one window. Ordered by start, then device."""
+        if overlap:
+            conditions = ["grain = ?", "window_start < ?", "window_end > ?"]
+            params: list[Any] = [grain, end_ms, start_ms]
+        else:
+            conditions = ["grain = ?", "window_start >= ?", "window_start < ?"]
+            params = [grain, start_ms, end_ms]
+        if device_scope is not None:
+            conditions.append("device_scope = ?")
+            params.append(device_scope)
+        if scope_key is not None:
+            conditions.append("scope_key = ?")
+            params.append(scope_key)
+        async with self._lock:
+            async with self.conn.execute(
+                f"SELECT * FROM device_summaries WHERE {' AND '.join(conditions)} "
+                "ORDER BY window_start, device_scope",
+                params,
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_pending_device_summaries(
+        self, grain: str, start_ms: int, end_ms: int, before_ms: int, limit: int = 500
+    ) -> list[dict]:
+        """Finalized, still-pending device rows (all devices), oldest first."""
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT * FROM device_summaries "
+                "WHERE grain = ? AND status = 'pending_summary' "
+                "AND window_start >= ? AND window_start < ? AND window_end <= ? "
+                "ORDER BY window_start, device_scope LIMIT ?",
+                (grain, start_ms, end_ms, before_ms, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def save_device_summary_narrative(
+        self,
+        summary_id: str,
+        *,
+        description: str,
+        evaluation: str,
+        body_json: str,
+        src_tokens: int | None = None,
+        out_tokens: int | None = None,
+        compression_ratio: float | None = None,
+        status: str = "narrated",
+    ) -> None:
+        now = _now_ms()
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE device_summaries SET description=?, evaluation=?, body_json=?, "
+                "src_tokens=?, out_tokens=?, compression_ratio=?, status=?, updated_at=? "
+                "WHERE id=?",
+                (
+                    description,
+                    evaluation,
+                    body_json,
+                    src_tokens,
+                    out_tokens,
+                    compression_ratio,
+                    status,
+                    now,
+                    summary_id,
+                ),
+            )
+            await self.conn.execute(
+                "DELETE FROM device_summaries_fts WHERE summary_id=?", (summary_id,)
+            )
+            await self.conn.execute(
+                """INSERT INTO device_summaries_fts
+                       (summary_id, grain, device_scope, description, evaluation)
+                   SELECT id, grain, device_scope, COALESCE(description, ''),
+                          COALESCE(evaluation, '')
+                   FROM device_summaries WHERE id=?""",
+                (summary_id,),
+            )
+            await self.conn.commit()
+
+    async def search_device_summaries_text(
+        self,
+        query: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        device_scope: str | None = None,
+        grains: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Per-device twin of :meth:`search_summaries_text`."""
+        q = (query or "").strip()
+        if not q:
+            return []
+        conditions = ["s.window_start < ?", "s.window_end > ?"]
+        params: list[Any] = [end_ms, start_ms]
+        if grains:
+            conditions.append(f"s.grain IN ({','.join('?' * len(grains))})")
+            params.extend(grains)
+        if device_scope is not None:
+            conditions.append("s.device_scope = ?")
+            params.append(device_scope)
+        where = " AND ".join(conditions)
+        if len(q) >= _FTS_MIN_LEN:
+            sql = f"""
+                WITH hits AS (
+                    SELECT summary_id, bm25(device_summaries_fts) AS match_rank
+                    FROM device_summaries_fts WHERE device_summaries_fts MATCH ?
+                )
+                SELECT s.*, h.match_rank FROM device_summaries s
+                JOIN hits h ON h.summary_id = s.id
+                WHERE {where}
+                ORDER BY h.match_rank, s.window_start DESC
+                LIMIT ?"""
+            args = [_fts_query(q), *params, limit]
+        else:
+            like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            sql = f"""
+                SELECT s.*, NULL AS match_rank FROM device_summaries s
+                WHERE {where}
+                  AND (s.description LIKE ? ESCAPE '\\' OR s.evaluation LIKE ? ESCAPE '\\'
+                       OR s.body_json LIKE ? ESCAPE '\\')
+                ORDER BY s.window_start DESC
+                LIMIT ?"""
+            args = [*params, like, like, like, limit]
+        async with self._lock:
+            async with self.conn.execute(sql, args) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     async def get_summary(self, grain: str, scope_key: str) -> dict | None:
         """Fetch a single cascade row, or None."""

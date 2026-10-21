@@ -293,3 +293,12 @@ timetrace-server narrate "2026-06-22" "2026-06-27" --force --grains "1h,6h,day,w
 - `src/timetrace/server/agent/tools.py` —— `_clamped_dur_sql()`（时长 clamp 单一源）
 - `src/timetrace/common/config.py` —— `EmbeddingConfig.dim`、新增金字塔旋钮（grain 阈值 / cut-hour / 脱敏规则）
 - [PLAN-BETTER-AGENT.md](../PLAN-BETTER-AGENT.md) · [episode-and-rollup-pipeline.md](../architecture/episode-and-rollup-pipeline.md) · [thin-router-agent.md](../architecture/thin-router-agent.md)
+
+## 设备级金字塔 v2（2026-10 W6）
+
+- **表**：`device_summaries`（+ `device_summaries_fts`），列与 `summaries` 相同另加 `device_scope`（设备 UUID 或 `_unknown_device`），唯一键 `(grain, scope_key, device_scope)`。纯新增表，旧镜像忽略它，回滚安全；旧 `summaries` 保留为全局/兼容视图。
+- **指标**：`MetricsCascadeBuilder` 在全局级联之后按设备再建一遍（`RollupConfig.device_pyramid`，默认开，`TIMETRACE_DEVICE_PYRAMID=0` 关闭）。叶子用 `aggregate_frame_metrics(device_id=…)` 与带设备过滤的 `source_hash`；父窗按同设备子窗全量合并，SUM-invariant 与 re-emission 规则与全局一致。
+- **叙述**：`DevicePyramidNarrator` 每个 grain 先由 LLM 叙述 pending 的设备行（跨设备 round-robin 公平调度，子窗门控限定同设备；prompt 带设备名与 owner 描述，上下文只含该设备的帧/子叙述），再把全局行**拼装**成按设备分段的叙述（单设备原样复制、多设备 `【设备名】…` 分段、key_points 加设备前缀），全局行不再消耗 LLM，也不会生成混合多设备的故事。没有设备行的全局窗（v2 之前的历史）退回单表叙述路径，避免新旧结果重复返回。
+- **容量**：LLM 调用数 ≈ 设备行数；单设备时与之前持平，多设备并行时间段近似线性增长（全局行不再额外调用）。
+- **历史**：v2 从原始记录重建，`timetrace-server backfill` 会同时建设备行，`narrate` 走同一 narrator；不会把旧全局叙述改名成设备叙述。
+- **读侧**：`/v1/summaries?device_id=` 返回该设备自己的金字塔，响应 `devices` 列出当天有设备金字塔的设备；Agent/MCP `search_summaries(device_id=…)` 读设备行（query 走 `device_summaries_fts`）；不传则读全局（按设备分段）。

@@ -145,7 +145,14 @@ async def test_rebuild_is_idempotent(db):
 async def test_empty_day_builds_nothing(db):
     builder = MetricsCascadeBuilder(db, RollupConfig())
     counts = await builder.build_day(_ms(2099, 6, 9, 9, 0))
-    assert counts == {"5min": 0, "1h": 0, "6h": 0, "day": 0, "week": 0}
+    assert {k: counts[k] for k in ("5min", "1h", "6h", "day", "week")} == {
+        "5min": 0,
+        "1h": 0,
+        "6h": 0,
+        "day": 0,
+        "week": 0,
+    }
+    assert all(v == 0 for v in counts.values())  # incl. the per-device cascade
     assert await db.get_summary("day", "2099-06-09") is None
 
 

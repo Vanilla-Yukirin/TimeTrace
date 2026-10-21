@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import * as Dialog from '@radix-ui/react-dialog'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
-import { api } from '@/lib/api'
+import { apiFetch } from '@/lib/api'
 import { queryKeys } from '@/lib/queryKeys'
 import { categoryColor } from '@/lib/categories'
 import { useIsMobile } from '@/hooks/useIsMobile'
@@ -10,7 +10,22 @@ import { IconButton } from '@/components/ui/IconButton'
 import { Button } from '@/components/ui/Button'
 import { ErrorBanner } from '@/components/ui/Feedback'
 import { SkeletonRows } from '@/components/ui/Skeleton'
-import type { SummaryWindow } from '@/types/api'
+import type { SummariesDay, SummaryWindow } from '@/types/api'
+
+/** /v1/summaries since the per-device pyramid (W6): `devices` lists the
+ *  device scopes that have their own pyramid for the day; passing
+ *  `device_id` returns that device's windows in `grains`. Without it the
+ *  global view is composed per device (labelled sections). */
+type SummariesDayV2 = SummariesDay & {
+  devices?: { device_id: string; label: string }[]
+  device_id?: string | null
+}
+
+function fetchSummaries(day: string, device: string | null): Promise<SummariesDayV2> {
+  const p = new URLSearchParams({ day })
+  if (device) p.set('device_id', device)
+  return apiFetch<SummariesDayV2>(`/v1/summaries?${p}`)
+}
 
 // Columns coarse→fine; each is a vertical lane on a SHARED time axis, so a
 // child block sits horizontally next to the parent window that contains it.
@@ -47,10 +62,12 @@ function shiftDay(day: string, delta: number): string {
 export function PyramidPage() {
   const [day, setDay] = useState(todayLocalLogicalDay())
   const [sel, setSel] = useState<SummaryWindow | null>(null)
+  // null = 全部设备（全局视图，多设备时按设备分段）
+  const [device, setDevice] = useState<string | null>(null)
   const isMobile = useIsMobile()
   const q = useQuery({
-    queryKey: queryKeys.summariesDay(day),
-    queryFn: () => api.getSummariesForDay(day),
+    queryKey: [...queryKeys.summariesDay(day), device ?? 'all'],
+    queryFn: () => fetchSummaries(day, device),
     refetchInterval: 15000,
     refetchIntervalInBackground: false,
   })
@@ -80,6 +97,20 @@ export function PyramidPage() {
             <ChevronRight size={16} />
           </IconButton>
           <Button onClick={() => { setDay(todayLocalLogicalDay()); setSel(null) }} style={{ padding: '5px 12px', fontSize: 12.5 }}>今天</Button>
+          {(q.data?.devices?.length ?? 0) > 1 && (
+            <select
+              aria-label="设备"
+              value={device ?? ''}
+              onChange={(e) => { setDevice(e.target.value || null); setSel(null) }}
+              className="tt-input"
+              style={{ height: 30, fontSize: 12.5, padding: '0 8px', marginLeft: 6 }}
+            >
+              <option value="">全部设备</option>
+              {q.data?.devices?.map((d) => (
+                <option key={d.device_id} value={d.device_id}>{d.label}</option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
       {/* Legend */}

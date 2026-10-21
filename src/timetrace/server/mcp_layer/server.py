@@ -250,6 +250,7 @@ def build_mcp_server(
         end_iso: str | None = None,
         query: str | None = None,
         limit: int = 50,
+        device_id: str | None = None,
     ) -> dict:
         """Read the narrative pyramid: per-window 流水账 / 重点 / 评价.
 
@@ -270,6 +271,8 @@ def build_mcp_server(
             start_iso/end_iso: custom-period bounds (local 'YYYY-MM-DD HH:MM:SS');
                 when drilling, pass the parent window's start/end here.
             query: optional full-text filter over the narratives (relevance-ranked).
+            device_id: read one device's own pyramid (from ``list_devices``);
+                omitted = global view, composed as one section per device.
             limit: max windows (default 50, cap 2000).
 
         Returns:
@@ -285,6 +288,7 @@ def build_mcp_server(
             end_iso=end_iso,
             query=query,
             limit=limit,
+            device_id=device_id,
         )
 
     @mcp.tool()
