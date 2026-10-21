@@ -37,6 +37,7 @@ from timetrace.server.tz import format_ms, view_tz, view_tz_name
 if TYPE_CHECKING:
     from timetrace.common.config import VLMConfig
     from timetrace.server.db import Database
+    from timetrace.server.embedding.client import EmbeddingClient
 
 logger = structlog.get_logger(__name__)
 
@@ -44,17 +45,25 @@ _MAX_ITERATIONS = 6
 _TIMEOUT_S = 180.0
 
 _SYSTEM_PROMPT = (
-    "你是 TimeTrace 的活动记录助手。TimeTrace 在本地记录用户在电脑上看过的"
-    "窗口与截图，并由 AI 自动给每条记录打分类标签。\n\n"
-    "你可以调用工具查询用户的真实活动数据，然后用中文简洁、口语化地回答。原则：\n"
-    "- 回答前先用工具取真实数据，绝不凭空编造数字或内容。遇到“今天/最近/"
-    "这几天”等时间词，用带 hours_back 的工具。\n"
-    "- 工具返回的时长是秒，回答时换算成更易读的分钟 / 小时。\n"
-    "- 找具体内容用 search_activity；看时间分布用 get_app_breakdown（按应用）"
-    "或 get_category_stats（按分类）；要总览用 get_recent_activity。\n"
+    "你是 TimeTrace 的活动记录助手。TimeTrace 在本地记录用户在（一台或多台）电脑上"
+    "看过的窗口与截图，由 AI 给每条记录写描述、打分类，并按 5min→1h→6h→day→week "
+    "逐层生成叙述摘要（金字塔）。\n\n"
+    "你可以调用工具查询用户的真实活动数据，然后用中文简洁、口语化地回答。工作方式：\n"
+    "1. 先摘要、后下钻：问『某段时间在做什么』时，先用 search_summaries 读 day/6h "
+    "叙述总览，需要细节再按返回的 drill_down_grain 和窗口起止下钻，最后才看原始记录。\n"
+    "2. 统计时长/占比用 query_stats（今天/本周/本月）或带 period 的 "
+    "get_app_breakdown / get_category_stats。『今天』『本周』一律传 period，"
+    "不要用 hours_back 近似；hours_back 只用于『最近 N 小时』这类滚动窗口。\n"
+    "3. 找具体内容（某个文件、网页、话题什么时候出现过）用 search_activity，"
+    "它同时按关键词和语义匹配，结果按相关度排序。\n"
+    "4. get_recent_activity 只在需要按时间顺序逐条翻看时使用。\n"
+    "原则：\n"
+    "- 回答前先用工具取真实数据，绝不凭空编造数字或内容；数据不足就如实说明。\n"
+    "- 工具返回的时长是秒，回答时换算成分钟 / 小时；这些时长是『捕获到的活跃下限』，"
+    "不是总时间。多台设备并行时，按分类/应用相加的时长可能超过实际经过时间。\n"
+    "- 时间都按用户所在时区（见下方当前时间）理解和表述。\n"
     "- 你可以用 apply_label 给某条记录改分类标签——这是你唯一的写权限，"
-    "你不能删除或修改记录本身。\n"
-    "- 数据不足以回答时，如实说明，不要硬凑。\n\n"
+    "你不能删除或修改记录本身。\n\n"
     "当前时间：{now}。"
 )
 
@@ -110,8 +119,10 @@ class AgentRunner:
         *,
         max_iterations: int = _MAX_ITERATIONS,
         system_prompt: str | None = None,
+        embedding: EmbeddingClient | None = None,
     ) -> None:
         self._db = db
+        self._embedding = embedding
         self._cfg = vlm_cfg
         self._max_iterations = max_iterations
         # None → the default chat persona. Callers (e.g. the report generator)
@@ -242,7 +253,9 @@ class AgentRunner:
                     args = {}
                 tools_used.append(name)
                 yield {"type": "step", "phase": "tool_call", "tool": name, "args": args}
-                result = await agent_tools.dispatch_tool(self._db, name, args)
+                result = await agent_tools.dispatch_tool(
+                    self._db, name, args, embedding=self._embedding
+                )
                 if isinstance(result, dict) and isinstance(result.get("items"), list):
                     records_consulted += len(result["items"])
                 yield {

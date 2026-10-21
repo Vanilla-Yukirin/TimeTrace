@@ -52,7 +52,11 @@ async def generate_report(req: GenerateRequest, request: Request) -> dict:
     vlm_cfg = getattr(request.app.state, "vlm_cfg", None)
     if vlm_cfg is None:
         raise HTTPException(status_code=503, detail="LLM 未配置，无法生成看板")
-    gen = ReportGenerator(request.app.state.db, vlm_cfg)
+    gen = ReportGenerator(
+        request.app.state.db,
+        vlm_cfg,
+        embedding=getattr(request.app.state, "embedding_client", None),
+    )
     return await gen.generate(req.scope)
 
 
@@ -68,7 +72,9 @@ async def generate_report_stream(req: GenerateRequest, request: Request) -> Stre
         if vlm_cfg is None:
             yield _sse({"type": "error", "message": "LLM 未配置，无法生成看板"})
             return
-        generator = ReportGenerator(db, vlm_cfg)
+        generator = ReportGenerator(
+            db, vlm_cfg, embedding=getattr(request.app.state, "embedding_client", None)
+        )
         async for ev in generator.generate_stream(req.scope):
             yield _sse(ev)
 

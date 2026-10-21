@@ -2046,6 +2046,10 @@ class SqliteDatabase:
         limit: int,
         start_ms: int = 0,
         end_ms: int = 9_999_999_999_999,
+        *,
+        device_id: str | None = None,
+        apps: list[str] | None = None,
+        categories: list[str] | None = None,
     ) -> list[tuple[str, float]]:
         """Cosine-rank records by text_embedding similarity to ``query_vec``.
 
@@ -2060,14 +2064,29 @@ class SqliteDatabase:
         """
         import numpy as np  # noqa: PLC0415 — localized; keeps DB module import-light
 
+        # Filters apply to the candidate set (before ranking), so a scoped
+        # search returns the best N *within* the scope rather than a global
+        # top-N that post-filtering then thins out.
+        conditions = ["a.text_embedding IS NOT NULL", "r.ts_start BETWEEN ? AND ?"]
+        params: list[Any] = [start_ms, end_ms]
+        if device_id == UNKNOWN_DEVICE:
+            conditions.append("r.device_id IS NULL")
+        elif device_id is not None:
+            conditions.append("r.device_id = ?")
+            params.append(device_id)
+        if apps:
+            conditions.append(f"r.app_name IN ({','.join('?' * len(apps))})")
+            params.extend(apps)
+        if categories:
+            conditions.append(f"a.category_final IN ({','.join('?' * len(categories))})")
+            params.extend(categories)
         async with self._lock:
             async with self.conn.execute(
                 "SELECT a.record_id, a.text_embedding "
                 "FROM analysis_results a "
                 "JOIN records r ON r.id = a.record_id "
-                "WHERE a.text_embedding IS NOT NULL "
-                "  AND r.ts_start BETWEEN ? AND ?",
-                (start_ms, end_ms),
+                f"WHERE {' AND '.join(conditions)}",
+                params,
             ) as cur:
                 rows = await cur.fetchall()
         if not rows:
@@ -2415,6 +2434,58 @@ class SqliteDatabase:
             ) as cur:
                 row = await cur.fetchone()
         return dict(row) if row else None
+
+    async def search_summaries_text(
+        self,
+        query: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        grains: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Narrated summary windows overlapping ``[start_ms, end_ms)`` whose
+        narrative matches ``query``, best match first.
+
+        ≥3-char queries use ``summaries_fts`` (trigram, BM25); shorter ones fall
+        back to LIKE over description / evaluation / key points, ordered by
+        recency. Each row carries ``match_rank`` (lower = better, BM25 path).
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        conditions = ["s.window_start < ?", "s.window_end > ?"]
+        params: list[Any] = [end_ms, start_ms]
+        if grains:
+            conditions.append(f"s.grain IN ({','.join('?' * len(grains))})")
+            params.extend(grains)
+        where = " AND ".join(conditions)
+        if len(q) >= _FTS_MIN_LEN:
+            sql = f"""
+                WITH hits AS (
+                    SELECT summary_id, bm25(summaries_fts) AS match_rank
+                    FROM summaries_fts WHERE summaries_fts MATCH ?
+                )
+                SELECT s.*, h.match_rank FROM summaries s
+                JOIN hits h ON h.summary_id = s.id
+                WHERE {where}
+                ORDER BY h.match_rank, s.window_start DESC
+                LIMIT ?"""
+            args = [_fts_query(q), *params, limit]
+        else:
+            like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            sql = f"""
+                SELECT s.*, NULL AS match_rank FROM summaries s
+                WHERE {where}
+                  AND (s.description LIKE ? ESCAPE '\\' OR s.evaluation LIKE ? ESCAPE '\\'
+                       OR s.body_json LIKE ? ESCAPE '\\')
+                ORDER BY s.window_start DESC
+                LIMIT ?"""
+            args = [*params, like, like, like, limit]
+        async with self._lock:
+            async with self.conn.execute(sql, args) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     async def get_summaries_overlapping(self, grain: str, start_ms: int, end_ms: int) -> list[dict]:
         """Cascade rows of ``grain`` whose window OVERLAPS ``[start_ms, end_ms)``.

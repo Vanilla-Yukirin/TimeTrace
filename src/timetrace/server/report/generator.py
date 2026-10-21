@@ -18,10 +18,12 @@ from typing import TYPE_CHECKING
 import structlog
 
 from timetrace.server.agent.runner import AgentRunner
+from timetrace.server.agent.tools import ms_to_iso, query_stats
 
 if TYPE_CHECKING:
     from timetrace.common.config import VLMConfig
     from timetrace.server.db import Database
+    from timetrace.server.embedding.client import EmbeddingClient
 
 logger = structlog.get_logger(__name__)
 
@@ -55,8 +57,9 @@ _REPORT_SYSTEM = (
     "【看到很大的『尚未分类』或真『未分类』桶时怎么办】不要替系统或用户编理由。可以友好地提示一句："
     "用户可以为特定应用配置固定分类规则（例如把公司内部 IM 固定成『沟通』或『工作』），"
     "配置后该应用就会被自动、确定性地归类。把它写成贴心建议，而不是报错或吐槽。\n\n"
-    "工作流：先调用工具（get_recent_activity / get_app_breakdown / get_category_stats）"
-    "拿到这段时间的【真实】数据，再据此写报告。\n\n"
+    "工作流：用户消息里已附上这段时间【预取的真实数据】——统计（按分类/应用/墙钟活跃）"
+    "和金字塔叙述摘要（每个时间窗的流水账与重点）。先读它们，叙述摘要是理解『做了什么』"
+    "的主要依据；只有不够时才调用工具补查（例如用 search_activity 查某个应用是什么）。\n\n"
     "输出：**只输出一个 JSON 对象**，第一个字符就是 `{`。绝对不要输出任何分析过程 / 思考 / "
     "前言 / 解释，也不要 markdown、不要 ```json 代码围栏。颜色和排版由前端负责，你只给内容文字"
     "（值一律用中文）。字段：\n"
@@ -75,9 +78,54 @@ _REPORT_SYSTEM = (
 )
 
 
-def _instruction(scope: str) -> str:
+# Pyramid grain whose narratives best cover each scope (≈4–12 windows).
+_SCOPE_GRAIN = {"recent_3h": "1h", "recent_24h": "6h", "recent_7d": "day"}
+_PREFETCH_DESC_CHARS = 500
+
+
+def _instruction(scope: str, prefetched: str = "") -> str:
     label = SCOPE_LABELS.get(scope, "最近一段时间")
-    return f"请为我生成一份『{label}』的活动近况洞察看板（HTML）。先查真实数据再写。"
+    ask = f"请为我生成一份『{label}』的活动近况洞察看板。"
+    if prefetched:
+        return f"{ask}\n\n=== 预取的真实数据 ===\n{prefetched}"
+    return f"{ask}先查真实数据再写。"
+
+
+async def _prefetch(db: Database, scope: str, start_ms: int, end_ms: int) -> str:
+    """Ground the report in data the system already computed: live stats over
+    the exact window plus the narrated pyramid windows covering it. Saves the
+    single-GPU agent several tool round-trips and anchors it on the
+    summary-of-summaries instead of re-deriving a story from raw frames."""
+    start_iso, end_iso = ms_to_iso(start_ms), ms_to_iso(end_ms)
+    parts: list[str] = []
+    for metric in ("active_seconds", "seconds_by_category", "seconds_by_app"):
+        stats = await query_stats(
+            db, metric=metric, period="custom", start_iso=start_iso, end_iso=end_iso, top_n=8
+        )
+        stats.pop("semantics", None)
+        stats.pop("categories_legend", None)
+        parts.append(f"[{metric}] {json.dumps(stats, ensure_ascii=False)}")
+    grain = _SCOPE_GRAIN.get(scope, "6h")
+    windows = await db.get_summaries_overlapping(grain, start_ms, end_ms)
+    lines = []
+    for w in windows:
+        desc = (w.get("description") or "").strip().replace("\n", " ")
+        if not desc:
+            continue
+        try:
+            kps = json.loads(w.get("body_json") or "{}").get("key_points") or []
+        except json.JSONDecodeError:
+            kps = []
+        span = f"{ms_to_iso(w['window_start'])}～{ms_to_iso(w['window_end'])}"
+        line = f"- {span}：{desc[:_PREFETCH_DESC_CHARS]}"
+        if kps:
+            line += " ｜重点：" + "；".join(str(k) for k in kps[:4])
+        lines.append(line)
+    if lines:
+        parts.append(f"[金字塔叙述 grain={grain}]\n" + "\n".join(lines))
+    else:
+        parts.append(f"[金字塔叙述 grain={grain}] （该时段暂无已生成的叙述，可用工具补查）")
+    return "\n".join(parts)
 
 
 def _json_candidates(t: str):
@@ -167,9 +215,12 @@ def _parse_report(text: str) -> dict:
 class ReportGenerator:
     """Run the agent loop with a report persona and persist the HTML it writes."""
 
-    def __init__(self, db: Database, vlm_cfg: VLMConfig) -> None:
+    def __init__(
+        self, db: Database, vlm_cfg: VLMConfig, *, embedding: EmbeddingClient | None = None
+    ) -> None:
         self._db = db
         self._cfg = vlm_cfg
+        self._embedding = embedding
 
     async def generate(self, scope: str = DEFAULT_SCOPE) -> dict:
         """Generate + persist a report, returning the final record (non-streaming).
@@ -200,11 +251,22 @@ class ReportGenerator:
         hours = SCOPE_HOURS.get(scope, 24)
         now_ms = int(time.time() * 1000)
         start_ms = now_ms - hours * 3600 * 1000
-        runner = AgentRunner(self._db, self._cfg, system_prompt=_REPORT_SYSTEM, max_iterations=5)
+        try:
+            prefetched = await _prefetch(self._db, scope, start_ms, now_ms)
+        except Exception:  # noqa: BLE001 — grounding is best-effort; tools still work
+            logger.warning("report.prefetch_failed", scope=scope, exc_info=True)
+            prefetched = ""
+        runner = AgentRunner(
+            self._db,
+            self._cfg,
+            system_prompt=_REPORT_SYSTEM,
+            max_iterations=5,
+            embedding=self._embedding,
+        )
         parts: list[str] = []
         try:
             async for ev in runner.run(
-                [{"role": "user", "content": _instruction(scope)}],
+                [{"role": "user", "content": _instruction(scope, prefetched)}],
                 hours_back_hint=hours,
             ):
                 if ev["type"] == "token":

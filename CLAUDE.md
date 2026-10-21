@@ -68,7 +68,8 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - `Capture → Database`：每条 record 触发 `INSERT INTO analysis_tasks` 入队
 - `Worker → VLM`：从 `analysis_tasks` 拉任务、调 VLM、回写 `analysis_results.vlm_desc` + `category_final`
 - `Capture → PHashIndex`：每张 thumb 计算 pHash，加入内存 BK-tree（`PHashIndex.from_db` 启动时从 DB 重建）
-- `API /v1/search/by-image`：pHash 视觉通道（BK-tree 距离）+ 图→VLM 描述→`vlm_desc LIKE` 文本通道 + RRF；这里的 `_bm25_search` 名字是历史残留，尚未迁 FTS5
+- `API /v1/search/by-image`：pHash 视觉通道（BK-tree 距离）+ 图→VLM 描述→文本 embedding 余弦（无 embedder 时退回 `_desc_token_search` 词重叠）+ RRF
+- **统一检索**：`/v1/search/text`、Web Agent 与 MCP 的 `search_activity` 都走 `server/retrieval.py::retrieve_records`（FTS5/LIKE + embedding，RRF；范围过滤在各通道候选阶段）；`search_summaries` 的 query 走 `summaries_fts`。embedder 由调用方注入 `dispatch_tool(..., embedding=)`，不从模型参数取
 
 **前后端契约**：
 

@@ -244,7 +244,7 @@ async def serve(
             return
         from timetrace.server.report.generator import SCOPE_HOURS, ReportGenerator
 
-        gen = ReportGenerator(components.db, config.vlm)
+        gen = ReportGenerator(components.db, config.vlm, embedding=components.embedding_client)
         await asyncio.sleep(_REPORT_INITIAL_DELAY_S)
         while True:
             # Refresh EVERY scope (recent_3h / recent_24h / recent_7d), each isolated

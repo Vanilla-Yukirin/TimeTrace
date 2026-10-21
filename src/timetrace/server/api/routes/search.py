@@ -3,7 +3,8 @@
 Pipeline (see `infra/overview/roadmap.md` for context):
 
     images[0]            ─► pHash          ─► PHashIndex.search ─► visual_hits
-    images[all] ─► VLM   ─► description(s) ─► BM25-like text     ─► semantic_hits
+    images[all] ─► VLM   ─► description(s) ─► embedding cosine   ─► semantic_hits
+                                              (token overlap if no embedder)
     q (+ no semantic)    ─► LIKE fallback                        ─► text_hits
                                                     │
                                                     ▼
@@ -18,8 +19,8 @@ Pipeline (see `infra/overview/roadmap.md` for context):
                                                     ▼
                                            top-N items
 
-`_bm25_search` is currently a LIKE fallback over `vlm_desc`; once FTS5 tables
-are built it is the only function that needs to flip to a `MATCH` query.
+The text endpoint (`/search/text`) delegates to `server/retrieval.py::
+retrieve_records`, the same path the agent and MCP use.
 """
 
 from __future__ import annotations
@@ -32,8 +33,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from PIL import Image
 
 from timetrace.common.phash_hash import compute_phash
-from timetrace.server.embedding.client import EmbeddingError
-from timetrace.server.retrieval import reciprocal_rank_fusion
+from timetrace.server.retrieval import fetch_records_by_ids, retrieve_records
 from timetrace.server.vlm.client import VLMError, format_description
 
 logger = structlog.get_logger(__name__)
@@ -55,18 +55,17 @@ def _escape_like(s: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-async def _bm25_search(
+async def _desc_token_search(
     db: Any,
     query_text: str,
     ts_range: tuple[int, int] | None,
     limit: int,
 ) -> list[tuple[str, float]]:
-    """BM25-ranked screenshots by VLM description.
+    """Screenshots whose VLM description shares tokens with ``query_text``.
 
-    Current implementation: LIKE fallback over vlm_desc (vlm_desc is NULL
-    everywhere today, so this returns []). Will become an FTS5 MATCH query once
-    FTS5 tables are built.
-
+    Fallback for the by-image semantic channel when no text-embedding endpoint
+    is configured: the query here is a whole generated description, which an
+    FTS phrase match would never hit, so it scores by per-token LIKE overlap.
     Returns list of (screenshot_id, score) ordered by relevance desc.
     """
     tokens = [t for t in query_text.split() if len(t) >= 2]
@@ -104,6 +103,40 @@ async def _bm25_search(
         async with db.conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
     return [(row["sid"], float(row["score"])) for row in rows]
+
+
+async def _embedding_screenshot_search(
+    db: Any,
+    embedder: Any,
+    query_text: str,
+    ts_range: tuple[int, int] | None,
+    limit: int,
+) -> list[tuple[str, float]] | None:
+    """Cosine-rank screenshots by their record's text embedding vs. the
+    generated description. ``None`` when no embedder / embedding failed, so the
+    caller can fall back to token overlap."""
+    if embedder is None:
+        return None
+    try:
+        qvec = await embedder.embed(query_text)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("search.by_image_embed_failed", error=str(exc))
+        return None
+    start, end = ts_range if ts_range is not None else (0, 9_999_999_999_999)
+    hits = await db.vector_search(qvec, limit, start_ms=start, end_ms=end)
+    if not hits:
+        return []
+    ids = [rid for rid, _ in hits]
+    placeholders = ",".join("?" * len(ids))
+    async with db.lock:
+        async with db.conn.execute(
+            f"""SELECT record_id, MIN(id) AS sid FROM screenshots
+                WHERE deleted_at IS NULL AND record_id IN ({placeholders})
+                GROUP BY record_id""",
+            ids,
+        ) as cur:
+            first_sid = {row["record_id"]: row["sid"] for row in await cur.fetchall()}
+    return [(first_sid[rid], score) for rid, score in hits if rid in first_sid]
 
 
 async def _like_fallback(
@@ -338,7 +371,15 @@ async def search_by_image(
             query_text = " ".join(descriptions)
             if q:
                 query_text = f"{q} {query_text}"
-            semantic_hits = await _bm25_search(db, query_text, ts_range, limit * 4)
+            semantic_hits = await _embedding_screenshot_search(
+                db,
+                getattr(request.app.state, "embedding_client", None),
+                query_text,
+                ts_range,
+                limit * 4,
+            )
+            if semantic_hits is None:
+                semantic_hits = await _desc_token_search(db, query_text, ts_range, limit * 4)
             semantic_status = "ok"
 
     # ---------- Keyword-only channel (only when semantic off but q given) ----------
@@ -376,33 +417,6 @@ async def search_by_image(
 # --------------------------------------------------------------------------- #
 
 
-async def _fetch_records_by_ids(db: Any, ids: list[str]) -> dict[str, dict]:
-    """Batch-fetch record rows (vlm_desc / category / first thumb) keyed by id.
-
-    One query, IN-bounded by the caller's fused-candidate cap. Column shape
-    mirrors what /v1/records returns so the frontend renders text-search hits
-    with the same card component.
-    """
-    if not ids:
-        return {}
-    placeholders = ",".join("?" * len(ids))
-    sql = f"""
-        SELECT r.id AS record_id, r.ts_start, r.ts_end, r.app_name,
-               r.window_title, r.url, a.vlm_desc, a.category_final, s.thumb_path
-        FROM records r
-        LEFT JOIN analysis_results a ON a.record_id = r.id
-        LEFT JOIN (
-            SELECT record_id, MIN(thumb_path) AS thumb_path
-            FROM screenshots WHERE deleted_at IS NULL GROUP BY record_id
-        ) s ON s.record_id = r.id
-        WHERE r.id IN ({placeholders})
-    """
-    async with db.lock:
-        async with db.conn.execute(sql, ids) as cur:
-            rows = await cur.fetchall()
-    return {row["record_id"]: dict(row) for row in rows}
-
-
 @router.get("/search/text")
 async def search_text(
     request: Request,
@@ -434,31 +448,21 @@ async def search_text(
     limit = max(1, min(limit, 200))
     start_ms = start if start is not None else 0
     end_ms = end if end is not None else 9_999_999_999_999
-    apps_set = set(_parse_csv(apps) or [])
-    cats_set = set(_parse_csv(categories) or [])
-    fetch = limit * 4  # over-fetch each channel before fusion + post-filter
-
-    # ---- keyword channel (reuse query_records' FTS5/LIKE split + BM25 rank) ----
-    kw_rows = await db.query_records(start_ms, end_ms, limit=fetch, keyword=q, order="desc")
-    keyword_ids = [r["id"] for r in kw_rows]
-
-    # ---- semantic channel (embed query → cosine over text_embedding) ----
-    semantic_ids: list[str] = []
-    semantic_status = "unavailable"
-    embedder = getattr(request.app.state, "embedding_client", None)
-    if embedder is not None:
-        try:
-            qvec = await embedder.embed(q)
-            hits = await db.vector_search(qvec, fetch, start_ms=start_ms, end_ms=end_ms)
-            semantic_ids = [rid for rid, _ in hits]
-            semantic_status = "ok"
-        except EmbeddingError as exc:
-            logger.info("search_text.embed_failed", error=str(exc))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("search_text.embed_unexpected", error=str(exc))
-
-    # ---- RRF fuse the two id-rankings ----
-    fused = reciprocal_rank_fusion([keyword_ids, semantic_ids])[:_MAX_FUSED]
+    # Shared retrieval path (also used by the agent + MCP): scope filters are
+    # applied inside each channel's candidate query, not after fusion.
+    result = await retrieve_records(
+        db,
+        getattr(request.app.state, "embedding_client", None),
+        q,
+        start_ms,
+        end_ms,
+        limit=_MAX_FUSED,
+        apps=_parse_csv(apps),
+        categories=_parse_csv(categories),
+    )
+    fused = result.ranked
+    semantic_status = result.semantic_channel
+    keyword_ids, semantic_ids = result.keyword_ranks, result.semantic_ranks
     if not fused:
         return {
             "items": [],
@@ -467,19 +471,14 @@ async def search_text(
             "semantic_channel": semantic_status,
         }
 
-    kw_rank = {rid: i + 1 for i, rid in enumerate(keyword_ids)}
-    sem_rank = {rid: i + 1 for i, rid in enumerate(semantic_ids)}
-    meta = await _fetch_records_by_ids(db, [rid for rid, _ in fused])
+    kw_rank, sem_rank = result.keyword_ranks, result.semantic_ranks
+    meta = await fetch_records_by_ids(db, [rid for rid, _ in fused])
 
     # ---- enrich + post-filter, preserving fused order ----
     items: list[dict] = []
     for rid, score in fused:
         row = meta.get(rid)
         if row is None:
-            continue
-        if apps_set and row["app_name"] not in apps_set:
-            continue
-        if cats_set and row.get("category_final") not in cats_set:
             continue
         items.append(
             {
