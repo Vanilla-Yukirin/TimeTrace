@@ -137,10 +137,17 @@ class RollupConfig:
     loop_initial_delay_s: int = 45  # let capture/worker settle before first build
     loop_interval_s: int = 300  # rebuild the recent window every 5 min
     loop_lookback_h: int = 36  # how far back each tick rebuilds (covers today + cut spill)
+    # Also build the per-device pyramid (device_summaries, W6). Pure SQL like
+    # the global cascade; on by default, TIMETRACE_DEVICE_PYRAMID=0 turns it off.
+    device_pyramid: bool = True
 
     @classmethod
     def from_env(cls) -> RollupConfig:
-        return cls(enabled=_env_truthy(os.getenv("TIMETRACE_ROLLUP_ENABLED")))
+        return cls(
+            enabled=_env_truthy(os.getenv("TIMETRACE_ROLLUP_ENABLED")),
+            device_pyramid=os.getenv("TIMETRACE_DEVICE_PYRAMID", "1").strip().lower()
+            not in ("0", "false", "no", "off"),
+        )
 
 
 @dataclass

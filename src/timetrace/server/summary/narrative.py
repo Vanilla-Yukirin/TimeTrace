@@ -25,7 +25,7 @@ import structlog
 
 from timetrace.server.db.sqlite import UNKNOWN_DEVICE
 from timetrace.server.llm_log import timed_chat_completion
-from timetrace.server.summary.metrics import active_wall_ms
+from timetrace.server.summary.metrics import active_wall_ms, device_condition
 from timetrace.server.summary.windows import CHILD_OF, GRAINS
 from timetrace.server.tz import format_ms, server_tz
 
@@ -286,14 +286,17 @@ class NarrativeBuilder:
         grain = summary["grain"]
         metrics = json.loads(summary.get("metrics_json") or "{}")
         labels = await self._db.device_labels()
+        device_scope = summary.get("device_scope")  # set on device_summaries rows
         if grain == "5min":
-            context, n_src, n_desc = await self._leaf_context(summary, labels)
+            context, n_src, n_desc = await self._leaf_context(
+                summary, labels, device_scope=device_scope
+            )
             if n_desc == 0:
                 # No describable frames — don't spend the GPU (or the loop's
                 # retries) on a window that can only ever come back empty.
                 return _metrics_only_narrative(metrics, n_src)
         else:
-            context, n_src = await self._rollup_context(summary)
+            context, n_src = await self._rollup_context(summary, device_scope=device_scope)
             if n_src == 0:
                 return _metrics_only_narrative(metrics, n_src)
 
@@ -302,8 +305,12 @@ class NarrativeBuilder:
         wall = None
         if len(metrics.get("device_ms") or {}) > 1:
             wall = await active_wall_ms(self._db, summary["window_start"], summary["window_end"])
+        device_line = ""
+        if device_scope is not None:
+            device_line = f"设备：{await self._device_intro(device_scope, labels)}\n"
         user = (
-            f"时间窗：{scope}（{summary.get('day_local', '')} {span}，grain={grain}）\n\n"
+            f"时间窗：{scope}（{summary.get('day_local', '')} {span}，grain={grain}）\n"
+            f"{device_line}\n"
             f"【指标】\n{_metrics_line(metrics, labels, wall)}\n\n"
             f"【{'逐帧描述' if grain == '5min' else '下层摘要'}】（共 {n_src} 条）\n{context}"
         )
@@ -332,8 +339,23 @@ class NarrativeBuilder:
             "compression_ratio": round(out_tokens / src_tokens, 4) if src_tokens else None,
         }
 
+    async def _device_intro(self, device_scope: str, labels: dict[str, str]) -> str:
+        """``名称（用户写的设备描述）`` for a device-scoped prompt."""
+        name = _device_label(device_scope, labels)
+        if device_scope == UNKNOWN_DEVICE:
+            return f"{name}（设备身份上线前的记录）"
+        for d in await self._db.list_devices():
+            if d["id"] == device_scope:
+                desc = d["description"] or d["reported_description"]
+                return f"{name}（{desc}）" if desc else name
+        return name
+
     async def _leaf_context(
-        self, summary: dict, labels: dict[str, str] | None = None
+        self,
+        summary: dict,
+        labels: dict[str, str] | None = None,
+        *,
+        device_scope: str | None = None,
     ) -> tuple[str, int, int]:
         """Frame lines for a 5min window, grouped per device. Only frames WITH a
         VLM description are fed (they carry the story); no-description
@@ -346,14 +368,15 @@ class NarrativeBuilder:
         entirely when ``n_described`` is 0.
         """
         labels = labels or {}
+        dev_sql, dev_params = device_condition(device_scope, "r")
         async with self._db.lock:
             async with self._db.conn.execute(
-                """SELECT r.ts_start, r.app_name, r.window_title, r.device_id,
+                f"""SELECT r.ts_start, r.app_name, r.window_title, r.device_id,
                           a.vlm_desc, a.category_final
                    FROM records r LEFT JOIN analysis_results a ON a.record_id = r.id
-                   WHERE r.ts_start >= ? AND r.ts_start < ?
+                   WHERE r.ts_start >= ? AND r.ts_start < ?{dev_sql}
                    ORDER BY r.ts_start""",
-                (summary["window_start"], summary["window_end"]),
+                (summary["window_start"], summary["window_end"], *dev_params),
             ) as cur:
                 rows = await cur.fetchall()
         described = [r for r in rows if (r["vlm_desc"] or "").strip()]
@@ -385,12 +408,20 @@ class NarrativeBuilder:
             sections.append("\n".join(lines))
         return ("\n\n".join(sections) or "（无逐帧描述）"), len(rows), len(described)
 
-    async def _rollup_context(self, summary: dict) -> tuple[str, int]:
-        """Child-grain narratives feeding a higher window (summary-of-summaries)."""
+    async def _rollup_context(
+        self, summary: dict, *, device_scope: str | None = None
+    ) -> tuple[str, int]:
+        """Child-grain narratives feeding a higher window (summary-of-summaries).
+        Device rows read only the same device's children."""
         child = CHILD_OF[summary["grain"]]
-        children = await self._db.get_summaries_in_range(
-            child, summary["window_start"], summary["window_end"]
-        )
+        if device_scope is not None:
+            children = await self._db.get_device_summaries(
+                child, summary["window_start"], summary["window_end"], device_scope=device_scope
+            )
+        else:
+            children = await self._db.get_summaries_in_range(
+                child, summary["window_start"], summary["window_end"]
+            )
         lines = []
         for c in children:
             span = f"{_fmt_hm(c['window_start'])}–{_fmt_hm(c['window_end'])}"
@@ -496,3 +527,182 @@ class NarrativeCascade:
             if done or deferred:
                 logger.info("narrative.grain_done", grain=grain, n=done, deferred=deferred)
         return counts
+
+
+def _round_robin(rows: list[dict], key: str = "device_scope") -> list[dict]:
+    """Interleave rows across devices (each device's rows stay oldest-first), so
+    a per-tick limit on the single GPU can't let one busy device starve another."""
+    queues: dict[str, list[dict]] = {}
+    for r in rows:
+        queues.setdefault(r[key], []).append(r)
+    out: list[dict] = []
+    while queues:
+        for dev in list(queues):
+            out.append(queues[dev].pop(0))
+            if not queues[dev]:
+                del queues[dev]
+    return out
+
+
+def compose_global_narrative(device_rows: list[dict], labels: dict[str, str]) -> dict:
+    """Global window narrative assembled from its per-device narratives — no LLM.
+
+    One device → its narrative verbatim. Several → one labelled section per
+    device, so the global view never invents a merged story across machines.
+    """
+    rows = sorted(
+        device_rows, key=lambda r: (r["device_scope"] == UNKNOWN_DEVICE, r["device_scope"])
+    )
+    devices = [r["device_scope"] for r in rows]
+    bodies = [json.loads(r.get("body_json") or "{}") for r in rows]
+    units = sum(int(b.get("source_units") or 0) for b in bodies)
+    if len(rows) == 1:
+        body = dict(bodies[0])
+        body["composed_from_devices"] = devices
+        return {
+            "description": rows[0].get("description") or "",
+            "evaluation": rows[0].get("evaluation") or "",
+            "body_json": json.dumps(body, ensure_ascii=False),
+            "src_tokens": rows[0].get("src_tokens"),
+            "out_tokens": rows[0].get("out_tokens"),
+            "compression_ratio": rows[0].get("compression_ratio"),
+        }
+    desc_parts, evals, kps = [], [], []
+    for r, b in zip(rows, bodies, strict=True):
+        label = _device_label(r["device_scope"], labels)
+        desc_parts.append(f"【{label}】{(r.get('description') or '').strip()}")
+        if (r.get("evaluation") or "").strip():
+            evals.append(f"{label}：{r['evaluation'].strip()}")
+        kps.extend(f"【{label}】{k}" for k in (b.get("key_points") or []))
+    description = "\n\n".join(desc_parts)
+    body = {
+        "key_points": kps,
+        "source_units": units,
+        "composed_from_devices": devices,
+        "metrics_only": all(b.get("metrics_only") for b in bodies),
+    }
+    return {
+        "description": description,
+        "evaluation": "；".join(evals),
+        "body_json": json.dumps(body, ensure_ascii=False),
+        "src_tokens": sum(int(r.get("src_tokens") or 0) for r in rows) or None,
+        "out_tokens": _est_tokens(description),
+        "compression_ratio": None,
+    }
+
+
+class DevicePyramidNarrator:
+    """Narrates the per-device pyramid, then fills the global rows from it.
+
+    Per grain, fine → coarse: (1) LLM-narrate pending ``device_summaries`` rows,
+    interleaved across devices and gated on the same device's children;
+    (2) compose each pending global row from its device rows once they are all
+    narrated. A global row with no device rows (history from before the device
+    pyramid was backfilled) falls back to the single-table cascade, so nothing
+    is returned twice and nothing is left behind.
+    """
+
+    def __init__(self, db: Database, builder: NarrativeBuilder) -> None:
+        self._db = db
+        self._builder = builder
+        self._global = NarrativeCascade(db, builder)
+
+    async def _device_children_pending(self, row: dict, now_ms: int) -> bool:
+        child = CHILD_OF.get(row["grain"])
+        if child is None:
+            return False
+        kids = await self._db.get_device_summaries(
+            child, row["window_start"], row["window_end"], device_scope=row["device_scope"]
+        )
+        return any(k["status"] == "pending_summary" and k["window_end"] <= now_ms for k in kids)
+
+    async def narrate_range(
+        self,
+        start_ms: int,
+        end_ms: int,
+        now_ms: int,
+        *,
+        per_grain_limit: int = 500,
+        force: bool = False,
+        grains: tuple[str, ...] | None = None,
+    ) -> dict[str, int]:
+        walk = GRAINS if grains is None else tuple(g for g in GRAINS if g in grains)
+        labels = await self._db.device_labels()
+        counts: dict[str, int] = {}
+        for grain in walk:
+            if force:
+                dev_rows = [
+                    r
+                    for r in await self._db.get_device_summaries(grain, start_ms, end_ms)
+                    if r["window_end"] <= now_ms
+                ]
+            else:
+                dev_rows = await self._db.get_pending_device_summaries(
+                    grain, start_ms, end_ms, now_ms, per_grain_limit * 8
+                )
+            done = 0
+            for row in _round_robin(dev_rows)[:per_grain_limit]:
+                if await self._device_children_pending(row, now_ms):
+                    continue
+                try:
+                    out = await self._builder.build_one(row)
+                    await self._db.save_device_summary_narrative(row["id"], **out)
+                    done += 1
+                except Exception:  # noqa: BLE001 — stays pending, retried next tick
+                    logger.warning(
+                        "narrative.device_window_failed",
+                        grain=grain,
+                        scope=row.get("scope_key"),
+                        device=row.get("device_scope"),
+                        exc_info=True,
+                    )
+            counts[f"dev_{grain}"] = done
+            counts[grain] = await self._fill_global(
+                grain, start_ms, end_ms, now_ms, labels, per_grain_limit, force
+            )
+        return counts
+
+    async def _fill_global(
+        self,
+        grain: str,
+        start_ms: int,
+        end_ms: int,
+        now_ms: int,
+        labels: dict[str, str],
+        limit: int,
+        force: bool,
+    ) -> int:
+        if force:
+            rows = [
+                r
+                for r in await self._db.get_summaries_in_range(grain, start_ms, end_ms)
+                if r["window_end"] <= now_ms
+            ][:limit]
+        else:
+            rows = await self._db.get_pending_summaries(grain, start_ms, end_ms, now_ms, limit)
+        done = 0
+        for row in rows:
+            dev_rows = await self._db.get_device_summaries(
+                grain, row["window_start"], row["window_start"] + 1, scope_key=row["scope_key"]
+            )
+            try:
+                if dev_rows:
+                    if any(not (d.get("description") or "").strip() for d in dev_rows):
+                        continue  # wait until every device's window is narrated
+                    out = compose_global_narrative(dev_rows, labels)
+                else:
+                    if await self._global._has_pending_children(
+                        grain, row["window_start"], row["window_end"], now_ms
+                    ):
+                        continue
+                    out = await self._builder.build_one(row)
+                await self._db.save_summary_narrative(row["id"], **out)
+                done += 1
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "narrative.global_window_failed",
+                    grain=grain,
+                    scope=row.get("scope_key"),
+                    exc_info=True,
+                )
+        return done

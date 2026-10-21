@@ -342,6 +342,7 @@ def _cmd_narrate(
 
     from timetrace.server.db import Database
     from timetrace.server.summary.narrative import (
+        DevicePyramidNarrator,
         NarrativeBuilder,
         NarrativeCascade,
         OpenAINarrativeLLM,
@@ -372,7 +373,12 @@ def _cmd_narrate(
             llm = OpenAINarrativeLLM(
                 client, cfg.vlm.model, disable_thinking=cfg.vlm.disable_thinking
             )
-            cascade = NarrativeCascade(db, NarrativeBuilder(db, llm, max_tokens=max_tokens))
+            builder = NarrativeBuilder(db, llm, max_tokens=max_tokens)
+            cascade = (
+                DevicePyramidNarrator(db, builder)
+                if cfg.rollup.device_pyramid
+                else NarrativeCascade(db, builder)
+            )
             counts = await cascade.narrate_range(
                 start_ms,
                 end_ms,

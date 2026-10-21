@@ -28,7 +28,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from timetrace.server.summary.metrics import aggregate_frame_metrics, merge_metrics
+from timetrace.server.db.sqlite import UNKNOWN_DEVICE
+from timetrace.server.summary.metrics import (
+    aggregate_frame_metrics,
+    device_condition,
+    merge_metrics,
+)
 from timetrace.server.summary.windows import (
     CHILD_OF,
     GRAINS,
@@ -70,6 +75,13 @@ class MetricsCascadeBuilder:
             if grain == "5min":
                 continue
             counts[grain] = await self._build_rollup(grain, start_ms, end_ms)
+        if self._cfg.device_pyramid:
+            counts["dev_5min"] = await self._build_device_leaf(start_ms, end_ms)
+            for grain in GRAINS:
+                if grain != "5min":
+                    counts[f"dev_{grain}"] = await self._build_device_rollup(
+                        grain, start_ms, end_ms
+                    )
         logger.info(
             "rollup.build_range",
             start_ms=start_ms,
@@ -155,6 +167,68 @@ class MetricsCascadeBuilder:
             )
         return len(touched)
 
+    # ---- per-device pyramid (W6) ------------------------------------------ #
+    # Same grid, same SUM-invariant, same re-emission rule as the global
+    # cascade, but every row is restricted to one device scope (UUID or
+    # UNKNOWN_DEVICE). Narratives built on these rows never mix devices.
+
+    async def _build_device_leaf(self, start_ms: int, end_ms: int) -> int:
+        cut = self._cfg.cut_hour
+        async with self._db.lock:
+            async with self._db.conn.execute(
+                f"""SELECT DISTINCT ts_start, COALESCE(device_id, '{UNKNOWN_DEVICE}') AS dev
+                    FROM records WHERE ts_start >= ? AND ts_start < ?""",
+                (start_ms, end_ms),
+            ) as cur:
+                rows = await cur.fetchall()
+        windows = sorted(
+            {(window_bounds(int(r["ts_start"]), "5min", cut)[0], r["dev"]) for r in rows}
+        )
+        built = 0
+        for w_start, dev in windows:
+            w_s, w_e = window_bounds(w_start, "5min", cut)
+            metrics = await aggregate_frame_metrics(self._db, w_s, w_e, device_id=dev)
+            if metrics["record_count"] == 0:
+                continue
+            src_hash = await self._leaf_source_hash(w_s, w_e, device_scope=dev)
+            await self._upsert_device(dev, "5min", w_s, w_e, metrics, src_hash)
+            built += 1
+        return built
+
+    async def _build_device_rollup(self, grain: str, start_ms: int, end_ms: int) -> int:
+        cut = self._cfg.cut_hour
+        child = CHILD_OF[grain]
+        touched = {
+            (window_bounds(int(row["window_start"]), grain, cut), row["device_scope"])
+            for row in await self._db.get_device_summaries(child, start_ms, end_ms)
+        }
+        for (p_start, p_end), dev in sorted(touched):
+            # Same all-children merge as the global cascade (idempotent rebuilds).
+            children = await self._db.get_device_summaries(child, p_start, p_end, device_scope=dev)
+            parts = [json.loads(c["metrics_json"]) for c in children]
+            if not parts:
+                continue
+            await self._upsert_device(
+                dev, grain, p_start, p_end, merge_metrics(parts), self._rollup_source_hash(children)
+            )
+        return len(touched)
+
+    async def _upsert_device(
+        self, dev: str, grain: str, w_start: int, w_end: int, metrics: dict, source_hash: str
+    ) -> str:
+        return await self._db.upsert_device_summary(
+            device_scope=dev,
+            grain=grain,
+            scope_key=scope_key(w_start, grain, self._cfg.cut_hour),
+            window_start=w_start,
+            window_end=w_end,
+            day_local=day_local(w_start, self._cfg.cut_hour),
+            metrics_json=json.dumps(metrics, ensure_ascii=False),
+            record_count=metrics["record_count"],
+            status=_METRICS_DONE_STATUS,
+            source_hash=source_hash,
+        )
+
     async def _populated_5min_starts(self, start_ms: int, end_ms: int) -> list[int]:
         """Distinct 5min window starts that actually contain a frame.
 
@@ -187,7 +261,9 @@ class MetricsCascadeBuilder:
             source_hash=source_hash,
         )
 
-    async def _leaf_source_hash(self, start_ms: int, end_ms: int) -> str:
+    async def _leaf_source_hash(
+        self, start_ms: int, end_ms: int, *, device_scope: str | None = None
+    ) -> str:
         """Input fingerprint for a 5min leaf: any add / remove / reclassify /
         re-stamp of a contributing frame flips it → re-emission. Mirrors
         ``aggregate_frame_metrics``' window predicate so hash and metrics see the
@@ -195,14 +271,15 @@ class MetricsCascadeBuilder:
         (span via ts_start/ts_end, app_name, category_final) plus the device
         the frame came from (narratives are grouped per device).
         """
+        dev_sql, dev_params = device_condition(device_scope, "r")
         async with self._db.lock:
             async with self._db.conn.execute(
-                """SELECT r.id, r.ts_start, r.ts_end, r.app_name, r.device_id,
+                f"""SELECT r.id, r.ts_start, r.ts_end, r.app_name, r.device_id,
                           a.category_final AS cat
                    FROM records r LEFT JOIN analysis_results a ON a.record_id = r.id
-                   WHERE r.ts_start >= ? AND r.ts_start < ?
+                   WHERE r.ts_start >= ? AND r.ts_start < ?{dev_sql}
                    ORDER BY r.id""",
-                (start_ms, end_ms),
+                (start_ms, end_ms, *dev_params),
             ) as cur:
                 rows = await cur.fetchall()
         # The device suffix is appended only when known: legacy (NULL) rows keep

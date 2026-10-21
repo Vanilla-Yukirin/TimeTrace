@@ -15,6 +15,8 @@ import time
 
 from fastapi import APIRouter, Request
 
+from timetrace.server.api.routes.records import device_filter
+from timetrace.server.db.sqlite import UNKNOWN_DEVICE
 from timetrace.server.summary.windows import GRAINS
 from timetrace.server.tz import from_local, server_tz, to_local, view_tz, view_tz_name
 
@@ -63,23 +65,49 @@ def _shape(r: dict) -> dict:
 
 
 @router.get("/summaries")
-async def summaries_for_day(request: Request, day: str | None = None) -> dict:
+async def summaries_for_day(
+    request: Request, day: str | None = None, device_id: str | None = None
+) -> dict:
     """All grains' windows overlapping the given logical day (default: today).
 
-    Returns ``{day, day_start, day_end, grains: {grain: [windows…]}}``. Windows
-    are ordered by ``window_start``; a coarse window (week) that merely contains
-    the day is included (overlap query), so the pyramid columns all line up.
+    Returns ``{day, day_start, day_end, grains: {grain: [windows…]}, devices}``.
+    Windows are ordered by ``window_start``; a coarse window (week) that merely
+    contains the day is included (overlap query), so the pyramid columns all
+    line up.
+
+    ``grains`` is the global view (since W6 composed per device: one labelled
+    section per device, never a merged story). ``device_id`` switches ``grains``
+    to that device's own pyramid. ``devices`` lists which device scopes have a
+    per-device pyramid for this day.
     """
     db = request.app.state.db
+    device_id = device_filter(device_id)
     start_ms, end_ms, day_iso = _day_bounds(day)
     grains: dict[str, list[dict]] = {}
+    scopes: set[str] = set()
     for grain in GRAINS:  # 5min … week
-        rows = await db.get_summaries_overlapping(grain, start_ms, end_ms)
+        if device_id is None:
+            rows = await db.get_summaries_overlapping(grain, start_ms, end_ms)
+        else:
+            rows = await db.get_device_summaries(
+                grain, start_ms, end_ms, device_scope=device_id, overlap=True
+            )
         grains[grain] = [_shape(r) for r in rows]
+    for row in await db.get_device_summaries("day", start_ms, end_ms, overlap=True):
+        scopes.add(row["device_scope"])
+    labels = await db.device_labels()
     return {
         "day": day_iso,
         "day_start": start_ms,
         "day_end": end_ms,
+        "device_id": device_id,
+        "devices": [
+            {
+                "device_id": sc,
+                "label": "未知设备" if sc == UNKNOWN_DEVICE else labels.get(sc, sc[:8]),
+            }
+            for sc in sorted(scopes, key=lambda x: (x == UNKNOWN_DEVICE, x))
+        ],
         "timezone": view_tz_name(),
         # Zone the stored windows were cut in; when it differs from ``timezone``
         # the 6h/day/week windows straddle this day's edges.
