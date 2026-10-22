@@ -11,6 +11,8 @@ External agents see these tools:
   - ``search_activity`` — keyword + semantic retrieval (RRF), shared with the
     web search page and the web agent (``server/retrieval.py``)
   - ``get_recent_activity`` — recent-N-hours snapshot, no keyword
+  - ``get_latest_activity`` — latest captured observation per device, not presence
+  - ``get_activity_overview`` — per-device coarse-to-fine summary fallback + coverage
   - ``get_app_breakdown`` / ``get_category_stats`` — duration aggregates
   - ``search_summaries`` — the memory-pyramid narrative layer (per-window
     流水账/重点/评价), fold coarse→fine; the efficient "what did I do" path
@@ -153,12 +155,15 @@ def build_mcp_server(
         end_iso: str | None = None,
         cursor: str | None = None,
         device_id: str | None = None,
+        order: str = "asc",
     ) -> dict:
         """Return a chronological snapshot of activity (oldest→newest in window).
 
-        No keyword filter — use for an overview before digging in. To pull a
-        FULL day, keep the window fixed and re-call with the returned
-        ``next_cursor`` as ``cursor`` until it comes back null.
+        This is a PAGE, not the latest observation. Use get_latest_activity
+        for latest per-device records; use get_activity_overview for summaries.
+        A page's last timestamp does NOT mean capture stopped then. Follow
+        next_cursor while has_more=true. Cursors freeze the original window;
+        keep device_id and order unchanged. No data never proves user absence.
 
         Args:
             hours_back: time window in hours (default 24, cap 720 = 30 days).
@@ -166,10 +171,11 @@ def build_mcp_server(
             start_iso/end_iso: absolute local-time window
                 ('YYYY-MM-DD HH:MM:SS'); takes precedence over hours_back.
             cursor: pagination cursor from a previous call's ``next_cursor``.
+            order: asc (default, oldest first) or desc (newest first).
 
         Returns:
-            dict with ``items``, ``count``, and ``next_cursor`` (null when the
-            page wasn't full = no more records).
+            dict with ``items``, ``count``, ``order``, fixed window bounds,
+            ``has_more`` and opaque ``next_cursor`` (null iff no further page).
         """
         return await agent_tools.get_recent_activity(
             db,
@@ -179,6 +185,50 @@ def build_mcp_server(
             end_iso=end_iso,
             cursor=cursor,
             device_id=device_id,
+            order=order,
+        )
+
+    @mcp.tool()
+    async def get_latest_activity(device_id: str | None = None) -> dict:
+        """Latest captured observation PER DEVICE, without paging or an LLM.
+
+        Use for "what was I doing most recently?". Includes capture age,
+        original server receipt time, last device contact, and analysis status.
+        Recent upload may be replaying old captures. Missing/old records or
+        empty descriptions NEVER prove the user is offline. presence=unknown.
+        Omit device_id for all devices, including legacy unknown-device data.
+        """
+        return await agent_tools.get_latest_activity(db, device_id=device_id)
+
+    @mcp.tool()
+    async def get_activity_overview(
+        period: str = "today",
+        start_iso: str | None = None,
+        end_iso: str | None = None,
+        device_id: str | None = None,
+        max_grain: str = "day",
+        limit: int = 50,
+    ) -> dict:
+        """First choice for "what did I do today/this week?", PER DEVICE.
+
+        Uses existing summaries only, no LLM. Selects disjoint closed, narrated
+        windows coarse→fine (week/day/6h/1h/5min). Pending/open/missing parents
+        fall back to ready children, retaining uncovered ranges and counts.
+        No automatic global-summary fallback for missing historical device rows.
+        period=today/this_week/this_month/custom; named periods start at civil
+        midnight in the caller's zone. custom needs both ISO bounds (<=31 days).
+        max_grain defaults to day. limit is PER DEVICE (50 default, 2000 max).
+        truncated=true: narrow the range. Uncovered is not inactive/offline.
+        For detail, search_summaries at drill_down_grain with the item bounds.
+        """
+        return await agent_tools.get_activity_overview(
+            db,
+            period=period,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            device_id=device_id,
+            max_grain=max_grain,
+            limit=limit,
         )
 
     @mcp.tool()
@@ -254,9 +304,13 @@ def build_mcp_server(
     ) -> dict:
         """Read the narrative pyramid: per-window 流水账 / 重点 / 评价.
 
-        The efficient way to answer "what did I do" — instead of paging hundreds
-        of raw records, read pre-written narratives at a chosen granularity, then
-        fold/drill. Start coarse for an overview, then zoom into one window.
+        Exact-grain lookup. For automatic fallback over incomplete/open parent
+        windows use get_activity_overview. Check availability/window_closed and
+        has_more: empty/pending/truncated results do not establish inactivity.
+
+        Read pre-written narratives at an exact granularity, then fold/drill.
+        Use get_activity_overview first for broad "what did I do" questions,
+        particularly today when coarse windows are not finalized yet.
 
         Folding workflow:
           1. Overview: grain='day' (or 'week'), period='this_week'
