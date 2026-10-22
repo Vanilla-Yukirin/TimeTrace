@@ -63,6 +63,20 @@ async def summary(db, grain, start, end, device=A, text="summary", status="narra
     return sid
 
 
+async def global_summary(db, grain, start, end, text="summary"):
+    sid = await db.upsert_summary(
+        grain=grain,
+        scope_key=str(start),
+        window_start=start,
+        window_end=end,
+        day_local="2001-01-01",
+        metrics_json='{"record_count": 1}',
+        record_count=1,
+    )
+    await db.save_summary_narrative(sid, description=text, evaluation="", body_json="{}")
+    return sid
+
+
 def bounds(start=T, end=T + 4 * H):
     return dict(start_iso=iso(start), end_iso=iso(end))
 
@@ -294,7 +308,70 @@ async def test_exact_summary_lookup_reports_pending_overlap_and_truncation(db):
     assert out["has_more"] and out["pending_count"] == 1
     assert out["items"][0]["availability"] == "pending_summary"
     assert out["items"][0]["window_closed"]
+    assert out["items"][0]["extends_outside_period"]
     assert out["overview_tool"] == "get_activity_overview"
+
+
+@pytest.mark.parametrize("query", [None, "alpha", "al"])
+@pytest.mark.parametrize("device", [None, A])
+async def test_contained_summaries_filter_before_limit_on_all_search_paths(db, query, device):
+    for start, end in [(T - H, T + H // 2), (T + H, T + 2 * H), (T + 3 * H, T + 5 * H)]:
+        if device is None:
+            await global_summary(db, "1h", start, end, text="alpha")
+        else:
+            await summary(db, "1h", start, end, device=device, text="alpha")
+    out = await tools.search_summaries(
+        db,
+        grain="1h",
+        period="custom",
+        device_id=device,
+        query=query,
+        window_match="contained",
+        limit=1,
+        **bounds(),
+    )
+    assert out["count"] == 1 and not out["has_more"]
+    assert out["items"][0]["window_start_iso"] == iso(T + H)
+    assert not out["items"][0]["extends_outside_period"]
+    assert "error" in await tools.search_summaries(db, window_match="invalid")
+
+
+@pytest.mark.parametrize(
+    "period,grain,clock",
+    [
+        ("today", "day", "2026-10-22T12:00"),
+        ("today", "day", "2026-10-22T02:00"),
+        ("this_week", "week", "2026-10-19T12:00"),
+        ("this_week", "week", "2026-10-19T02:00"),
+        ("this_month", "day", "2026-10-01T02:00"),
+    ],
+)
+async def test_fallback_does_not_import_previous_logical_window(
+    db, monkeypatch, period, grain, clock
+):
+    from timetrace.server.summary.windows import window_bounds
+
+    zone = ZoneInfo("Europe/Berlin")
+    now = dt.datetime.fromisoformat(clock).replace(tzinfo=zone)
+    monkeypatch.setattr(time, "time", now.timestamp)
+    with use_tz(zone):
+        overview = await tools.get_activity_overview(db, period=period, max_grain=grain)
+        start = int(dt.datetime.fromisoformat(overview["period_start_iso"]).timestamp() * 1000)
+        old_start, old_end = window_bounds(start, grain, 4, tz=zone)
+        await global_summary(db, grain, old_start, old_end, "previous period")
+        await global_summary(db, "1h", start, start + H, "within requested period")
+        hint = overview["fallback_hint"]
+        args = hint["arguments"]
+        assert args["period"] == "custom" and args["window_match"] == "contained"
+        assert args["start_iso"] == overview["period_start_iso"]
+        assert args["end_iso"] == overview["period_end_iso"]
+        old_behavior = await tools.search_summaries(db, **(args | {"window_match": "overlap"}))
+        assert old_behavior["items"][0]["extends_outside_period"]
+        safe = await tools.search_summaries(db, **args)
+        assert safe["items"] == []
+        fine = await tools.search_summaries(db, **(args | {"grain": "1h"}))
+        assert [r["description"] for r in fine["items"]] == ["within requested period"]
+        assert not fine["items"][0]["extends_outside_period"]
 
 
 def structured(result):
@@ -310,6 +387,10 @@ async def test_mcp_and_agent_expose_same_new_contracts(db):
         ("get_latest_activity", {"device_id": A}),
         ("get_activity_overview", dict(period="custom", device_id=A, **bounds())),
         ("get_recent_activity", dict(order="desc", device_id=A, **bounds())),
+        (
+            "search_summaries",
+            dict(grain="1h", period="custom", window_match="contained", **bounds()),
+        ),
     ]:
         assert name in names and name in schemas
         direct = await tools.dispatch_tool(db, name, args)

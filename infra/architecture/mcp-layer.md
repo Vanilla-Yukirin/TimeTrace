@@ -58,7 +58,8 @@
 - `coverage` 是实时记录落在返回窗口内的数量，不是叙述语义准确度或迟到数据已被重新总结的保证；`uncovered_ranges` 不是无活动时段。`limit` 按设备计算，`truncated=true` 时缩小范围。
 - 精确 `search_summaries` 不做自动回退；它显式报告 `availability`、`window_closed`、`has_more`，查询词过滤后的无结果不能证明没有活动。
 - 最新记录包含 `server_received_at`（该记录首次入库）和设备 `last_contact_at`（服务端观察到的联系）；迟到上传不能冒充最新采集。空描述保留原始分析状态，所有设备的 `presence` 都是 unknown。
-- 摘要缺口按 `fallback_hint` 继续：未指定设备时可读取相同 custom 范围的全局 `search_summaries`，仅作为全局背景；指定设备时保持筛选并逐页读取原始记录，禁止把全局叙述归属给单台设备。
+- 摘要缺口按 `fallback_hint.arguments` 继续：未指定设备时读取相同 custom 范围的全局 `search_summaries(window_match="contained")`，仅作为全局背景；只用 ready 窗口，粗层无结果或存在缺口时保持原起止和 contained 下钻细层，已覆盖窗口不重复计入。不能改用逻辑日 period 扩大原自然日范围。指定设备时保持筛选并逐页读取原始记录，禁止把全局叙述归属给单台设备。
+- `search_summaries` 默认 `window_match="overlap"` 保持旧重叠查询能力，每条增加 `extends_outside_period`；越界的完整叙述不能当作本时段事实。`contained` 在截断/相关度排序限额之前排除越界窗口，支持普通读取、全文索引和短词 LIKE，不能通过裁剪时间标签伪装成范围内摘要。
 - 覆盖统计一次读取范围内时间戳，释放数据库锁后用二分计数，不逐窗查询。`pending_windows/open_windows` 只计与未覆盖区间重叠的窗口（跨粒度，可包含部分越界父窗）；截断保留最早窗口，`truncation_omits=newer_windows` 明示遗漏方向。原始记录分页为兼容保留双端包含的 `window_bounds=inclusive`，相邻查询应按 ID 去重。
 - 未知设备最新活动使用 `idx_records_unknown_ts` 部分索引；索引在数据库初始化时幂等建立，不改已有记录，首次启动可能需要等待索引构建。
 

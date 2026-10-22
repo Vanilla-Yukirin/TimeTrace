@@ -747,6 +747,7 @@ async def search_summaries(
     query: str | None = None,
     limit: int = 50,
     device_id: str | None = None,
+    window_match: str = "overlap",
 ) -> dict:
     """Read the narrative pyramid: per-window 流水账/重点/评价 at a chosen grain.
 
@@ -760,6 +761,9 @@ async def search_summaries(
     Durations inside are a captured-activity FLOOR, not total wall-clock time.
     """
     cut_hour = 4  # mirrors RollupConfig.cut_hour; see query_stats note
+    if window_match not in ("overlap", "contained"):
+        return {"error": "window_match must be overlap or contained"}
+    contained = window_match == "contained"
     if grain not in GRAINS:
         return {"error": f"unknown grain: {grain}", "valid_grains": list(GRAINS)}
     if period not in _VALID_PERIODS:
@@ -776,25 +780,38 @@ async def search_summaries(
     # that device's own pyramid instead.
     if q and device_id is not None:
         rows = await db.search_device_summaries_text(
-            q, start_ms, end_ms, device_scope=device_id, grains=[grain], limit=limit + 1
+            q,
+            start_ms,
+            end_ms,
+            device_scope=device_id,
+            grains=[grain],
+            limit=limit + 1,
+            contained=contained,
         )
     elif q:
         # Indexed narrative search (summaries_fts, BM25) instead of scanning
         # every window's text in Python; overlap semantics so a coarse window
         # containing the period still matches.
-        rows = await db.search_summaries_text(q, start_ms, end_ms, grains=[grain], limit=limit + 1)
+        rows = await db.search_summaries_text(
+            q, start_ms, end_ms, grains=[grain], limit=limit + 1, contained=contained
+        )
     elif device_id is not None:
         rows = await db.get_device_summaries(
             grain, start_ms, end_ms, device_scope=device_id, overlap=True
         )
     else:
         rows = await db.get_summaries_overlapping(grain, start_ms, end_ms)
+    # Unfiltered reads are not SQL-limited. Text searches apply this predicate
+    # before their SQL LIMIT so out-of-range matches cannot hide valid hits.
+    if contained:
+        rows = [r for r in rows if r["window_start"] >= start_ms and r["window_end"] <= end_ms]
     items: list[dict] = []
     for r in rows:
         metrics = json.loads(r.get("metrics_json") or "{}")
         items.append(
             {
                 **summary_item(r, int(time.time() * 1000)),
+                "extends_outside_period": r["window_start"] < start_ms or r["window_end"] > end_ms,
                 "day_local": r.get("day_local"),
                 "top_categories": _top_cats(metrics),
                 "record_count": metrics.get("record_count", 0),
@@ -815,6 +832,7 @@ async def search_summaries(
         "has_more": len(rows) > limit,
         "order": "relevance" if q else "asc",
         "coverage_scope": "returned_windows_only",
+        "window_match": window_match,
         "ready_count": sum(i["availability"] == "ready" for i in items),
         "pending_count": sum(i["availability"] == "pending_summary" for i in items),
         "open_count": sum(not i["window_closed"] for i in items),
@@ -824,6 +842,8 @@ async def search_summaries(
             "叙述层：每个时间窗的流水账(description)/重点(key_points)/评价(evaluation)。"
             "时长是『本机捕获活跃下限』，不是总时间。metrics_only=true 表示该窗无截图、"
             "仅指标无叙述。窗口可能超出请求范围，起止以各条返回值为准。"
+            "extends_outside_period=true 的整段叙述不能作为请求范围内的事实；"
+            "严格回答原时段用 window_match=contained，粗层无结果就保持原起止下钻细层。"
             "has_more=true 表示结果截断，不能当成完整覆盖；缩小时间范围继续查。"
             "需自动补足未完成父层时使用 get_activity_overview。" + PRESENCE_NOTE
         ),
@@ -1118,6 +1138,13 @@ TOOL_SCHEMAS = [
                     ),
                     "end_iso": _str_param("custom 止（不含）；下钻时传上层窗口的 end"),
                     "query": _str_param("可选：只返回叙述里含该关键词的窗口（全文索引，按相关度）"),
+                    "window_match": {
+                        "type": "string",
+                        "enum": ["overlap", "contained"],
+                        "description": (
+                            "默认 overlap；contained 只返回完整落在请求范围内的窗口，概览退路使用它"
+                        ),
+                    },
                     "limit": _int_param("返回窗口数，默认 50，最大 2000"),
                 },
                 "required": ["grain", "period"],

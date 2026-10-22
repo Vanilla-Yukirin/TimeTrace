@@ -304,6 +304,7 @@ def build_mcp_server(
         query: str | None = None,
         limit: int = 50,
         device_id: str | None = None,
+        window_match: str = "overlap",
     ) -> dict:
         """Read the narrative pyramid: per-window 流水账 / 重点 / 评价.
 
@@ -331,6 +332,10 @@ def build_mcp_server(
             device_id: read one device's own pyramid (from ``list_devices``);
                 omitted = global view, composed as one section per device.
             limit: max windows (default 50, cap 2000).
+            window_match: overlap (default) or contained (full window inside bounds).
+                For overview fallback, preserve custom bounds and use contained;
+                if empty, descend to finer grains with the SAME bounds. Never
+                attribute an extends_outside_period narrative to this period.
 
         Returns:
             dict with ``items`` (each: description, key_points, evaluation,
@@ -346,6 +351,7 @@ def build_mcp_server(
             query=query,
             limit=limit,
             device_id=device_id,
+            window_match=window_match,
         )
 
     @mcp.tool()

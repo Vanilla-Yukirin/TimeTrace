@@ -80,7 +80,7 @@ URL 末尾的 `/` 不能省（服务端 streamable handler 挂在 mount 根）�
 
 - **`query_stats(metric, period="today", device_id=None)`** — 按自然时段聚合：`seconds_by_category` / `seconds_by_app` / `seconds_by_device` / `active_seconds`（墙钟并集，多设备并行只算一次）/ `record_count`。
 
-概览出现 `unavailable` 或覆盖缺口时按 `fallback_hint` 继续。未指定设备时可用相同 custom 起止查询全局 `search_summaries`（不传 device_id），仅作全局背景；指定设备时保持筛选并分页读取原始记录，不把全局摘要归给该设备。概览截断保留最早窗口，会遗漏较新的窗口；缩小范围继续。原始分页 `window_bounds=inclusive` 保留旧边界，拼接相邻范围需按记录 ID 去重。
+概览出现 `unavailable` 或覆盖缺口时按 `fallback_hint.arguments` 继续。未指定设备时用原 custom 起止、`window_match="contained"` 查询全局 `search_summaries`（不传 device_id），只用 ready 的范围内窗口，仅作全局背景；粗层无结果则保持原范围和 contained 下钻细层，避免重复计入已覆盖窗口。不要换成逻辑日 period 扩大原自然日范围。普通搜索默认 overlap，`extends_outside_period=true` 的整段叙述不能当作本时段事实。指定设备时保持筛选并分页读取原始记录，不把全局摘要归给该设备。概览截断保留最早窗口，会遗漏较新的窗口；缩小范围继续。原始分页 `window_bounds=inclusive` 保留旧边界，拼接相邻范围需按记录 ID 去重。
 
 - **`list_devices()`** — 列出采集设备（`device_id`、名称、用户写的设备描述）。问题涉及"办公电脑""家里那台"时先用它拿到 `device_id`；`search_activity` / `get_recent_activity` / `get_app_breakdown` / `get_category_stats` / `query_stats` 都接受可选 `device_id`（`_unknown_device` = 设备身份上线前的旧记录），不传 = 全部设备。
 

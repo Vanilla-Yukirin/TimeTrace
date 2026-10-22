@@ -387,8 +387,22 @@ async def activity_overview(
             "when": "summary_state=unavailable 或仍有 uncovered_ranges 时继续查询",
             "tool": "search_summaries" if device_id is None else "get_recent_activity",
             "scope": "global_context_only" if device_id is None else "same_device",
+            "arguments": (
+                {
+                    "period": "custom",
+                    "start_iso": iso(start),
+                    "end_iso": iso(end),
+                    "grain": max_grain,
+                    "window_match": "contained",
+                }
+                if device_id is None
+                else {"device_id": device_id, "start_iso": iso(start), "end_iso": iso(end)}
+            ),
             "instruction": (
-                "用 search_summaries 不传 device_id，传 custom 和相同起止读取历史全局摘要；"
+                "用 search_summaries 按 arguments 查询：保留原 custom 起止，"
+                "window_match=contained，"
+                "不传 device_id；只接受 ready 的范围内窗口。粗层无结果或还有缺口，保持起止和"
+                "contained 按 drill_down_grain 下钻，已覆盖窗口不重复计入。"
                 "全局叙述仅作补充，不能归属给某台设备。仍无可用摘要则逐页读取原始记录。"
                 if device_id is None
                 else "保持 device_id 和起止范围，逐页读取原始记录；不要用全局摘要冒充该设备活动。"
