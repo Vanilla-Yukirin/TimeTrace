@@ -1,5 +1,9 @@
 # 公网部署与安全
 
+## **⚠️ 当前入口已迁移为私人 Tailscale，本文其余公网拓扑仅供历史参考**
+
+当前链路为 Tailscale Serve（HTTPS）→ `127.0.0.1:19446` nginx → SPA / `127.0.0.1:8765` API。部署检查使用 `deploy/check-web-gateway.sh`，可用 `TIMETRACE_GATEWAY_URL` 和 `TIMETRACE_GATEWAY_HOST` 覆盖默认 loopback 地址及 Host。不要恢复旧的 8080 监听或 CF 公网回退；迁移需要清除旧 published application route 及其 DNS 记录。MCP 私有域名需精确适配 Host/Origin，Token 和浏览器登录继续保留。
+
 > 返回 [架构总览](overview.md) | [Wiki 首页](../readme.md)
 > 相关：[登录鉴权系统](auth-system.md) · [API Server](api-server.md)
 

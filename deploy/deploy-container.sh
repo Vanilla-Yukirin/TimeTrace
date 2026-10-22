@@ -58,6 +58,7 @@ minimum_compatibility_staging=
 target_device_db_compat=
 
 test -s "${compatibility_guard}"
+test -s "${release_dir}/check-web-gateway.sh"
 # shellcheck source=deploy/compatibility-guard.sh
 source "${compatibility_guard}"
 
@@ -436,9 +437,7 @@ ln -sfn "releases/${ref}" "${web_next_link}"
 web_switched=1
 mv -Tf "${web_next_link}" "${web_root}/current"
 
-curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' http://127.0.0.1:8080/healthz >/dev/null
-curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' http://127.0.0.1:8080/ \
-  | grep -F 'id="root"' >/dev/null
+bash "${release_dir}/check-web-gateway.sh"
 
 runtime_next_link="${runtime_root}/.current-${ref}"
 ln -sfn "releases/${ref}" "${runtime_next_link}"
