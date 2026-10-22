@@ -1184,6 +1184,7 @@ TOOL_SCHEMAS.extend(
                 "description": (
                     "回答今天/这周做了什么的首选。分设备读分级摘要，粗层未完成时自动补细层；"
                     "返回覆盖缺口和截断标志，不调用模型。"
+                    "缺口按 fallback_hint 继续：全设备可补全局摘要，指定设备保持筛选读原始记录。"
                 ),
                 "parameters": {
                     "type": "object",

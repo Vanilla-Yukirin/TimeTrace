@@ -46,6 +46,7 @@ devlogs/
 | 文件 | 摘要 |
 |------|------|
 | [archive-202610222147-agent-activity-contract.md](backend/archive-202610222147-agent-activity-contract.md) | 最新活动独立入口、按设备分级摘要回退、稳定双向分页与覆盖语义；280 项后端回归通过，外部消费端与生产环境未改动 |
+| [archive-202610222253-agent-review-followup.md](backend/archive-202610222253-agent-review-followup.md) | PR 23 评审跟进：缺失摘要查询退路、一次读取覆盖统计、未知设备索引与边界说明；283 项通过，云端评审额度阻塞 |
 | [archive-202604182350-sigint-graceful-shutdown.md](backend/archive-202604182350-sigint-graceful-shutdown.md) | 排查 Ctrl+C 与托盘退出挂死；根因为 `except*` 不捕获裸异常 + uvicorn 二次抛 SIGINT；修复：`signal.signal(SIGINT)` 统一路由到 `quit_event` 优雅关闭路径 |
 | [archive-202604300316-vlm-worker-circuit-breaker.md](backend/archive-202604300316-vlm-worker-circuit-breaker.md) | 实装 VLM 三段式描述（OpenAI 协议 + opt-in extra_body）、worker 升级为 N 并发消费者带退避重试与跨 worker 熔断；顺带修 SQLite commit race（全局 lock）+ 原子化 claim + records.status 镜像 |
 | [archive-202605040109-record-duration-heal.md](backend/archive-202605040109-record-duration-heal.md) | 排查 12h+ 异常 record；限制 orphan 桥接并启动清理历史长段；验证 `>1h` 记录归零且全测通过 |

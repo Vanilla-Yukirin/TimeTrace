@@ -215,6 +215,9 @@ def build_mcp_server(
         windows coarse→fine (week/day/6h/1h/5min). Pending/open/missing parents
         fall back to ready children, retaining uncovered ranges and counts.
         No automatic global-summary fallback for missing historical device rows.
+        Follow fallback_hint on unavailable/gaps: unfiltered requests may read
+        global search_summaries as global context only; device-filtered requests
+        must keep that filter and page through raw records instead.
         period=today/this_week/this_month/custom; named periods start at civil
         midnight in the caller's zone. custom needs both ISO bounds (<=31 days).
         max_grain defaults to day. limit is PER DEVICE (50 default, 2000 max).

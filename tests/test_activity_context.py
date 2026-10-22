@@ -187,6 +187,11 @@ async def test_overview_missing_device_pyramid_is_not_no_activity(db):
     out = await tools.get_activity_overview(db, period="custom", device_id=A, **bounds())
     assert out["devices"][0]["summary_state"] == "unavailable"
     assert out["devices"][0]["coverage"]["captured_records"] == 1
+    assert out["fallback_hint"]["tool"] == "get_recent_activity"
+    assert out["fallback_hint"]["scope"] == "same_device"
+    unfiltered = await tools.get_activity_overview(db, period="custom", **bounds())
+    assert unfiltered["fallback_hint"]["tool"] == "search_summaries"
+    assert unfiltered["fallback_hint"]["scope"] == "global_context_only"
     assert "error" in await tools.get_activity_overview(
         db, period="custom", **bounds(T, T + 32 * 24 * H)
     )
@@ -226,6 +231,53 @@ async def test_blank_narrated_row_is_pending_not_ready(db):
 def test_iso_zero_is_offset_bearing_on_windows():
     parsed = dt.datetime.fromisoformat(iso(0))
     assert parsed.tzinfo is not None and parsed.timestamp() == 0
+
+
+async def test_overview_counts_once_and_excludes_covered_pending_children(db):
+    await record(db, T)
+    await record(db, T + H)
+    await record(db, T + 2 * H)  # outside the requested half-open range
+    await summary(db, "1h", T, T + H)
+    await summary(db, "5min", T, T + 300_000, status="pending_summary")
+    await summary(db, "1h", T + H, T + 2 * H, status="pending_summary")
+    statements = []
+    await db.conn.set_trace_callback(statements.append)
+    try:
+        out = await tools.get_activity_overview(
+            db, period="custom", device_id=A, **bounds(T, T + 2 * H)
+        )
+    finally:
+        await db.conn.set_trace_callback(None)
+    row = out["devices"][0]
+    assert row["coverage"]["captured_records"] == 2
+    assert row["coverage"]["records_in_returned_windows"] == 1
+    assert row["coverage"]["records_outside_returned_windows"] == 1
+    assert row["pending_windows"] == 1
+    record_reads = [s for s in statements if "FROM records r" in s]
+    assert len(record_reads) == 1
+
+
+async def test_latest_unknown_query_uses_partial_index(db):
+    await record(db, T, device=None)
+    async with db.conn.execute(
+        "EXPLAIN QUERY PLAN SELECT id FROM records WHERE device_id IS NULL "
+        "ORDER BY ts_start DESC,id DESC LIMIT 1"
+    ) as cur:
+        plan = " ".join(row[3] for row in await cur.fetchall())
+    assert "idx_records_unknown_ts" in plan
+    async with db.conn.execute(
+        "EXPLAIN QUERY PLAN SELECT DISTINCT device_id FROM records WHERE device_id IS NOT NULL"
+    ) as cur:
+        plan = " ".join(row[3] for row in await cur.fetchall())
+    assert "idx_records_device_ts" in plan
+
+
+async def test_page_retains_explicit_inclusive_boundary(db):
+    first = await record(db, T)
+    last = await record(db, T + H)
+    page = await tools.get_recent_activity(db, **bounds(T, T + H))
+    assert page["window_bounds"] == "inclusive"
+    assert [r["id"] for r in page["items"]] == [first, last]
 
 
 async def test_exact_summary_lookup_reports_pending_overlap_and_truncation(db):

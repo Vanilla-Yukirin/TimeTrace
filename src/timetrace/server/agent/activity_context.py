@@ -51,7 +51,7 @@ def record_item(row: dict, labels: dict) -> dict:
     return {
         "id": row["id"],
         "device_id": did,
-        "device": labels.get(did) or ("未知设备" if did == UNKNOWN_DEVICE else f"设备 {did[:8]}"),
+        "device": device_label(did, labels),
         "ts_start_iso": iso(row["ts_start"]),
         "ts_end_iso": iso(row.get("ts_end")),
         "server_received_at": iso(row.get("created_at")),
@@ -63,6 +63,10 @@ def record_item(row: dict, labels: dict) -> dict:
         "analysis_done_at": iso(row.get("analysis_done_at")),
         "description_available": bool((row.get("vlm_desc") or "").strip()),
     }
+
+
+def device_label(did: str, labels: dict) -> str:
+    return labels.get(did) or ("未知设备" if did == UNKNOWN_DEVICE else f"设备 {did[:8]}")
 
 
 async def activity_page(
@@ -81,6 +85,8 @@ async def activity_page(
 
     Opaque cursors are selectors, not credentials. Values are validated and
     parameterized. Existing record-ID cursors remain readable for compatibility.
+    Bounds remain inclusive for compatibility. Restart after deletion/VACUUM:
+    implicit rowids are an insertion high-water mark, not a durable snapshot.
     """
     if order not in ("asc", "desc"):
         raise ValueError("order must be asc or desc")
@@ -158,6 +164,7 @@ async def activity_page(
         "order": order,
         "window_start_iso": iso(start),
         "window_end_iso": iso(end),
+        "window_bounds": "inclusive",
         "timezone": view_tz_name(),
         "device_id": device_id,
         "page_first_at": iso(rows[0]["ts_start"]) if rows else None,
@@ -173,11 +180,19 @@ async def latest_activity(db: Database, device_id: str | None) -> dict:
     devices = {d["id"]: d for d in await db.list_devices()}
     labels = await db.device_labels()
     # Include legacy/unknown devices, as well as registered devices with no data.
-    async with db.lock:
-        async with db.conn.execute("SELECT DISTINCT device_id FROM records") as cur:
-            scopes = {r[0] or UNKNOWN_DEVICE for r in await cur.fetchall()} | set(devices)
-    if device_id is not None:
-        scopes = {device_id}
+    scopes = {device_id} if device_id is not None else set(devices)
+    if device_id is None:
+        async with db.lock:
+            # The non-NULL partial index covers orphaned device IDs too.
+            async with db.conn.execute(
+                "SELECT DISTINCT device_id FROM records WHERE device_id IS NOT NULL"
+            ) as cur:
+                scopes.update(r[0] for r in await cur.fetchall())
+            async with db.conn.execute(
+                "SELECT 1 FROM records WHERE device_id IS NULL LIMIT 1"
+            ) as cur:
+                if await cur.fetchone():
+                    scopes.add(UNKNOWN_DEVICE)
     items = []
     for did in sorted(scopes):
         clause, params = device_clause(did)
@@ -196,7 +211,7 @@ async def latest_activity(db: Database, device_id: str | None) -> dict:
         items.append(
             {
                 "device_id": did,
-                "device": labels.get(did) or ("未知设备" if did == UNKNOWN_DEVICE else did),
+                "device": device_label(did, labels),
                 "device_description": d.get("description") or d.get("reported_description") or "",
                 "revoked": d.get("revoked_at") is not None,
                 "last_contact_at": iso(d.get("last_seen_at") or None),
@@ -264,16 +279,17 @@ async def activity_overview(
     labels = await db.device_labels()
     clause, params = device_clause(device_id)
     async with db.lock:
-        async with db.conn.execute("SELECT COALESCE(MAX(rowid),0) FROM records") as cur:
-            snapshot = (await cur.fetchone())[0]
         async with db.conn.execute(
-            "SELECT COALESCE(r.device_id,?) device_id,COUNT(*) n FROM records r "
-            "WHERE r.ts_start>=? AND r.ts_start<? AND r.rowid<=?"
-            + clause
-            + " GROUP BY r.device_id",
-            (UNKNOWN_DEVICE, start, end, snapshot, *params),
+            "SELECT r.device_id,r.ts_start FROM records r "
+            "WHERE r.ts_start>=? AND r.ts_start<?" + clause + " ORDER BY r.ts_start",
+            (start, end, *params),
         ) as cur:
-            counts = {r["device_id"]: r["n"] for r in await cur.fetchall()}
+            captured = await cur.fetchall()
+    # One consistent timestamp read, then count windows outside the DB lock.
+    timestamps: dict[str, list[int]] = {}
+    for r in captured:
+        timestamps.setdefault(r["device_id"] or UNKNOWN_DEVICE, []).append(r["ts_start"])
+    counts = {did: len(values) for did, values in timestamps.items()}
     scopes = set(counts) | {d["id"] for d in await db.list_devices()}
     if device_id is not None:
         scopes = {device_id}
@@ -303,35 +319,40 @@ async def activity_overview(
             starts.insert(index, a)
         available = len(selected)
         selected = selected[:limit]
-        covered = 0
-        dev_sql, dev_args = device_clause(did)
-        async with db.lock:
-            for s in selected:
-                async with db.conn.execute(
-                    "SELECT COUNT(*) FROM records r WHERE r.ts_start>=? AND r.ts_start<? "
-                    "AND r.rowid<=?" + dev_sql,
-                    (s["window_start"], s["window_end"], snapshot, *dev_args),
-                ) as cur:
-                    covered += (await cur.fetchone())[0]
+        times = timestamps.get(did, [])
+        covered = sum(
+            bisect_left(times, s["window_end"]) - bisect_left(times, s["window_start"])
+            for s in selected
+        )
         total = counts.get(did, 0)
         # Gaps are time ranges without returned narratives, not inactivity intervals.
-        gaps = []
+        gap_bounds = []
         pos = start
         for s in selected:
             if s["window_start"] > pos:
-                gaps.append({"start": iso(pos), "end": iso(s["window_start"])})
+                gap_bounds.append((pos, s["window_start"]))
             pos = s["window_end"]
         if pos < end:
-            gaps.append({"start": iso(pos), "end": iso(end)})
+            gap_bounds.append((pos, end))
+        gaps = [{"start": iso(a), "end": iso(b)} for a, b in gap_bounds]
+        gap_ends = [b for _, b in gap_bounds]
+
+        def in_gap(row: dict) -> bool:
+            i = bisect_left(gap_ends, row["window_start"] + 1)
+            return i < len(gap_bounds) and gap_bounds[i][0] < row["window_end"]
+
+        missing_rows = [r for r in rows if in_gap(r)]
         output.append(
             {
                 "device_id": did,
-                "device": labels.get(did) or ("未知设备" if did == UNKNOWN_DEVICE else did),
+                "device": device_label(did, labels),
                 "items": [summary_item(s, now) for s in selected],
                 "returned_grains": sorted({s["grain"] for s in selected}, key=grains.index),
                 "fallback_used": any(s["grain"] != max_grain for s in selected),
                 "truncated": available > limit,
                 "available_windows": available,
+                "selection_order": "oldest_first",
+                "truncation_omits": "newer_windows" if available > limit else None,
                 "coverage": {
                     "captured_records": total,
                     "records_in_returned_windows": covered,
@@ -348,9 +369,10 @@ async def activity_overview(
                 "pending_windows": sum(
                     r["window_end"] <= now
                     and (r["status"] != "narrated" or not (r.get("description") or "").strip())
-                    for r in rows
+                    for r in missing_rows
                 ),
-                "open_windows": sum(r["window_end"] > now for r in rows),
+                "open_windows": sum(r["window_end"] > now for r in missing_rows),
+                "window_counts_scope": "windows_overlapping_uncovered_ranges_across_grains",
             }
         )
     return {
@@ -361,6 +383,17 @@ async def activity_overview(
         "requested_grain": max_grain,
         "device_id": device_id,
         "devices": output,
+        "fallback_hint": {
+            "when": "summary_state=unavailable 或仍有 uncovered_ranges 时继续查询",
+            "tool": "search_summaries" if device_id is None else "get_recent_activity",
+            "scope": "global_context_only" if device_id is None else "same_device",
+            "instruction": (
+                "用 search_summaries 不传 device_id，传 custom 和相同起止读取历史全局摘要；"
+                "全局叙述仅作补充，不能归属给某台设备。仍无可用摘要则逐页读取原始记录。"
+                if device_id is None
+                else "保持 device_id 和起止范围，逐页读取原始记录；不要用全局摘要冒充该设备活动。"
+            ),
+        },
         "note": "按设备选择已闭合且已生成的摘要；粗层不可用时自动下钻，返回窗不重叠。"
         "coverage 只表示记录落在返回摘要的时间窗内，不保证叙述包含每个细节或最新迟到记录。"
         "uncovered_ranges 不等于无活动；历史设备摘要未回填时不会混入全设备摘要。"

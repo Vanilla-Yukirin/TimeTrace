@@ -518,6 +518,10 @@ class SqliteDatabase:
             "CREATE INDEX IF NOT EXISTS idx_records_device_ts "
             "ON records(device_id, ts_start DESC) WHERE device_id IS NOT NULL"
         )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_unknown_ts "
+            "ON records(ts_start DESC, id DESC) WHERE device_id IS NULL"
+        )
         await self._conn.commit()
 
         # Embedding columns on analysis_results — added in embedding-pipeline
