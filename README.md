@@ -126,7 +126,11 @@ uv run timetrace-client print-config                # 看实际生效的配置�
 
 ### 部署到家里小主机
 
-当前生产部署：server 以非 root Docker 容器跑在家里 Ubuntu 小主机（NAT 后）；公网由 Cloudflare Tunnel 出站接入本机 `127.0.0.1:8080` nginx，nginx 统一托管 SPA 并反代受鉴权保护的 API。推送 `deploy` 分支后，GitHub Actions 只构建并发布包含 server、SPA 与部署资产的不可变 GHCR 镜像；部署机再通过出站 HTTPS 主动拉取该 SHA，完成 Compose 与前端的原子切换，不依赖 GitHub Runner 经 FRP 反向 SSH。
+当前生产部署：server 以非 root Docker 容器运行；私人 HTTPS 入口由 Tailscale Serve 接入本机 `127.0.0.1:19446` nginx，nginx 统一托管 SPA 并反代受鉴权保护的 API。推送 `deploy` 分支后，GitHub Actions 只构建并发布包含 server、SPA 与部署资产的不可变 GHCR 镜像；部署机再通过出站 HTTPS 主动拉取该 SHA，完成 Compose 与前端的原子切换，不依赖 GitHub Runner 经 FRP 反向 SSH。
+
+部署检查默认连接 `http://127.0.0.1:19446`；不同监听端口可通过 `TIMETRACE_GATEWAY_URL` 覆盖，虚拟主机可通过 `TIMETRACE_GATEWAY_HOST` 指定（默认 `localhost`）。私人入口仍要求原有登录或 Bearer Token；迁移时删除旧公网 Tunnel 路由及其 DNS 记录，不将公网保留为回退路径。
+
+CA 修复随镜像构建保留：Python 依赖要求 `certifi>=2026.10.19`，具体版本与哈希锁定在 `uv.lock`；Debian runtime 单独更新 `ca-certificates` 并要求不低于 `20250419~deb12u2`。CI 在实际镜像中离线检查两套证书库可加载且达到该基线。宿主机更新 CA 不会更新镜像内的证书库；后续安全更新仍需刷新依赖、重建并发布新镜像，不关闭 TLS 校验。
 
 容器的运行进程仅有 TimeTrace server，但镜像也携带同 SHA 的 SPA 和部署资产供更新器提取。宿主机上的 GPU / LM Studio、nginx 与 Cloudflare Tunnel 不进容器；Compose 使用 host network 访问 LM Studio 的 `127.0.0.1:1234`。部署用户现有的 `$HOME/TimeTraceData` 和 `$HOME/.config/timetrace-server` 原位挂载，旧源码仓库只作为首次切换时的自动回滚目标。完整部署脚手架见：
 

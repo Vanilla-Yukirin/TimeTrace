@@ -30,6 +30,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM python:3.12-slim-bookworm AS runtime
 
+# Refresh the OS bundle independently of certifi in the locked virtualenv.
+# Fail closed if a stale mirror cannot supply the production repair baseline.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge '20250419~deb12u2' \
+    && rm -rf /var/lib/apt/lists/*
+
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 LABEL org.opencontainers.image.title="TimeTrace Server" \
@@ -58,6 +65,7 @@ COPY --chown=timetrace:timetrace \
     deploy/docker-compose.yml \
     deploy/docker-compose.rollback.yml \
     deploy/deploy-container.sh \
+    deploy/check-web-gateway.sh \
     deploy/compatibility-guard.sh \
     timetrace-update.sh \
     /opt/timetrace/release/

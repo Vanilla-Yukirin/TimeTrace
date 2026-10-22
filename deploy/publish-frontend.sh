@@ -19,6 +19,8 @@ TARGET_PORT="${TARGET_PORT:-}"          # empty → let ssh config decide
 WEB_ROOT="${WEB_ROOT:-/srv/timetrace/web}"
 RELEASE_ID="${RELEASE_ID:-$(git rev-parse HEAD)}"
 RELEASE="${WEB_ROOT}/releases/${RELEASE_ID}"
+GATEWAY_URL="${TIMETRACE_GATEWAY_URL:-http://127.0.0.1:19446}"
+GATEWAY_HOST="${TIMETRACE_GATEWAY_HOST:-localhost}"
 
 SSH=(ssh)
 if [[ -n "${TARGET_PORT}" ]]; then
@@ -36,10 +38,12 @@ echo "==> publishing immutable release ${TARGET}:${RELEASE}"
 rsync -rtz -e "$RSH" frontend-dist/ "${TARGET}:${RELEASE}/"
 
 echo "==> validating release and switching ${WEB_ROOT}/current"
-"${SSH[@]}" "$TARGET" bash -s -- "$WEB_ROOT" "$RELEASE_ID" <<'REMOTE'
+"${SSH[@]}" "$TARGET" bash -s -- "$WEB_ROOT" "$RELEASE_ID" "$GATEWAY_URL" "$GATEWAY_HOST" <<'REMOTE'
 set -euo pipefail
 web_root=$1
 ref=$2
+gateway_url=${3%/}
+gateway_host=$4
 release="${web_root}/releases/${ref}"
 next_link="${web_root}/.current-${ref}"
 previous=$(readlink "${web_root}/current")
@@ -52,10 +56,10 @@ ln -sfn "releases/${ref}" "${next_link}"
 mv -Tf "${next_link}" "${web_root}/current"
 
 if ! {
-  curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' \
-    'http://127.0.0.1:8080/healthz' >/dev/null &&
-  curl -fsS --max-time 5 -H 'Host: timetrace.yukirin.me' \
-    'http://127.0.0.1:8080/' | grep -F 'id="root"' >/dev/null
+  curl --noproxy '*' -fsS --max-time 5 -H "Host: ${gateway_host}" \
+    "${gateway_url}/healthz" >/dev/null &&
+  curl --noproxy '*' -fsS --max-time 5 -H "Host: ${gateway_host}" \
+    "${gateway_url}/" | grep -F 'id="root"' >/dev/null
 }; then
   echo "nginx smoke test failed; restoring ${previous}" >&2
   ln -sfn "${previous}" "${next_link}"

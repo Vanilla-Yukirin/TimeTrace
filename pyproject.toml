@@ -12,6 +12,7 @@ dependencies = [
     "Pillow>=10.0.0",                  # image processing (thumbnails, server blob)
     "numpy>=1.26.0",                   # pHash DCT
     "httpx>=0.28.1",                   # HttpBackend (client side) + tests
+    "certifi>=2026.10.19",             # preserve the deployed Python CA-bundle refresh
     # === Server-only ===
     # Kept in base deps so single-process `uv run timetrace` works after a
     # vanilla `uv sync`. Headless server-only deploys can also live with
