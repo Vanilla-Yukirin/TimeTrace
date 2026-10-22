@@ -8,6 +8,8 @@ header parity with real browsers.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -386,3 +388,40 @@ def test_healthz_still_public(client):
     # /healthz is the probe endpoint; not behind auth.
     r = client.get("/healthz")
     assert r.status_code == 200
+
+
+async def test_secure_cookie_mutation_preserves_external_port(db, auth_cfg):
+    cfg = replace(auth_cfg, cookie_secure=True)
+    users = UserStore(db, cfg)
+    await users.ensure_admin_seeded()
+    app = create_app(db, users=users, auth_cfg=cfg)
+    authority = "host.example.ts.net:19445"
+    origin = f"https://{authority}"
+    with TestClient(app, base_url=origin) as client:
+        login = client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        assert "Secure" in login.headers["set-cookie"]
+        payload = {"old_password": "admin", "new_password": "newpass42"}
+        # Reproduce the old nginx $host forwarding: port is lost, cookie and
+        # browser Origin survive, and the real CSRF guard refuses the request.
+        stripped = client.post(
+            "/v1/auth/change-password",
+            json=payload,
+            headers={"Host": "host.example.ts.net", "Origin": origin},
+        )
+        assert stripped.status_code == 403
+        assert stripped.json()["detail"] == "cross-origin request refused"
+        for foreign in ("https://evil.example", "https://host.example.ts.net:19444"):
+            rejected = client.post(
+                "/v1/auth/change-password",
+                json=payload,
+                headers={"Host": authority, "Origin": foreign},
+            )
+            assert rejected.status_code == 403
+        changed = client.post(
+            "/v1/auth/change-password",
+            json=payload,
+            headers={"Host": authority, "Origin": origin},
+        )
+        assert changed.status_code == 204
+        assert client.get("/v1/auth/me").json()["must_change_password"] is False

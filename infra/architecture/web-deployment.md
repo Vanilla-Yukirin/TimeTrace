@@ -4,6 +4,8 @@
 
 当前链路为 Tailscale Serve（HTTPS）→ `127.0.0.1:19446` nginx → SPA / `127.0.0.1:8765` API。部署检查使用 `deploy/check-web-gateway.sh`，可用 `TIMETRACE_GATEWAY_URL` 和 `TIMETRACE_GATEWAY_HOST` 覆盖默认 loopback 地址及 Host。不要恢复旧的 8080 监听或 CF 公网回退；迁移需要清除旧 published application route 及其 DNS 记录。MCP 私有域名需精确适配 Host/Origin，Token 和浏览器登录继续保留。
 
+私人 HTTPS 使用非标准端口时，普通 API 的 `Host` / `X-Forwarded-Host` 必须转发 `$http_host`，保留外部端口，才能与浏览器 `Origin` 的主机和端口一致。MCP 单独采用精确域名映射；不要把普通 API 的 Host 改成 loopback，也不要放宽 CSRF 检查。更新器不会替换宿主机 Nginx 配置，模板改动需要单独审核、应用并执行 `nginx -t` / reload。
+
 > 返回 [架构总览](overview.md) | [Wiki 首页](../readme.md)
 > 相关：[登录鉴权系统](auth-system.md) · [API Server](api-server.md)
 
