@@ -21,6 +21,14 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from timetrace.server.agent.activity_context import (
+    PRESENCE_NOTE,
+    activity_overview,
+    activity_page,
+    latest_activity,
+    summary_item,
+)
+
 # Window math is pure (server/summary/windows.py imports only datetime), so this
 # is cycle-free. aggregate_frame_metrics is imported function-locally in
 # query_stats instead, because server/summary/metrics.py imports THIS module
@@ -256,6 +264,7 @@ async def get_recent_activity(
     end_iso: str | None = None,
     cursor: str | None = None,
     device_id: str | None = None,
+    order: str = "asc",
 ) -> dict:
     """Chronological snapshot of activity (oldest→newest within the window).
 
@@ -271,29 +280,64 @@ async def get_recent_activity(
         device_id = _scope_device(device_id)
     except ValueError as exc:
         return {"error": str(exc)}
-    rows = await db.query_records(
-        start_ms=start_ms, end_ms=end_ms, limit=limit, cursor=cursor, device_id=device_id
-    )
-    label = await _labeler(db)
-    # ASC order → last row is the latest in this page; a full page may have more.
-    next_cursor = rows[-1]["id"] if len(rows) == limit else None
-    return {
-        "hours_back": hours_back,
-        "count": len(rows),
-        "next_cursor": next_cursor,
-        "items": [
-            {
-                "id": r["id"],
-                "ts_start_iso": ms_to_iso(r.get("ts_start")),
-                "app_name": r.get("app_name"),
-                "window_title": r.get("window_title"),
-                "vlm_desc": (r.get("vlm_desc") or "")[:200],
-                "category": r.get("category_final"),
-                "device": label(r.get("device_id")),
-            }
-            for r in rows
-        ],
-    }
+    try:
+        result = await activity_page(
+            db,
+            start=start_ms,
+            end=end_ms,
+            limit=limit,
+            cursor=cursor,
+            device_id=device_id,
+            order=order,
+            explicit_start=bool(start_iso),
+            explicit_end=bool(end_iso),
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    result["hours_back"] = hours_back
+    return result
+
+
+async def get_latest_activity(db: Database, device_id: str | None = None) -> dict:
+    """Latest captured record per device, without paging or LLM calls."""
+    try:
+        device_id = _scope_device(device_id)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return await latest_activity(db, device_id)
+
+
+async def get_activity_overview(
+    db: Database,
+    period: str = "today",
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+    device_id: str | None = None,
+    max_grain: str = "day",
+    limit: int = 50,
+) -> dict:
+    """Per-device narrative overview with automatic coarse-to-fine fallback.
+
+    Named periods use civil boundaries in the caller's view zone. Stored
+    pyramid windows keep their own server zone / cut-hour; never rewrite them.
+    """
+    if max_grain not in GRAINS:
+        return {"error": f"unknown grain: {max_grain}", "valid_grains": list(GRAINS)}
+    try:
+        start, end = _period_bounds(period, start_iso, end_iso, 0)
+        device_id = _scope_device(device_id)
+        result = await activity_overview(
+            db,
+            start=start,
+            end=end,
+            device_id=device_id,
+            max_grain=max_grain,
+            limit=min(max(1, int(limit)), _MAX_LIMIT),
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    result["period"] = period
+    return result
 
 
 def _stats_window(
@@ -703,6 +747,7 @@ async def search_summaries(
     query: str | None = None,
     limit: int = 50,
     device_id: str | None = None,
+    window_match: str = "overlap",
 ) -> dict:
     """Read the narrative pyramid: per-window 流水账/重点/评价 at a chosen grain.
 
@@ -716,6 +761,9 @@ async def search_summaries(
     Durations inside are a captured-activity FLOOR, not total wall-clock time.
     """
     cut_hour = 4  # mirrors RollupConfig.cut_hour; see query_stats note
+    if window_match not in ("overlap", "contained"):
+        return {"error": "window_match must be overlap or contained"}
+    contained = window_match == "contained"
     if grain not in GRAINS:
         return {"error": f"unknown grain: {grain}", "valid_grains": list(GRAINS)}
     if period not in _VALID_PERIODS:
@@ -732,38 +780,41 @@ async def search_summaries(
     # that device's own pyramid instead.
     if q and device_id is not None:
         rows = await db.search_device_summaries_text(
-            q, start_ms, end_ms, device_scope=device_id, grains=[grain], limit=limit
+            q,
+            start_ms,
+            end_ms,
+            device_scope=device_id,
+            grains=[grain],
+            limit=limit + 1,
+            contained=contained,
         )
     elif q:
         # Indexed narrative search (summaries_fts, BM25) instead of scanning
         # every window's text in Python; overlap semantics so a coarse window
         # containing the period still matches.
-        rows = await db.search_summaries_text(q, start_ms, end_ms, grains=[grain], limit=limit)
+        rows = await db.search_summaries_text(
+            q, start_ms, end_ms, grains=[grain], limit=limit + 1, contained=contained
+        )
     elif device_id is not None:
-        rows = await db.get_device_summaries(grain, start_ms, end_ms, device_scope=device_id)
+        rows = await db.get_device_summaries(
+            grain, start_ms, end_ms, device_scope=device_id, overlap=True
+        )
     else:
-        rows = await db.get_summaries_in_range(grain, start_ms, end_ms)
+        rows = await db.get_summaries_overlapping(grain, start_ms, end_ms)
+    # Unfiltered reads are not SQL-limited. Text searches apply this predicate
+    # before their SQL LIMIT so out-of-range matches cannot hide valid hits.
+    if contained:
+        rows = [r for r in rows if r["window_start"] >= start_ms and r["window_end"] <= end_ms]
     items: list[dict] = []
     for r in rows:
-        body = json.loads(r.get("body_json") or "{}")
-        key_points = body.get("key_points") or []
-        desc = r.get("description") or ""
-        evaluation = r.get("evaluation") or ""
         metrics = json.loads(r.get("metrics_json") or "{}")
         items.append(
             {
-                "grain": grain,
-                "scope_key": r["scope_key"],
-                "window_start_iso": ms_to_iso(r["window_start"]),
-                "window_end_iso": ms_to_iso(r["window_end"]),
+                **summary_item(r, int(time.time() * 1000)),
+                "extends_outside_period": r["window_start"] < start_ms or r["window_end"] > end_ms,
                 "day_local": r.get("day_local"),
-                "description": desc,
-                "key_points": key_points,
-                "evaluation": evaluation,
                 "top_categories": _top_cats(metrics),
                 "record_count": metrics.get("record_count", 0),
-                "narrated": bool(desc) and r.get("status") == "narrated",
-                "metrics_only": bool(body.get("metrics_only")),
                 "compression_ratio": r.get("compression_ratio"),
             }
         )
@@ -778,11 +829,23 @@ async def search_summaries(
         "timezone": view_tz_name(),
         "device_id": device_id,
         "count": len(items),
+        "has_more": len(rows) > limit,
+        "order": "relevance" if q else "asc",
+        "coverage_scope": "returned_windows_only",
+        "window_match": window_match,
+        "ready_count": sum(i["availability"] == "ready" for i in items),
+        "pending_count": sum(i["availability"] == "pending_summary" for i in items),
+        "open_count": sum(not i["window_closed"] for i in items),
+        "overview_tool": "get_activity_overview",
         "items": items,
         "note": (
             "叙述层：每个时间窗的流水账(description)/重点(key_points)/评价(evaluation)。"
             "时长是『本机捕获活跃下限』，不是总时间。metrics_only=true 表示该窗无截图、"
-            "仅指标无叙述。"
+            "仅指标无叙述。窗口可能超出请求范围，起止以各条返回值为准。"
+            "extends_outside_period=true 的整段叙述不能作为请求范围内的事实；"
+            "严格回答原时段用 window_match=contained，粗层无结果就保持原起止下钻细层。"
+            "has_more=true 表示结果截断，不能当成完整覆盖；缩小时间范围继续查。"
+            "需自动补足未完成父层时使用 get_activity_overview。" + PRESENCE_NOTE
         ),
     }
     child = CHILD_OF.get(grain)
@@ -915,7 +978,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_recent_activity",
-            "description": "按时间顺序拉取最近活动快照（无关键词），用于先总览。",
+            "description": (
+                "逐页读原始记录，默认最早在前；页尾不是最新活动。"
+                "当前近况用 get_latest_activity，时段总览用 get_activity_overview。"
+                "has_more=true 必须继续分页，不能据此声称后面没记录或用户离线。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -928,6 +995,11 @@ TOOL_SCHEMAS = [
                     "start_iso": _str_param("绝对起始时间（本地），优先于 hours_back"),
                     "end_iso": _str_param("绝对结束时间（本地）"),
                     "cursor": _str_param("翻页游标：传回上次的 next_cursor 取下一页"),
+                    "order": {
+                        "type": "string",
+                        "enum": ["asc", "desc"],
+                        "description": "默认 asc，最早在前；desc 最新在前，翻页时保持不变",
+                    },
                 },
             },
         },
@@ -1039,8 +1111,9 @@ TOOL_SCHEMAS = [
             "name": "search_summaries",
             "description": (
                 "读『金字塔』叙述层：某时间窗的流水账/重点/评价（按 5min→1h→6h→day→week 分层）。"
-                "问『我那天/那周在做什么』先用它：先用粗粒度(day/week)总览，再按返回的 "
-                "drill_down_grain + 该窗的 window_start_iso/window_end_iso 下钻细看。"
+                "精确粒度查询或总览后的下钻用它；总览优先 get_activity_overview 自动补细层。"
+                "按 drill_down_grain + 该窗 window_start_iso/window_end_iso 下钻细看。"
+                "检查 availability/window_closed/has_more，未完成或截断不能当成无活动。"
                 "比逐条 search_activity 高效得多。时长是『本机捕获活跃下限』。"
             ),
             "parameters": {
@@ -1065,6 +1138,13 @@ TOOL_SCHEMAS = [
                     ),
                     "end_iso": _str_param("custom 止（不含）；下钻时传上层窗口的 end"),
                     "query": _str_param("可选：只返回叙述里含该关键词的窗口（全文索引，按相关度）"),
+                    "window_match": {
+                        "type": "string",
+                        "enum": ["overlap", "contained"],
+                        "description": (
+                            "默认 overlap；contained 只返回完整落在请求范围内的窗口，概览退路使用它"
+                        ),
+                    },
                     "limit": _int_param("返回窗口数，默认 50，最大 2000"),
                 },
                 "required": ["grain", "period"],
@@ -1104,9 +1184,66 @@ TOOL_SCHEMAS = [
     },
 ]
 
+TOOL_SCHEMAS.extend(
+    [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_latest_activity",
+                "description": (
+                    "查每台设备最新采集记录，无需翻页；区分采集、首次入库、最后联系与分析状态。"
+                    "不能据此断言用户在线或离线。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "device_id": _str_param(
+                            "可选：list_devices 的设备 ID；省略返回各设备，包括未知设备"
+                        )
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_activity_overview",
+                "description": (
+                    "回答今天/这周做了什么的首选。分设备读分级摘要，粗层未完成时自动补细层；"
+                    "返回覆盖缺口和截断标志，不调用模型。"
+                    "缺口按 fallback_hint 继续：全设备可补全局摘要，指定设备保持筛选读原始记录。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "period": {
+                            "type": "string",
+                            "enum": list(_VALID_PERIODS),
+                            "description": "默认 today；自然日从零点起",
+                        },
+                        "start_iso": _str_param("custom 必填：起始时间，可带时区偏移"),
+                        "end_iso": _str_param("custom 必填：结束时间，不包含该时刻；最多31天"),
+                        "device_id": _str_param("可选设备 ID；不传按每台设备分别返回"),
+                        "max_grain": {
+                            "type": "string",
+                            "enum": list(GRAINS),
+                            "description": "最粗粒度，默认 day；自动下钻至5min",
+                        },
+                        "limit": _int_param(
+                            "每设备最多返回窗口数，默认50，最大2000；截断时缩小范围"
+                        ),
+                    },
+                },
+            },
+        },
+    ]
+)
+
 _IMPLS = {
     "search_activity": search_activity,
     "get_recent_activity": get_recent_activity,
+    "get_latest_activity": get_latest_activity,
+    "get_activity_overview": get_activity_overview,
     "get_app_breakdown": get_app_breakdown,
     "get_category_stats": get_category_stats,
     "query_stats": query_stats,

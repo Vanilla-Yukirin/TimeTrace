@@ -518,6 +518,10 @@ class SqliteDatabase:
             "CREATE INDEX IF NOT EXISTS idx_records_device_ts "
             "ON records(device_id, ts_start DESC) WHERE device_id IS NOT NULL"
         )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_unknown_ts "
+            "ON records(ts_start DESC, id DESC) WHERE device_id IS NULL"
+        )
         await self._conn.commit()
 
         # Embedding columns on analysis_results — added in embedding-pipeline
@@ -2657,6 +2661,7 @@ class SqliteDatabase:
         device_scope: str | None = None,
         grains: list[str] | None = None,
         limit: int = 50,
+        contained: bool = False,
     ) -> list[dict]:
         """Per-device twin of :meth:`search_summaries_text`."""
         q = (query or "").strip()
@@ -2664,6 +2669,9 @@ class SqliteDatabase:
             return []
         conditions = ["s.window_start < ?", "s.window_end > ?"]
         params: list[Any] = [end_ms, start_ms]
+        if contained:
+            conditions.extend(["s.window_start >= ?", "s.window_end <= ?"])
+            params.extend([start_ms, end_ms])
         if grains:
             conditions.append(f"s.grain IN ({','.join('?' * len(grains))})")
             params.extend(grains)
@@ -2716,6 +2724,7 @@ class SqliteDatabase:
         *,
         grains: list[str] | None = None,
         limit: int = 50,
+        contained: bool = False,
     ) -> list[dict]:
         """Narrated summary windows overlapping ``[start_ms, end_ms)`` whose
         narrative matches ``query``, best match first.
@@ -2729,6 +2738,9 @@ class SqliteDatabase:
             return []
         conditions = ["s.window_start < ?", "s.window_end > ?"]
         params: list[Any] = [end_ms, start_ms]
+        if contained:
+            conditions.extend(["s.window_start >= ?", "s.window_end <= ?"])
+            params.extend([start_ms, end_ms])
         if grains:
             conditions.append(f"s.grain IN ({','.join('?' * len(grains))})")
             params.extend(grains)

@@ -27,27 +27,45 @@
 
 ---
 
-## 当前工具集（7 个，均已实装）
+## 当前工具集
 
-工具以 `build_mcp_server` 内 `@mcp.tool()` 装饰的闭包形式注册，真实读写实现主要复用 `server/agent/tools.py`。MCP 暴露的 7 个工具与 Web Agent 的 7 个 schema 并不完全相同：MCP 有高层 `ask_agent`，Web Agent 则有指标工具 `query_stats`；其余读写能力共享实现。`ask_agent`（2026-10 W4 起）复用 Web Agent 的 `AgentRunner` 工具循环（最多 4 轮），不再内联「最近 80 条记录一次性喂 LLM」。
+工具以 `build_mcp_server` 内 `@mcp.tool()` 装饰的闭包形式注册，真实读写实现复用 `server/agent/tools.py` 与 `server/agent/activity_context.py`。MCP 与 Web Agent 共享读取工具（包括 `query_stats`）；MCP 另有高层 `ask_agent`。它复用 Web Agent 的 `AgentRunner` 工具循环（最多 4 轮）。
 
-下表 7 个工具中，`apply_label` 是**唯一写面**（只改 `category_final` + 写 feedback 审计行，绝不删改记录/截图），其余 6 个全是只读。
+`apply_label` 是**唯一写面**（只改 `category_final` + 写 feedback 审计行，绝不删改记录/截图），其余工具只读。
 
 | 工具 | 签名要点 | 用途 |
 |------|----------|------|
+| `get_latest_activity` | `device_id?` | 每设备最新采集记录、采集年龄、首次入库时间、最后联系时间、分析状态；不是用户在线探针 |
+| `get_activity_overview` | `period, start_iso/end_iso, device_id?, max_grain=day, limit=50` | 每设备粗到细摘要回退，返回非重叠窗、覆盖缺口和截断状态；不现场调用模型 |
+| `list_devices` | 无参数 | 设备 ID、名称、描述，供其他读工具选择设备范围 |
+| `query_stats` | `metric, period, device_id?` | 时间/条数聚合；支持按设备统计和跨设备墙钟并集 |
 | `search_activity` | `query: str, limit=20(≤2000), hours_back/start_iso/end_iso` | 关键词 + 语义（embedding）RRF 融合检索，走 `server/retrieval.py::retrieve_records`（与 `/v1/search/text`、Web Agent 同一路径）；附 `related_summaries` |
-| `get_recent_activity` | `hours_back=24(≤720), limit=50(≤2000), cursor` | 无关键词时间序快照；支持绝对时间窗和游标分页 |
+| `get_recent_activity` | `hours_back=24(≤720), limit=50(≤2000), cursor, order=asc` | 原始记录分页；明确 `has_more`，固定查询窗/入库高水位，按 `(ts_start,id)` 稳定排序，支持 DESC |
 | `get_app_breakdown` | `period?(today/this_week/this_month/custom), hours_back=24(≤720), top_n=20` | 按应用聚合活跃时长（`SUM(clamped duration)`：单条记录时长经 `_clamped_dur_sql` 封顶——负跨度归 0、超 5min 的休眠/合盖伪影贡献 0；返回里带 `capped_per_record_seconds`），回答「我在 X 上花了多久」 |
 | `get_category_stats` | `hours_back=24(≤720), top_n=20(≤50)` | 按分类聚合活跃时长（同样经 `_clamped_dur_sql("r")` 封顶），区分 `_unclassified`（系统内部尚未分类的积压桶）与 `uncategorized`（分类器真正判为「未分类」的桶）两个桶，返回带 `categories_legend` |
-| `search_summaries` | `grain, period, start_iso/end_iso, query, limit` | 读取 `5min/1h/6h/day/week` 叙述层；先 day/week 总览，再按返回时间窗下钻 |
+| `search_summaries` | `grain, period, start_iso/end_iso, query, limit, device_id?` | 精确粒度查询重叠窗口；返回 pending/open/ready 和 `has_more`，按返回时间窗下钻 |
 | `apply_label` | `record_id: str, category: str, note: str\|None` | **唯一写工具**：只改某条记录的 `category_final`（写一行 `feedback` 审计行，action=edit），绝不删改记录/截图；未知 record/category 返回 `error` dict 而不抛异常 |
 | `ask_agent` | `question: str, hours_back=24(≤720)` | 服务端 Agent 工具循环（摘要优先 → 统计/检索 → 回答） |
 
-返回结构里时间戳统一经 `_ms_to_iso()` 转成本地时区可读字符串（`ts_start_iso` / `ts_end_iso`），方便 LLM 直接阅读，无需再做 epoch 换算。
+近况、分页和摘要窗口的新契约返回带毫秒与时区偏移的 ISO 时间。时区来自请求 `X-Timezone`，否则使用服务端设置。分页/下钻原样回传时间字符串。
+
+### 读取契约与兼容边界
+
+- “刚刚做什么”使用 `get_latest_activity`；“今天做什么”使用 `get_activity_overview`；逐条回放才使用 `get_recent_activity`。工具文档、Web Agent prompt 与仓库分发的 Skill 同步此路由。
+- 分页默认 ASC 保持旧行为，新增 `order=desc`。`next_cursor` 变为不透明选择器，固定时间窗、设备和方向；同毫秒记录用 ID 破同值，取 `limit+1` 精确判断末页。旧 record-ID cursor 仍接受，但只新游标有固定窗/入库高水位保证。高水位并非数据库事务快照：已有记录的分析可更新，删除/VACUUM 等维护后应重新开始查询。
+- `get_activity_overview` 的 today/week/month 从请求时区自然日零点起，custom 使用半开区间，最大31天。存储金字塔的服务端时区和4点切日不变。旧统计和精确摘要的逻辑日语义保持兼容；跨入口对齐时回传明确起止。
+- 总览按设备取已闭合、已生成的最粗可用窗口；待生成/缺失/越界父窗回退到细窗，不重叠重复计入。**不裁剪整段叙述冒充子区间内容**。缺失设备历史摘要时报告 unavailable，不混入全设备旧摘要。
+- `coverage` 是实时记录落在返回窗口内的数量，不是叙述语义准确度或迟到数据已被重新总结的保证；`uncovered_ranges` 不是无活动时段。`limit` 按设备计算，`truncated=true` 时缩小范围。
+- 精确 `search_summaries` 不做自动回退；它显式报告 `availability`、`window_closed`、`has_more`，查询词过滤后的无结果不能证明没有活动。
+- 最新记录包含 `server_received_at`（该记录首次入库）和设备 `last_contact_at`（服务端观察到的联系）；迟到上传不能冒充最新采集。空描述保留原始分析状态，所有设备的 `presence` 都是 unknown。
+- 摘要缺口按 `fallback_hint.arguments` 继续：未指定设备时读取相同 custom 范围的全局 `search_summaries(window_match="contained")`，仅作为全局背景；只用 ready 窗口，粗层无结果或存在缺口时保持原起止和 contained 下钻细层，已覆盖窗口不重复计入。不能改用逻辑日 period 扩大原自然日范围。指定设备时保持筛选并逐页读取原始记录，禁止把全局叙述归属给单台设备。
+- `search_summaries` 默认 `window_match="overlap"` 保持旧重叠查询能力，每条增加 `extends_outside_period`；越界的完整叙述不能当作本时段事实。`contained` 在截断/相关度排序限额之前排除越界窗口，支持普通读取、全文索引和短词 LIKE，不能通过裁剪时间标签伪装成范围内摘要。
+- 覆盖统计一次读取范围内时间戳，释放数据库锁后用二分计数，不逐窗查询。`pending_windows/open_windows` 只计与未覆盖区间重叠的窗口（跨粒度，可包含部分越界父窗）；截断保留最早窗口，`truncation_omits=newer_windows` 明示遗漏方向。原始记录分页为兼容保留双端包含的 `window_bounds=inclusive`，相邻查询应按 ID 去重。
+- 未知设备最新活动使用 `idx_records_unknown_ts` 部分索引；索引在数据库初始化时幂等建立，不改已有记录，首次启动可能需要等待索引构建。
 
 ### 关键词检索的两档策略（`search_activity` / DB 层）
 
-`search_activity` 把 `query` 透传给 `server/db/sqlite.py::query_records(keyword=...)`，由 DB 层按查询长度二选一（阈值 `len(keyword.strip()) >= 3`）：
+`search_activity` 通过共享检索层融合关键词与语义。关键词分支按查询长度二选一（阈值 `len(keyword.strip()) >= 3`）：
 
 - **≥ 3 字**：走 `records_fts`（FTS5 **trigram** 分词器）`MATCH` + **BM25** 排序。trigram 对中文友好——「鸣潮」这类多字关键词能正常命中。
 - **< 3 字**：trigram 切不出三元组，无法 `MATCH`，回退到**多字段 `LIKE`**。
@@ -58,12 +76,9 @@
 
 `ask_agent` 是唯一依赖 LLM 的工具，依赖 `AppConfig.vlm`（`common/config.py::VLMConfig`，由 `TIMETRACE_VLM_*` env 构建）：
 
-- **优雅降级**：`vlm_cfg is None`（未配 API Key）时，工具不报错，返回一句「LLM endpoint not configured」，其余 6 个工具照常工作。
-- **单轮 round-trip**：流程是「取最近记录 → 每条压缩成一行 → 一次性喂给本地 Qwen3 模型让它读时间线后作答」，**不做 tool-calling 循环**。这样 demo 延迟可控、也更好调试。
-- **上下文预算**：最多取 `_ASK_AGENT_MAX_RECORDS = 80` 条，每条描述截断到 160 字；假设 LM Studio 以 ≥16K 上下文加载模型（默认 4096 容易溢出，部署时需自行 `lms load <model> -c 16384`）。
-- **空窗兜底**：请求窗口内无数据时，自动改用 all-time `order="desc"` 再查一次，确保拿到**最近** N 条而不是最老 80 条（这是默认 ASC 排序会踩的坑，已规避），并在回答前加一句「已自动扩窗到 ~Nh」的提示。
-- **provider 兼容**：`vlm_cfg.disable_thinking` 为真时注入 `extra_body={"enable_thinking": False}`；LM Studio 把 Qwen3 输出塞进 `reasoning_content`，故答案提取用 `content or reasoning_content` 兜底（与 `vlm/client.py` 同款回退）。
-- **连接池复用**：`AsyncOpenAI` 客户端按 server 缓存（不是每次调用新建），httpx 连接池跨请求复用。
+- **优雅降级**：`vlm_cfg is None`（未配 API Key）时返回「LLM endpoint not configured」，确定性读工具继续工作。
+- **共享循环**：每次调用创建 `AgentRunner`，至多4轮工具调用，完成后关闭客户端连接；按问题选择近况、摘要、统计或检索，不再固定读取80条。
+- **预算与证据**：摘要总览优先，确需细节再下钻。结果为空、分页未读完或摘要未生成时如实报告覆盖限制，不自动推断用户离线。
 
 ---
 
@@ -105,7 +120,7 @@ FastMCP 的 streamable HTTP 传输自带一个 anyio task group（即「session 
 
 - `/mcp` 与 `/v1/ingest/*` 同属「机器对机器」面，用 bearer token 鉴权，不接 cookie 登录态。具体实现：mount 前用 `BearerOnlyMiddleware(mcp_app, auth)` 把整个 MCP 子应用裹一层 ASGI 中间件，统一校验 `Authorization: Bearer tt_live_...`。
 - `/healthz` 是公开探活；浏览器业务路由走 cookie/bearer principal，MCP 与 ingest 只接受 bearer。
-- server 默认监听 loopback；公网 MCP 经 nginx + FRP 到同一进程，并继续受 bearer 与 Host allowlist 双重保护。
+- server 默认监听 loopback；公网 MCP 经受控反向代理到同一进程，并继续受 bearer 与 Host allowlist 双重保护。
 
 `.mcp.json`（仓库根，本机连法）：
 
@@ -126,9 +141,9 @@ FastMCP 的 streamable HTTP 传输自带一个 anyio task group（即「session 
 
 | 约束 | 说明 |
 |------|------|
-| **不返回原始截图** | 7 个工具只返回文本描述 / 元数据 / 统计 / 自然语言回答，绝不含图片 URL 或 base64 |
+| **不返回原始截图** | 工具只返回文本描述 / 元数据 / 统计 / 自然语言回答，绝不含图片 URL 或图片 base64 |
 | **数量上限** | 每个工具都对 `limit` / `top_n` / `hours_back` 做 `min(max(...))` 夹取，防止一次塞给模型海量帧 |
-| **loopback 服务** | API 默认 `127.0.0.1`；公网只经 nginx + FRP + 鉴权进入 |
+| **loopback 服务** | API 默认 `127.0.0.1`；外部访问经受控入口与鉴权 |
 | **bearer 鉴权** | 机器面统一 bearer token，不复用浏览器 cookie 登录态 |
 
 ---
@@ -137,7 +152,7 @@ FastMCP 的 streamable HTTP 传输自带一个 anyio task group（即「session 
 
 `server/mcp_layer/tools.py` 里还留着一组早期（Phase 1.5）独立的 async 工具函数：`list_categories` / `get_activity` / `get_category_stats` / `search_activity`。其中 `get_category_stats` 与 `search_activity` 仍是**返回桩数据**的占位实现，且 `get_category_stats` / `list_categories` 依赖一张 `categories` 表。
 
-**这组函数已不是当前 MCP 的对外接口**——真正暴露给 agent 的是 `server.py::build_mcp_server` 里那 7 个 `@mcp.tool()`。tools.py 视为待清理的遗留模块，新功能一律加到 `server.py` / `server/agent/tools.py`。
+**这组函数已不是当前 MCP 的对外接口**——真正暴露给 agent 的是 `server.py::build_mcp_server` 中注册的工具。旧 tools.py 视为待清理的遗留模块，新功能加到共享 Agent 实现，再从 MCP 注册。
 
 ---
 
