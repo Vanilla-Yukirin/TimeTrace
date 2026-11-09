@@ -1,61 +1,34 @@
 # 开发路线图
 
 > 返回 [Wiki 首页](../readme.md) · 当前待办看 [滚动 PLAN](../../devlogs/PLAN.md)
-> 最后校准：2026-07-20。本文只描述阶段边界，不复制具体 TODO。
+> 最后校准：2026-11-10。本文描述阶段边界；具体状态、验证日期与下一步只维护在 PLAN。
 
----
+## 已完成的主线
 
-## 已完成主线
-
-| 阶段 | 状态 | 已验证交付 |
+| 范围 | 已实现 | 仍需区分的边界 |
 |---|---|---|
-| Phase 1 采集与回放 | ✅ | Windows 活跃窗口/关键帧采集、idle/隐私黑名单、SQLite WAL + 图片树、时间轴、pHash/BK-tree 图像相似 |
-| Phase 1.5 本地 AI | ✅ | VLM 结构化描述、flat-6 分类、FTS5、文本 embedding、`/v1/search/text` 混合召回、分析任务状态机与熔断 |
-| Phase 2 反馈与审计 | 🟡 | per-app 规则覆盖、`apply_label`、decision trace/建议/阶段时间戳、`/audit` 已上线；OCR 模糊和反馈回灌仍未完成 |
-| Phase 3 客户端/服务端拆分 | ✅ | common/client/server 三层、HTTP ingest、bearer auth、outbox、多 endpoint、SSH tunnel、并发上传、容器化第一刀 |
-| Phase 4 AI 上下文 | ✅ | Web Agent、报告、MCP、`query_stats`、`search_summaries`、粗到细上下文查询 |
-| Phase 5 分层记忆 | ✅ 主链完成 | `5min→1h→6h→day→week` 指标级联、source_hash 重发、LLM 叙述、后台 rollup/narrate、回填 CLI、金字塔页面 |
-| Phase 6 运维可见性 | 🟡 基础完成 | 登录、审计/金字塔/LLM 日志页面、后端 + SPA 自动发布；LLM 账本尚未覆盖 report 与 Web Agent streaming |
+| 采集与回放 | Windows 窗口/关键帧、idle、黑名单、SQLite + 图片、时间轴 | 长期性能基准、落盘前脱敏尚待补齐 |
+| 本地 AI 与检索 | VLM 描述、flat-6 分类、关键词/文本向量混合搜索、pHash 图搜 | 图搜关键词退路仍为 LIKE；Classifier V2 未实现 |
+| 客户端/服务端拆分 | common/client/server、HTTP ingest、Bearer、Outbox、多 endpoint、SSH 隧道、并发上传 | 不支持双服务端复制或离线合库 |
+| 多设备 | 身份与 Token 绑定、设备管理、查询筛选、时间轴泳道、统计口径 | 另一台客户端的私网迁移验收待确认 |
+| 分层记忆 | 五层指标与叙述、设备级金字塔、按设备拼装全局摘要、回填 CLI | 全历史回填、覆盖审计和容量验收未确认完成 |
+| AI 上下文 | Web Agent、报告、MCP、最新活动、摘要总览、下钻与稳定分页 | 外部消费端是否刷新工具及遵循读取契约需单独验收 |
+| 发布与运维 | GHCR 同 SHA 后端/SPA、主机主动更新、私网入口、Windows 标签发布工作流 | 客户端签名/自动更新、生产恢复演练仍待补齐 |
 
----
+10 月 W1–W6 与 Agent 活动读取契约均已合入，并包含于 PR #24 的发布版本。设计来历见 [Owner Review](../PLAN-OWNER-REVIEW-2026-10.md)，实际发布证据见 [2026-10-23 归档](../../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)。
 
-## 当前稳定化阶段
+## 当前阶段：可靠性与验收
 
-开发策略从“继续扩功能”切换为“恢复可控性 + 补可靠性闭环”：
+1. 核对两台客户端、外部 MCP 消费端和已安装版本，补齐私网迁移回执。
+2. 审计历史数据质量、逐设备摘要覆盖与积压，按授权范围修复和回填。
+3. 验证 endpoint 故障转移、长期离线补传、磁盘预算与生产回滚。
+4. 补隐私、存储生命周期、迁移恢复和单卡容量基准。
+5. 在现有设备管理、托盘和回环控制台上完善配置与诊断流程。
 
-1. **控制面**：`main` 作为唯一开发主干，`deploy` 只做发布指针；README、infra 与滚动 PLAN 保持一个事实口径。
-2. **传输可靠性**：真机验证 endpoint failover、outbox 排空、隧道恢复与回切。
-3. **隐私和生命周期**：落盘前 OCR/模糊、截图配额驱逐、恢复与不可逆边界测试。
-4. **数据演进**：正式 schema version、旧库升级与崩溃恢复。
-5. **单卡容量**：让 worker/narrative/report/agent 的 FIFO 排队和故障状态可见。
+每项都需要代码、测试、实际运行证据和恢复边界。代码存在、曾运行成功与长期可靠性验收是三个不同状态。
 
-完成这些 gate 之前，不启动 Postgres/Redis/S3、deep-scan 多 agent、TUI 等扩张性工作。
+## 研究与延期方向
 
----
+[Classifier V2](../PLAN-CLASSIFIER-V2.md)仍是预备稿。后续顺序是可复现实验 → shadow mode → 精度与节省率验收 → 小范围启用与回滚验证。历史校准结果不直接证明生产收益。
 
-## 下一条产品实验：Classifier V2
-
-Classifier V2 尚未进入实现。当前只有预备稿与 225 帧的多模态 embedding 校准：保守阈值 `T=0.13` 有望以高 precision 复用近邻分类、节省约 30% VLM 调用，但距离只在近端可靠，且要防止错误种子扩散。
-
-正确路线是：仓库内可复现实验 → shadow mode → precision/节省率验收 → 小流量跳过 VLM → 可回滚上线。未经过 shadow 验证前，现有规则 + VLM V1 保持不动。详见 [PLAN-CLASSIFIER-V2](../PLAN-CLASSIFIER-V2.md)。
-
----
-
-## 明确延后
-
-- PostgresDatabase / RedisQueue / S3BlobStorage
-- Headless TUI 与通用多租户部署
-- deep scan / 子 agent map-reduce
-- 通用安装包、ghcr 与 release 自动化
-- 图像向量大规模索引替换：在 numpy cosine 有真实性能瓶颈前不提前迁移
-
-这些方向不是取消，而是当前个人本地规模没有足够证据证明值得增加系统复杂度。
-
----
-
-## 验收口径
-
-- 所有阶段必须同时有：代码、测试、运行配置、可观测入口和回滚/降级说明。
-- “代码存在”不等于“上线”；“线上跑过一次”不等于“可靠性闭环”。
-- 性能指标必须来自真机测量，不沿用早期目标值冒充现状。
-- 具体未完成项只在 [滚动 PLAN](../../devlogs/PLAN.md) 维护，避免本页再次变成第二份 TODO。
+Postgres/Redis/S3、Headless TUI、通用多租户部署、deep scan/子 agent map-reduce，以及大规模向量索引替换继续等待实际需求与基准。Windows 安装包、GHCR 和 Release 工作流已落地，不再列入“尚未开始”。

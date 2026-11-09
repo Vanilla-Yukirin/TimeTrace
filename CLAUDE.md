@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本文件是所有 AI agent 的项目协作说明，`AGENTS.md` 只保留转引。当前状态与待办见 [devlogs/PLAN.md](devlogs/PLAN.md)，用户入口见 [README.md](README.md)。
 
 ## 项目简介
 
-TimeTrace 是一个 **Windows Only、本地优先**的桌面活动记忆层：低打扰采集活跃窗口与关键帧截图，落地到 SQLite + 本地文件，提供时间轴回放、多模态搜索（关键词 + 以图搜图 + VLM 语义）、MCP 上下文导出。Python 3.12+、asyncio、FastAPI、aiosqlite。
+TimeTrace 是一个 **Windows 采集端 + 跨平台服务端、本地优先**的桌面活动记忆层：低打扰采集活跃窗口与关键帧截图，落地到 SQLite + 本地文件，提供时间轴回放、多模态搜索（关键词 + 以图搜图 + VLM 语义）、MCP 上下文导出。Python 3.12+、asyncio、FastAPI、aiosqlite。
 
 ## 常用命令
 
@@ -63,7 +63,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - **暴露给 agent/MCP**：`search_summaries`（`agent/tools.py` + `mcp_layer/server.py`）——粗粒度总览→按返回的 `drill_down_grain` + 该窗 iso 区间换细 grain 下钻，**时间区间即父子链路**
 - **Agent 读取契约**：最新活动用 `get_latest_activity`（每设备最新采集、入库/最后联系/分析状态，绝不判断用户在线）；时段总览用 `get_activity_overview`（自然日零点、每设备粗到细补齐、返回非重叠窗口与覆盖缺口，最多 31 天）；`search_summaries` 用于精确粒度下钻，返回 pending/open/ready 和截断提示。`get_recent_activity` 保留默认 ASC，新增 DESC、`has_more`、固定时间窗/入库高水位/时间+ID 复合游标，旧 record ID 游标仍可读。实现集中在 `agent/activity_context.py`，不改变生产采集、摘要生成或设备身份。
 - **admin CLI**：`timetrace-server backfill <start> <end>`（建指标）、`narrate <start> <end> [--force] [--grains 1h,6h,day,week] [--max-tokens N]`（生成/重叙述；`--grains` 只重跑指定层）、`repair-data-quality [--apply]`（默认只审计；apply 先做在线 SQLite backup，再以单事务修复确定性元数据问题；不读取/删除截图）
-- **LM Studio 配置硬约束**（box 的 35B 端点，叙述/VLM/报告共用）：必须 **context ≥16384 + `max concurrent predictions`(=parallel)=1**。parallel 默认 4 会把 KV cache 等分成 1/4（4096→实际每请求 1024），叙述 prompt 立刻溢出。该 35B 是**永远思考**模型（`enable_thinking:false` 与 `/no_think` 实测都关不掉），思考算进输出 token → `max_tokens` 要给够（per-grain：5min 4000、聚合窗 6000-7000）。单卡 parallel=1 → 所有消费者（worker 图片分析 / 叙述 / 报告 / ask_agent）**FIFO 排队串行**，嵌入(nomic)是另一个模型、抢卡时会触发换模型 thrash
+- **LM Studio 历史容量约束**：此前共用的 35B 端点要求 **context ≥16384 + `max concurrent predictions`(parallel)=1**；当时 parallel=4 会分摊可用 KV 容量，thinking 也占输出预算，曾采用 5min 4000、聚合窗 6000–7000 的 token 预算。该配置下 VLM/叙述/报告/Agent 串行竞争，独立 embedding 模型还可能触发换模。以上是特定模型的运行经验；操作前核对实际模型、上下文、并发和积压，不把旧端点或“无法关闭 thinking”的结论推广到新模型。
 
 **数据流挂钩**：
 
@@ -82,10 +82,11 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 
 ## 项目约定
 
-- **入口**：三个 `[project.scripts]`：
+- **入口**：四个 `[project.scripts]`，前三个是主应用，第四个是独立实验服务：
   - `timetrace` → `main.py:main` 单进程默认（pystray 主线程 + asyncio loop）
   - `timetrace-client` → `client/cli.py:main` 客户端守护；子命令 `init` (交互/--non-interactive)、`print-config`
   - `timetrace-server` → `server/cli.py:main` 服务端守护；子命令 `info`、`tokens list/add/revoke`、`backfill <start> <end>`（建指标级联）、`narrate <start> <end> [--force] [--grains] [--max-tokens]`（生成/重叙述）、`repair-data-quality [--apply]`（dry-run/备份后修复）—— 管理命令见 admin_cmd.py
+  - `timetrace-embserver` → `embserver/cli.py:main` 独立 Qwen3-VL embedding 服务，未接入主 worker/检索；详见 [embserver 文档](infra/architecture/embserver.md)
   - main.py 与 server/cli.py 共享 `server/bootstrap.py`（build_server_components + serve(extra_tasks=...)），不会再次漂移
 - **三层目录**：`src/timetrace/{common,client,server}/`。配置在 `common/config.py` + `client/core/config.py`（ClientConfig 现在吃 storage/capture/privacy 三段，是双进程 client 的单一 source of truth；含 `apply_env_overrides()` 接 9 个 TIMETRACE_* env vars）；wire schema 在 `common/protocol.py`；capture / 托盘 / outbox / backend / init_cmd 在 `client/`；api / db / queue / blob / worker / vlm / phash / mcp / admin_cmd / bootstrap 在 `server/`。
 - **DB 路径**：`server/db/sqlite.py::SqliteDatabase`，`server/db/__init__.py` 导出 `Database = SqliteDatabase` 别名 —— 现在所有调用方都还是用 `from timetrace.server.db import Database`，PostgresDatabase 在 P5 进来时这条别名升级为 typing.Protocol。
@@ -93,7 +94,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
   - `InProcessBackend`：直调 `SqliteDatabase` + `PHashIndex`，单进程模式用
   - `HttpBackend`：POST `/v1/ingest/record` + `.../close`，双进程下底层 transport（支持 `data_dir` 相对路径解析、`auth_token` + `device_id` 双 header 注入）
   - `OutboxBackend`：把 capture 调用先 append 进 Outbox，由 `OutboxSender` 后台 drain 给 HttpBackend；已是 timetrace-client 默认 backend
-- **Outbox**：`client/core/outbox.py`，append-only `log.jsonl` + `blobs/` + `state.json`（atomic rename + fsync）。`_read_log` 对末尾 partial JSON 行容错。`OutboxSender` 严格 FIFO + 指数 backoff + 可选 token bucket 限速 + `compact_every_n_acks=200` inline compaction（crash-safe 顺序：state.acked=0 先于 log 重写，最坏 at-least-once replay）。
+- **Outbox**：`client/core/outbox.py`，append-only `log.jsonl` + `blobs/` + `state.json`（atomic rename + fsync）。`_read_log` 对末尾 partial JSON 行容错。`OutboxSender` 默认单并发 FIFO，也支持滑动窗口并发：同 record 保序、只按连续完成前缀推进 ack；另有指数 backoff + 可选 token bucket 限速 + `compact_every_n_acks=200` inline compaction（crash-safe 顺序：state.acked=0 先于 log 重写，最坏 at-least-once replay）。
 - **活动区间不变量**：capture 的 1s loop 若出现 >5s monotonic gap（休眠/暂停），用 gap 前最后观测墙钟关闭旧 record，resume 新开；close 的可信时间随 Outbox 原样重放。DB 写边界拒绝负数或 >5min 区间，常驻维护 loop 每分钟回收 >5min open lease；历史异常只通过 `repair-data-quality --apply` 在一致性备份后显式修复，不再在 `db.init()` 静默改历史。
 - **Auth**：`server/auth.py::ServerAuth`，`load_or_generate()` 读 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600）或首启自动生成 `tt_live_<32urlbytes>`；`/v1/ingest/*` 与 `/mcp` 是 bearer-only，records/search/feedback 等浏览器业务路由要求 cookie 或 bearer principal，只有 `/healthz` 是公开探活。token CRUD 通过 `timetrace-server tokens` 子命令或 Web admin；CLI 改完重启 server 才生效。
 - **Ingest 路由幂等性**：`/v1/ingest/record` 用 `client_record_id` UNIQUE 索引做 record 级幂等；`screenshots(record_id, hash_sha256)` UNIQUE 索引做 screenshot 级幂等防 outbox at-least-once replay 双插。`/close` 路由按 server id 或 client_record_id 兜底，未知 id 返 404；blob 路径用 record.ts_start 算日期目录（不是上传时刻）。
@@ -101,7 +102,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - **日志**：`structlog.get_logger(__name__)`，禁用 `print`
 - **前端代码风格**：以 inline style + Tailwind 工具类混用为主，已装 `@radix-ui/react-dialog/select/separator/slot/tooltip`、`@tanstack/react-query`、`lucide-react`，新增 UI 优先复用
 - **文档过期警告格式**：所有"本页/本段内容已过期"的标注统一用 `## **⚠️ 一句话标题**`（H2 + 加粗紧贴 emoji，无空格）。这样 `grep '^## \*\*⚠️' infra/ devlogs/` 能稳定枚举所有 deprecation 标注，不会因为下个人写成 H3 / blockquote / `> ⚠️` 而漏命中
-- **devlog 写完即不改**：`devlogs/**/*.md` 是历史快照（只追加新归档，不改老归档）。子目录索引 `devlogs/README.md` + `infra/readme.md` 可以更新，但具体 archive 文件本身视为只读 —— 想纠正 / 补充就再写一份新 archive
+- **devlog 写完即不改**：`devlogs/**/archive-*.md` 是历史快照，只追加新归档，不回改老归档。`devlogs/PLAN.md` 是当前计划，`devlogs/README.md` 和 `infra/readme.md` 是索引，均应持续更新。状态变化区分代码合入、制品发布、主机激活、历史数据验收，并保留证据日期；不把历史运行快照当成今天的在线状态。
 
 ## 部署 / 运行环境
 
@@ -110,7 +111,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - **私人入口**：Tailscale Serve → `127.0.0.1:19446` nginx；nginx 从 `/srv/timetrace/web/current` 托管 SPA，并把 `/v1`、`/mcp`、`/healthz`、`/thumbs`、`/blob` 等路径反代到 `127.0.0.1:8765`。迁移后不保留公网回退；敏感接口仍必须经过现有鉴权，MCP 不返回原始截图。MCP 的 Host/Origin 需要按实际私有域名精确配置，不关闭重绑定保护。部署脚本通过 `check-web-gateway.sh` 检查 loopback 网关，默认 19446，支持 `TIMETRACE_GATEWAY_URL` / `TIMETRACE_GATEWAY_HOST` 覆盖
 - **CI/CD 触发**：`push` 到 `deploy` 分支或 `workflow_dispatch` 只构建并发布不可变 GHCR 镜像，不连接部署机。GitHub 在触发时把 ref 固定为 `github.sha`，排队期间不会漂移。PR 会构建临时镜像做容器冒烟；main push 不重复构建 Docker
 - **部署模型（唯一长期模型）**：`main` 是开发主干，`deploy` 是只接受 main fast-forward 的生产指针；发布制品命令是 `git push origin main:deploy`。`deploy.yml` 构建并推送同时包含 server、SPA 和部署资产的 `ghcr.io/vanilla-yukirin/timetrace-server:<sha>`；镜像就绪后，在部署机以 Docker 组用户执行 `timetrace-update`，由部署机通过出站 HTTPS 解析 `deploy` SHA、拉镜像并原子切换 `/srv/timetrace/runtime/releases/<sha>` 与 `/srv/timetrace/web/releases/<sha>`，失败自动恢复上一套
-- **容器边界**：只容器化 `timetrace-server`。生产 Compose 使用 Linux host network，使容器仍可访问宿主机 LM Studio `127.0.0.1:1234`；GPU、LM Studio、nginx、Cloudflare Tunnel 都留在宿主机。现有 `/home/vanilla/TimeTraceData` 与 `/home/vanilla/.config/timetrace-server` 原位 bind mount，不搬库、不复制截图；首次切换会无插值解析旧仓库 `.env`，再以 Compose 安全的单引号 dotenv 规范化到 `/srv/timetrace/config/timetrace.env`，保留引号、转义与字面 `$` 的原值
+- **容器边界**：只容器化 `timetrace-server`。生产 Compose 使用 Linux host network，使容器仍可访问宿主机 LM Studio `127.0.0.1:1234`；GPU、LM Studio、nginx、Tailscale 留在宿主机；本项目已撤掉 Cloudflare 公网入口。现有 `/home/vanilla/TimeTraceData` 与 `/home/vanilla/.config/timetrace-server` 原位 bind mount，不搬库、不复制截图；首次切换会无插值解析旧仓库 `.env`，再以 Compose 安全的单引号 dotenv 规范化到 `/srv/timetrace/config/timetrace.env`，保留引号、转义与字面 `$` 的原值
 - **旧源码部署已退役但保留回滚**：`~/Github/TimeTrace` 与 `timetrace-server.service` 不改名、不删除。首次容器切换会停旧 unit、做 stopped-service SQLite 快照并启动容器；失败则自动恢复旧 unit，成功才 disable 旧 unit。`deploy/deploy.sh` 与 unit 模板仅作历史/应急参考，不再是自动部署主路径
 - **发布制品走工作流，部署激活走主机更新器**：不要在部署机 `git reset/pull/checkout`、直接 `docker compose up` 或手动 `systemctl restart`。标准入口是 `timetrace-update [<sha>]`，它保留不可变 SHA、健康检查和自动回滚；容器不管理的 LM Studio 模型仍可用 `lms load/unload/ps` 操作
 - **数据库降级门禁只保证标准入口**：成功的 device-aware release 会安装 guard-aware `timetrace-update` 并提交最低数据库兼容标记；标准入口会拒绝让旧镜像读取已有设备归属的数据。具备 trusted-shell/root 权限的操作者仍能手工执行历史 helper 绕过门禁，这属于显式 break-glass，不是受支持的部署路径
@@ -120,7 +121,6 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 | 文件 | 问题 | 状态 |
 |------|------|------|
 | `server/mcp_layer/tools.py` | 整个文件是早期 Phase 1.5 桩（`get_category_stats`/`search_activity` 返回空） | ⚠️ **死代码**：真正的 MCP 走 `mcp_layer/server.py` → `agent/tools.py`（已全实装），没人 import 这个文件，可删 |
-| ~~`client/capture/window.py::_get_process_info`~~ | ~~app_name 全 "Unknown"~~ | ✅ 已修：`0ec105e` ctypes 直调 `QueryFullProcessImageNameW`；416 PID 实测 242 (58%) 拿到真名，剩余 174 是系统进程权限不允许 |
 
 ## 测试
 
@@ -133,5 +133,6 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 
 - [infra/readme.md](infra/readme.md) — 架构 / 存储 / 隐私 / 路线图深度文档
 - [devlogs/README.md](devlogs/README.md) — 开发过程归档（按 backend / frontend / infra / research 分类，新会话排查问题前先翻一下相邻分类）
-- [README.md](README.md) — 用户向快速启动
+- [README.md](README.md) — 用户向快速启动与 Windows 安装包入口
+- [infra/architecture/web-deployment.md](infra/architecture/web-deployment.md) — 当前私网部署与运维手册
 - `.env.example` — VLM 启用模板

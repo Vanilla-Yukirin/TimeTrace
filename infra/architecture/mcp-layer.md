@@ -110,7 +110,7 @@ FastMCP 的 streamable HTTP 传输自带一个 anyio task group（即「session 
 | `stateless_http` | `True` | 每请求独立，无可恢复流；对「调一个工具拿一段 JSON 就完」的用法更简单 |
 | `json_response` | `True` | 返回纯 JSON 而非 SSE 流，curl 可调、契合单发工具客户端 |
 | `streamable_http_path` | `"/"` | FastMCP 默认是 `/mcp`，会和我们 FastAPI 的 `/mcp` mount 点叠加成 `/mcp/mcp/`；设为根，客户端直接连 `/mcp/` |
-| `transport_security` | `TransportSecuritySettings(...)` | 不传此参数时，FastMCP 在 `127.0.0.1` 绑定下会隐式开 DNS-rebinding 保护、且只认 localhost 的 Host 头；nginx 反代后公网域名的 Host 进来会被拒、`timetrace.yukirin.me/mcp/` 返回 421。显式给 allowlist 放行 `timetrace.yukirin.me` + `localhost`/`127.0.0.1`/`[::1]`，保护仍开，只是把公网域名重新放进白名单 |
+| `transport_security` | `TransportSecuritySettings(...)` | 保持 DNS-rebinding 保护。当前私人 Serve 入口由 nginx 对实际域名与外部端口精确映射 MCP Host/Origin 到后端 loopback allowlist，未知来源继续拒绝；配置见 [部署手册](web-deployment.md)。旧公共域名的历史兼容项不代表公网入口仍可用 |
 
 ---
 
@@ -120,7 +120,7 @@ FastMCP 的 streamable HTTP 传输自带一个 anyio task group（即「session 
 
 - `/mcp` 与 `/v1/ingest/*` 同属「机器对机器」面，用 bearer token 鉴权，不接 cookie 登录态。具体实现：mount 前用 `BearerOnlyMiddleware(mcp_app, auth)` 把整个 MCP 子应用裹一层 ASGI 中间件，统一校验 `Authorization: Bearer tt_live_...`。
 - `/healthz` 是公开探活；浏览器业务路由走 cookie/bearer principal，MCP 与 ingest 只接受 bearer。
-- server 默认监听 loopback；公网 MCP 经受控反向代理到同一进程，并继续受 bearer 与 Host allowlist 双重保护。
+- server 默认监听 loopback；私人 TS MCP 经受控反向代理到同一进程，并继续受 bearer 与 Host allowlist 双重保护。
 
 `.mcp.json`（仓库根，本机连法）：
 

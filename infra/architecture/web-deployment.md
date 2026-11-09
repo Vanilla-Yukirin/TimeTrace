@@ -1,152 +1,109 @@
-# 公网部署与安全
+# 私人部署与运维
 
-## **⚠️ 当前入口已迁移为私人 Tailscale，本文其余公网拓扑仅供历史参考**
+> 返回 [Wiki 首页](../readme.md) · [当前状态与待办](../../devlogs/PLAN.md)
+> 按 `81a10b6` 后的部署脚本和 2026-10-23 验收归档校准，文档整理日期：2026-11-10。运行态需现场核对。
 
-当前链路为 Tailscale Serve（HTTPS）→ `127.0.0.1:19446` nginx → SPA / `127.0.0.1:8765` API。部署检查使用 `deploy/check-web-gateway.sh`，可用 `TIMETRACE_GATEWAY_URL` 和 `TIMETRACE_GATEWAY_HOST` 覆盖默认 loopback 地址及 Host。不要恢复旧的 8080 监听或 CF 公网回退；迁移需要清除旧 published application route 及其 DNS 记录。MCP 私有域名需精确适配 Host/Origin，Token 和浏览器登录继续保留。
+## 当前拓扑
 
-私人 HTTPS 使用非标准端口时，普通 API 的 `Host` / `X-Forwarded-Host` 必须转发 `$http_host`，保留外部端口，才能与浏览器 `Origin` 的主机和端口一致。MCP 单独采用精确域名映射；不要把普通 API 的 Host 改成 loopback，也不要放宽 CSRF 检查。更新器不会替换宿主机 Nginx 配置，模板改动需要单独审核、应用并执行 `nginx -t` / reload。
-
-> 返回 [架构总览](overview.md) | [Wiki 首页](../readme.md)
-> 相关：[登录鉴权系统](auth-system.md) · [API Server](api-server.md)
-
----
-
-TimeTrace 原本是纯本地工具（`127.0.0.1:8765`，靠 SSH `-L` 隧道按需访问）。引入[登录系统](auth-system.md)后，Web UI 可以在鉴权门后开放公网，让你从任何浏览器看自己的活动时间轴。本文讲这套公网拓扑、它的信任边界、以及出事时怎么止血。
-
-> 数据全程仍在自己的家用小主机上，不上任何云。公网链路只是通过 Cloudflare Tunnel 把浏览器接到本机 loopback nginx，不保存活动数据库或截图。
-
----
-
-## 拓扑
-
-```
-浏览器
-  │ HTTPS (timetrace.yukirin.me)
-  ▼
-Cloudflare Edge（DNS + TLS）
-  ╎ Cloudflare Tunnel（家里小主机主动外连建立）
-  ▼
-家用小主机 (Ubuntu，NAT 后)：
-  ├── nginx 127.0.0.1:8080
-  │   ├── / → /srv/timetrace/web/current
-  │   └── API/MCP/文件路径 → 127.0.0.1:8765
-  ├── timetrace-server Docker container（API + worker + VLM）
-  └── GPU / LM Studio / cloudflared（宿主机服务）
+```text
+tailnet 浏览器 / Windows client / MCP 消费端
+  → Tailscale Serve（私人 HTTPS）
+  → 127.0.0.1:19446 nginx
+      /          → /srv/timetrace/web/current（SPA）
+      API / MCP  → 127.0.0.1:8765（Docker server）
+                       → 原位 SQLite / blob / Token 目录
+                       → 宿主机 LM Studio
 ```
 
-关键事实：
+只有 server 容器化。Compose 使用 host network 访问宿主机 LM Studio 的 `127.0.0.1:1234`；GPU、LM Studio、nginx 与 Tailscale 留在宿主机。现有数据和 Token 原位 bind mount，不复制数据库或截图来建立第二套服务端。
 
-- **家用主机在 NAT 后，不开 Web 入站端口**。cloudflared 主动建立出站 Tunnel，路由器无需端口映射
-- **SPA、数据库和截图都留在家用主机**；Cloudflare Edge 负责公网 TLS，本机 nginx 统一分流静态页面与后端路径
-- nginx 只监听 `127.0.0.1:8080`，后端由 Docker host network 提供 `127.0.0.1:8765`
-- 配置文件：[`deploy/nginx-timetrace.yukirin.me.conf`](../../deploy/nginx-timetrace.yukirin.me.conf)、[`deploy/timetrace-server.service`](../../deploy/timetrace-server.service)、[`deploy/timetrace-embserver.service`](../../deploy/timetrace-embserver.service)
-- 完整部署架构归档：[`devlogs/infra/archive-202605161000-deployment-architecture.md`](../../devlogs/infra/archive-202605161000-deployment-architecture.md)
+TimeTrace 已撤掉 Cloudflare 公网路由和旧 8080 listener，不保留公网回退，也不启用 Funnel。具体迁移与验收见 [PR #24 归档](../../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)。主机上其他服务是否仍使用 Cloudflare 与本项目无关。
 
----
+## 部署资产
 
-## Web UI 的登录门槛
+| 入口 | 职责 |
+|---|---|
+| [deploy.yml](../../.github/workflows/deploy.yml) | `deploy` push / workflow_dispatch 构建不可变 GHCR SHA 镜像，不连接部署机 |
+| [Dockerfile](../../deploy/Dockerfile) | server + 同 SHA SPA + 部署资产，非 root 运行 |
+| [docker-compose.yml](../../deploy/docker-compose.yml) | host network、原位数据/配置挂载、容器限制 |
+| [timetrace-update.sh](../../timetrace-update.sh) | 主机解析目标 SHA、拉镜像、独占锁、兼容检查与发布入口 |
+| [deploy-container.sh](../../deploy/deploy-container.sh) | 快照、runtime/web 切换、健康检查和失败恢复 |
+| [compatibility-guard.sh](../../deploy/compatibility-guard.sh) | 数据库最低兼容版本门禁 |
+| [nginx 模板](../../deploy/nginx-timetrace.yukirin.me.conf) | loopback SPA/API 同源入口，普通 API 保留外部端口，MCP 精确映射 |
+| [check-web-gateway.sh](../../deploy/check-web-gateway.sh) | loopback 网关检查，默认 19446，可覆盖 URL/Host |
 
-公网开放的前提是登录系统已实装（见 [auth-system.md](auth-system.md)）：
+## 首次安装
 
-- 所有业务路由（records / search / feedback / thumbs）都被 `require_principal` 守，公网访客没 cookie 也没 bearer → 401
-- 默认 admin/admin **首登强制改密**，且改密闸是后端 403（curl 也绕不过）
-- 登录端点限速由 server 内存 per-IP 锁定承担（失败超阈值 → 429）；nginx 侧目前**未**加 `limit_req`（可作为可补的 TODO）
-- `/docs` `/openapi.json` 藏在 `require_session_password_set` 后，不向公网扫描器泄露 API 地图
+以下为 Linux 部署机的一次性准备；在仓库检出目录中以未来执行更新的部署用户运行，涉及 sudo 的步骤由有对应权限的操作者完成。
 
-**部署默认假设公网可达，所以登录系统不是可选项**——`AuthConfig` 永远被构造，`UserStore` 永远 seed admin。
+1. 确认 Docker 可用、部署用户可执行 `docker version`，并核对现有数据库、截图、Token、环境配置与备份。
+2. 创建发布目录，安装更新器和它必需的兼容门禁：
 
----
+```bash
+sudo install -d -m 755 /srv/timetrace
+sudo install -d -o "$USER" -g "$(id -gn)" -m 700 \
+  /srv/timetrace/runtime /srv/timetrace/config
+sudo install -d -o "$USER" -g "$(id -gn)" -m 755 /srv/timetrace/web
+install -d -m 700 "$HOME/TimeTraceData" "$HOME/.config/timetrace-server"
+install -d "$HOME/.local/bin"
+install -m 644 deploy/compatibility-guard.sh \
+  "$HOME/.local/bin/timetrace-compatibility-guard.sh"
+install -m 755 timetrace-update.sh "$HOME/.local/bin/timetrace-update"
+```
 
-## SSL / TLS
+3. 依据 [nginx 模板](../../deploy/nginx-timetrace.yukirin.me.conf)填写实际私人域名和 HTTPS 端口的精确 MCP maps。备份并安装站点配置，`nginx -t` 成功后 reload；将 TimeTrace 的 Tailscale Serve 上游指向 `127.0.0.1:19446`。不要覆盖主机其他 Serve 规则或 nginx 站点。
+4. 补齐 `/srv/timetrace/config/timetrace.env`、Token 和数据目录。首次迁移可解析旧仓库 `.env`，按 Compose 安全的单引号 dotenv 规则保存原值；不要手工展开字面 `$` 或把凭据提交到 Git。
+5. 若 GHCR 包需要鉴权，先以仅含 `read:packages` 的凭据执行 `docker login ghcr.io`，然后按下节发布/激活已验证版本。
 
-公网 TLS 由 Cloudflare Edge 终结。本机 nginx vhost（[`deploy/nginx-timetrace.yukirin.me.conf`](../../deploy/nginx-timetrace.yukirin.me.conf)）只监听 `127.0.0.1:8080`，不绑定宿主机 80/443，也不维护第二套证书：
+更新器不自动覆盖宿主机 nginx 或 Tailscale 配置。普通 API 的 `Host` / `X-Forwarded-Host` 应使用 `$http_host` 保留外部端口；MCP 使用专用精确映射，未知 Host/Origin 继续交给后端拒绝。不要用通配符或关闭 CSRF/重绑定保护代替配置。
 
-- Cloudflare Tunnel 把公网 HTTPS 请求送到本机 loopback HTTP origin
-- nginx 设置 `client_max_body_size 50M`；MCP/SSE/长报告路径关闭 buffering 并使用长 timeout
-- 前端从 `/srv/timetrace/web/current` 提供，hash 资产长期缓存，`index.html` 明确 `no-cache`
-- `/v1`、`/healthz`、`/mcp`、`/thumbs`、`/blob`、`/skill`、`/docs` 与 `/openapi.json` 等后端路径反代到 `127.0.0.1:8765`
+## 日常发布与回滚
 
----
+长期分支为 `main`（开发）与 `deploy`（制品发布指针）。生产发布和主机激活需要对应授权；文档修改和分支整理不自动触发发布。
+
+1. 确定主线的完整目标 SHA，并等待该 SHA 的 CI 通过。
+2. 确认远端 `deploy` 是目标 SHA 的祖先，只做 fast-forward：`git push origin <完整目标SHA>:refs/heads/deploy`。
+3. 等待 deploy workflow 成功发布 `ghcr.io/vanilla-yukirin/timetrace-server:<sha>`。SHA tag 不允许覆盖。
+4. 在部署机核对磁盘、数据/Token、备份与模型后运行 `timetrace-update <完整目标SHA>`；`timetrace-update` 无参数时读取远端 `deploy`。
+5. 核验镜像 revision、runtime/web 两个 `current` 指向、API/SPA、私人 HTTPS、登录写请求及 MCP 鉴权边界。
+
+更新失败由更新器恢复上一套后端和 SPA。人工回滚也使用 `timetrace-update <已知完整SHA>`，并接受数据库兼容门禁；不能保证任意旧镜像可读取升级后的数据库。不要在生产 checkout 执行 pull/reset，或直接 `docker compose up` / 重启旧 systemd unit 绕过标准入口。
+
+旧 [deploy.sh](../../deploy/deploy.sh) 和 [server unit](../../deploy/timetrace-server.service) 仅作历史/应急参考。保留旧资产不代表应恢复旧运行路径；真实主机是否还存在该 unit 需核对。
+
+## 健康检查、备份与积压
+
+| 事项 | 只读检查 / 操作入口 | 判断边界 |
+|---|---|---|
+| API / 网关 | `/healthz`、`deploy/check-web-gateway.sh`；可用 `TIMETRACE_GATEWAY_URL` / `TIMETRACE_GATEWAY_HOST` 覆盖 | loopback 成功不证明私人 HTTPS、登录写操作或 MCP 全部正常 |
+| 发布一致性 | 镜像 revision 与 runtime/web 的 `current` | 分支推进不等于主机已经激活 |
+| 客户端 | 本机 `127.0.0.1:8764` 控制台、设置页设备信息、latest 接口 | 最近联系/采集年龄不是用户在线状态 |
+| 分析与摘要 | Web 审计、金字塔、LLM 账本；overview 的覆盖缺口和 pending/open 状态 | 账本尚未覆盖所有 LLM 调用；有数据不等于叙述完成 |
+| 模型 | 宿主机 `lms ps` 与实际端点配置 | 模型变更需独立授权；不按旧文档假定当前模型 |
+| 数据审计 | 当前运行版本的 `timetrace-server repair-data-quality`（不加 `--apply`） | 默认只读，不查看/删除截图 |
+| 修复 / 回填 | `repair-data-quality --apply`、`backfill`、`narrate` | 先确定范围和授权；apply 自带在线备份，其他写操作须预先准备一致性快照 |
+
+数据库使用 SQLite online backup 或停服务后的完整快照，不直接复制活跃的单个 DB 文件忽略 WAL。快照需校验完整性，并单独备份 blob tree、配置与 Token；数据库备份不包含截图。备份材料按敏感数据保存，不进公开仓库。受控停机、故障注入和生产恢复另行安排。
 
 ## cookie_secure 与 INSECURE_COOKIE
 
-session cookie 默认 `Secure`（只在 HTTPS 下发送）——公网部署正确。但本地 HTTP dev（`http://127.0.0.1:5173`）下 `Secure` 会让浏览器**直接不存这个 cookie**，登录后立刻"未登录"。
-
-开关：`TIMETRACE_INSECURE_COOKIE`（[`common/config.py::AuthConfig.from_env`](../../src/timetrace/common/config.py)）
-
-| 环境 | `TIMETRACE_INSECURE_COOKIE` | `cookie_secure` | CSRF Origin guard |
-|------|------------------------------|------------------|-------------------|
-| 公网 / HTTPS | 不设（默认） | `True` | **启用** |
-| 本地 HTTP dev | `1` / `true` / `yes` | `False` | 跳过（避免 Vite 代理 Host/Origin 不一致误杀） |
-
-注意 `cookie_secure` 还**联动 CSRF Origin guard**：guard 只在 `cookie_secure=True` 时启用（见 [auth-system.md 的 CSRF 段](auth-system.md#csrf-考量)）。所以这一个 env 同时控制 cookie 安全属性和 CSRF 防护两件事——公网默认全开，本地 dev 一起关。
-
-**不要在公网部署设 `TIMETRACE_INSECURE_COOKIE`**，否则 cookie 明文可被中间人偷、且 CSRF 防护一并失效。
-
----
+私人 HTTPS 继续使用默认 Secure cookie、强制首次改密和 CSRF 检查。仅在本地 HTTP 开发时可设置 `TIMETRACE_INSECURE_COOKIE=1`；该开关也影响 CSRF Origin guard，不能用于正式私网 HTTPS 来绕过配置问题。具体实现见 [鉴权系统](auth-system.md)。
 
 ## X-Real-IP 信任边界
 
-登录限速按源 IP keying，**IP 取得正确与否直接决定限速能不能被绕过**。
+nginx 以 `$remote_addr` 覆盖写入 `X-Real-IP`；服务端不以客户端可伪造的 X-Forwarded-For 左端作为限速身份。当前私人入口模板保留 loopback TCP peer，不再信旧 Cloudflare 的 `CF-Connecting-IP`。在另行验证客户端 IP 映射前，请求共用 loopback 登录限速桶；后端继续仅监听回环。
 
-- nginx 用 `proxy_set_header X-Real-IP $remote_addr` ——`$remote_addr` 是 nginx 看到的**实际 TCP peer**，覆盖写入，客户端无法伪造
-- server 的 `_client_ip()`（[`routes/auth.py`](../../src/timetrace/server/api/routes/auth.py)）信 `X-Real-IP`，回退到直连 ASGI peer（loopback / dev 没 nginx 时）
-- **绝不信 `X-Forwarded-For`**：nginx 用 `$proxy_add_x_forwarded_for` 把真实 peer **追加**在客户端传来的 XFF 之后，其最左值完全受攻击者控制。若按 XFF 限速，攻击者每请求换一个 XFF 就拿到全新限速桶，锁定永不触发（暴破绕过）
+## CA 与镜像维护
 
-nginx conf 里 `X-Forwarded-For` 仍被 set（`$proxy_add_x_forwarded_for`，给上游做日志/通用语义），但 **server 端的限速逻辑刻意不读它**——这是有意为之，不是疏漏。
-
-> 信任边界一句话：**应用只信任本机 nginx 覆盖写入的 `X-Real-IP`**；nginx 再只信 loopback cloudflared 提供的 `CF-Connecting-IP`。如果 8765 被直接暴露而绕过 nginx，这个假设就会破坏，因此后端不能映射到公网接口。
-
----
-
-## CI/CD 与 fork 安全
-
-- **触发方式**：push `deploy` 分支自动构建正式镜像；`workflow_dispatch` 可为指定 ref 构建。GitHub 在触发时记录不可变 `github.sha`
-- **fork 安全**：正式 job 有 `github.repository` guard；唯一写权限是当前仓库的 `packages: write`，workflow 不持有部署机 SSH 凭据
-- **制品**：Docker 多阶段构建 server + SPA，推送 `ghcr.io/.../timetrace-server:<sha>`；Compose 与更新脚本也打入该镜像
-- **激活**：owner SSH 登录部署机后执行 `timetrace-update`。部署机主动访问 GitHub/GHCR，不要求 GitHub Runner 能连入家庭网络
-- **CI**：main push/PR 都跑后端与前端检查；Docker 临时镜像只在 PR 构建和冒烟，合并到 main 后不重复构建，正式 deploy workflow 再构建可发布镜像
-
----
-
-## 分支与不可变镜像语义
-
-- 长期分支只有 `main`（开发主干）和 `deploy`（生产制品指针）；已通过 CI 的 main 只以 fast-forward 推进到 deploy
-- 部署机不再镜像 Git 仓库。`timetrace-update` 只查询远端 `deploy` SHA，再拉取对应不可变 GHCR tag
-- `/srv/timetrace/runtime/current` 与 `/srv/timetrace/web/current` 分别指向同 SHA 的后端发布资产和 SPA；二者通过同一次健康检查后切换
-- 直接 `git pull/reset`、`docker compose up` 或重启旧 systemd unit都会绕过回滚，因此禁止；指定 `timetrace-update <sha>` 才是正式回滚入口
-- schema 无独立迁移步骤，应用首次访问数据库时幂等建表；数据与 token 不进入镜像
-
-### 退役 server unit 与可选 embserver unit
-
-- `systemctl --user`（非 root）+ `loginctl enable-linger`（survive logout / headless）
-- 主 server unit 已退役并保留作应急回滚；生产 server 由 Compose 容器运行
-- 模板：[`deploy/timetrace-server.service`](../../deploy/timetrace-server.service)、[`deploy/timetrace-embserver.service`](../../deploy/timetrace-embserver.service)
-- 秘密（VLM creds / `TIMETRACE_*`）走仓库根的 `.env`（chmod 600，**不进 git**），unit 文件用 `EnvironmentFile=-%h/Github/TimeTrace/.env`（`-` 前缀 = 文件缺失不阻止启动）
-- 加固：`NoNewPrivileges` / `PrivateTmp` / `ProtectSystem=strict` / `ProtectHome=read-only` + `ReadWritePaths=%h/Github/TimeTrace %h/TimeTraceData %h/.cache %h/.local %h/.config/timetrace-server`
-
----
+Python 依赖要求 `certifi>=2026.10.19`，具体版本及哈希锁在 `uv.lock`；Debian runtime 的 `ca-certificates` 基线为 `20250419~deb12u2`。CI 在镜像中离线检查两套 CA 可加载且达到基线。后续证书库更新需要刷新依赖并重建镜像；宿主机更新不会自动改变镜像，不关闭 TLS 校验。
 
 ## 数据泄露应急止血
 
-公网链路的"断路器"是 **TimeTrace 对应的 Cloudflare Tunnel published route / cloudflared 服务**：停用该 route 后，公网无法到达本机 nginx，但家用主机仍能通过 loopback 访问。
+按实际事件与授权处理：先停用 TimeTrace 对应的私人 Serve 路由或访问权限，避免影响其他服务；再撤销泄露的 Token/会话并检查访问记录。Web 管理接口的 Token 撤销即时生效；CLI 修改 Token 文件后需要让运行服务重新加载，不能把改文件等同已经撤销。不要使用已经退役的 Cloudflare 路由当作当前断路器，也不要把关闭入口当作已恢复泄露数据的保密性。
 
-止血优先级（从快到彻底）：
+## 历史与相关文档
 
-1. **最快——停用 TimeTrace published route**：在 Cloudflare Tunnel 中禁用对应 hostname 路由；不要误停宿主机上其它 tunnel/process
-2. **轮换凭证**：怀疑 cookie/token 泄露 → Web UI 改密（顺手踢掉所有其它会话）+ `timetrace-server tokens revoke <label>` 吊销可疑 bearer token（CLI 改完**重启 server** 才生效；Web UI 的 `/v1/admin/tokens` DELETE 即时生效）
-3. **宿主机兜底**：停用本机 TimeTrace nginx site 或对应 cloudflared user unit；操作前确认不会影响其它服务
-4. **恢复**：威胁排除后重新启用 published route，并验证公网 `/healthz`、首页与鉴权边界
-
-> 优先在 Cloudflare 侧只停 TimeTrace hostname route，避免误伤同一主机上的其它 tunnel 或服务。
-
-记住数据从未上云，所以"泄露"的最坏情况是公网链路上的访问被滥用，而不是数据落到第三方存储——掐掉链路就回到纯本地状态。
-
----
-
-## 相关文档
-
-- [登录鉴权系统](auth-system.md) — cookie/bearer 双通道、限速、CSRF 细节
-- [API Server](api-server.md) — 路由表与鉴权决策
-- [隐私策略](../privacy/strategy.md) — 本地优先的隐私边界
-- 部署架构归档：[`devlogs/infra/archive-202605161000-deployment-architecture.md`](../../devlogs/infra/archive-202605161000-deployment-architecture.md)
+- [PR #24 私网迁移和部署验收](../../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)
+- [首次 pull-based 发布验收](../../devlogs/infra/archive-202608232320-pull-based-docker-production-acceptance.md)
+- [早期部署架构（历史）](../../devlogs/infra/archive-202605161000-deployment-architecture.md)
+- [鉴权系统](auth-system.md) · [API](api-server.md) · [隐私策略](../privacy/strategy.md)

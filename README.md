@@ -7,22 +7,29 @@
 > - **单进程**（默认 / 推荐 单机使用）：`uv run timetrace` 一个进程跑全部
 > - **双进程 / 分布式**（多设备 / 远程）：`uv run timetrace-server` 跑服务端 + `uv run timetrace-client` 跑采集端，可分别部署在不同机器
 >
-> 完整重构方案见 [devlogs/infra/](devlogs/infra/)。
+> 当前架构看 [项目 Wiki](infra/readme.md)，下一步与验证基线看 [滚动 PLAN](devlogs/PLAN.md)。
 
 ## 当前能力与边界
 
 | 层 | 已上线 | 当前边界 |
 |---|---|---|
 | 采集 | 活跃窗口、关键帧、idle、隐私黑名单、单/双进程 outbox | OCR 区域识别与落盘前模糊尚未实现 |
-| 检索 | records FTS5、以图搜图 pHash、`/v1/search/text` 的 FTS5 + 文本向量 RRF | `/v1/search/by-image` 的文本通道仍是 LIKE；向量索引仍是 numpy 全量 cosine |
+| 检索 | records FTS5、以图搜图 pHash、`/v1/search/text` 的 FTS5 + 文本向量 RRF | 图搜语义通道已接描述 embedding，关键词退路仍是 LIKE；向量索引为 numpy cosine 扫描 |
 | 分析 | 本地 VLM 描述、flat-6 分类、审计日志、文本 embedding | Classifier V2 只有校准实验和预备稿，未进生产 |
 | 记忆 | `5min → 1h → 6h → day → week` 指标级联、LLM 叙述、粗到细下钻 | `source_hash` 不包含子叙述文本，手动重叙述父层仍需 `--force` |
 | AI 接口 | Web Agent、报告、MCP、`search_summaries` | 唯一写工具是 `apply_label`，MCP 不返回原始截图；实时工具清单看 `mcp_layer/server.py` |
-| 运维 | 登录鉴权、Docker/Compose 后端、Cloudflare Tunnel + nginx、GitHub Actions 前后端同 SHA 发布 | 生产 LLM 单卡串行；客户端公网故障转移仍需专项验证 |
+| 多设备 | 设备身份与 Token 绑定、设置页设备管理、设备筛选与时间轴泳道、设备级摘要 | 全历史摘要覆盖与另一台客户端迁移仍需验收 |
+| 运维 | 私人 Tailscale Serve + nginx、Docker 后端、同 SHA SPA、Windows Release 工作流 | 客户端签名/自动更新、传输与恢复长测仍待补齐 |
 
 这里的「已上线」表示仓库代码已落地并在个人生产环境跑通过，不等于每项都已经完成通用产品化或长期性能验收。当前真实待办统一维护在 [devlogs/PLAN.md](devlogs/PLAN.md)。
 
 ---
+
+## Windows 客户端安装包
+
+连接已有服务端可从 [GitHub Releases](https://github.com/Vanilla-Yukirin/TimeTrace/releases) 下载 Windows x64 ZIP 和 SHA-256 校验文件，按 [安装与更新说明](packaging/windows/README.md) 校验、解压并运行安装器。安装包只提供采集客户端，仍需服务端地址、独立 Token 与设备配置。
+
+Release 对应特定标签，可能早于当前 `main`；最近版本和能力边界见 [PLAN](devlogs/PLAN.md)。客户端尚未代码签名，也没有自动更新器。
 
 ## 快速启动（单机单进程）
 
@@ -45,7 +52,7 @@ uv run timetrace
 
 ### 前端
 
-前端是独立 vite 服务（不被 Python 后端托管），需要另开终端：
+前端是独立 Vite 服务（不被 Python 后端托管），需要另开终端。本地 HTTP 开发登录需在后端环境设置 `TIMETRACE_INSECURE_COOKIE=1`；正式 HTTPS 保持默认安全配置，详见 [部署手册](infra/architecture/web-deployment.md#cookie_secure-与-insecure_cookie)。
 
 ```bash
 cd frontend
@@ -60,7 +67,7 @@ npm run dev          # http://127.0.0.1:5173
 适用场景：
 
 - 在多台 Windows 桌面采集，并汇总到 Windows/Linux/macOS server；当前 capture client 只支持 Windows
-- 把 server 部署在家里小主机或云服务器，外出时仍能采集（断网时 outbox 缓冲）
+- 把 server 部署在常开主机，客户端通过私人网络访问（断网时 Outbox 缓冲）
 - VLM key 集中放服务端，客户端只采集
 
 ### Server 端（Linux / macOS / Windows）
@@ -95,7 +102,7 @@ uv run timetrace-client init             # 交互式填 server URL + token + 设
 uv run timetrace-client                  # 起采集
 ```
 
-`init` 把配置写到 `%USERPROFILE%/TimeTraceData/client.toml`。每个字段都显示当前值作为默认，按 Enter 接受。
+`init` 把配置写到 `%USERPROFILE%/TimeTraceData/client.toml`。每个字段都显示当前值作为默认，按 Enter 接受。每台客户端使用独立 Token、device ID 和 Outbox；不要复制另一台机器的完整数据目录作为初始化方式。服务端设置页可查看设备、编辑名称/描述与停用，停用设备不会同时撤销其 Token。
 
 客户端启动后会在 `http://127.0.0.1:8764` 提供本机控制面板，也可以从托盘选择“打开控制面板”。页面只展示采集、连接和 outbox 状态，可安全暂停/恢复采集以及启停已配置的 HTTP 连接；它不会返回 bearer token、截图或本地文件路径。控制服务固定绑定 IPv4 loopback，不开放 CORS，写操作同时校验 Host、同源 Origin、会话 cookie 和 CSRF token。
 
@@ -126,51 +133,9 @@ uv run timetrace-client print-config                # 看实际生效的配置�
 
 ### 部署到家里小主机
 
-当前生产部署：server 以非 root Docker 容器运行；私人 HTTPS 入口由 Tailscale Serve 接入本机 `127.0.0.1:19446` nginx，nginx 统一托管 SPA 并反代受鉴权保护的 API。推送 `deploy` 分支后，GitHub Actions 只构建并发布包含 server、SPA 与部署资产的不可变 GHCR 镜像；部署机再通过出站 HTTPS 主动拉取该 SHA，完成 Compose 与前端的原子切换，不依赖 GitHub Runner 经 FRP 反向 SSH。
+当前私人入口为 **Tailscale Serve → loopback nginx → 同 SHA SPA / Docker API**。GitHub Actions 发布包含后端、前端与部署资产的 GHCR 不可变镜像，再由主机运行 `timetrace-update` 拉取并激活。生产发布需先通过目标 SHA 的 CI，并取得对应授权。
 
-部署检查默认连接 `http://127.0.0.1:19446`；不同监听端口可通过 `TIMETRACE_GATEWAY_URL` 覆盖，虚拟主机可通过 `TIMETRACE_GATEWAY_HOST` 指定（默认 `localhost`）。私人入口仍要求原有登录或 Bearer Token；迁移时删除旧公网 Tunnel 路由及其 DNS 记录，不将公网保留为回退路径。
-
-CA 修复随镜像构建保留：Python 依赖要求 `certifi>=2026.10.19`，具体版本与哈希锁定在 `uv.lock`；Debian runtime 单独更新 `ca-certificates` 并要求不低于 `20250419~deb12u2`。CI 在实际镜像中离线检查两套证书库可加载且达到该基线。宿主机更新 CA 不会更新镜像内的证书库；后续安全更新仍需刷新依赖、重建并发布新镜像，不关闭 TLS 校验。
-
-容器的运行进程仅有 TimeTrace server，但镜像也携带同 SHA 的 SPA 和部署资产供更新器提取。宿主机上的 GPU / LM Studio、nginx 与 Cloudflare Tunnel 不进容器；Compose 使用 host network 访问 LM Studio 的 `127.0.0.1:1234`。部署用户现有的 `$HOME/TimeTraceData` 和 `$HOME/.config/timetrace-server` 原位挂载，旧源码仓库只作为首次切换时的自动回滚目标。完整部署脚手架见：
-
-- [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
-- [devlogs/infra/archive-202605161015-cicd-workflow.md](devlogs/infra/archive-202605161015-cicd-workflow.md)
-- [`deploy/Dockerfile`](deploy/Dockerfile) — 多阶段、非 root、包含同 SHA SPA 的生产镜像
-- [`deploy/docker-compose.yml`](deploy/docker-compose.yml) — 生产 host-network Compose 与原位数据挂载
-- [`timetrace-update.sh`](timetrace-update.sh) — 部署机主动解析 `deploy` SHA、拉镜像并执行发布的一键入口
-- [`deploy/deploy-container.sh`](deploy/deploy-container.sh) — SQLite 快照、后端/SPA 切换、健康检查和自动回滚
-- [`deploy/nginx-timetrace.yukirin.me.conf`](deploy/nginx-timetrace.yukirin.me.conf) — loopback nginx 的 SPA/API 同源入口模板
-- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) — 只构建并发布 GHCR 不可变镜像
-- [`deploy/deploy.sh`](deploy/deploy.sh) / [`deploy/timetrace-server.service`](deploy/timetrace-server.service) — 已退役的源码部署路径，仅保留作应急参考
-
-首次安装必须先由有 sudo 权限的操作者创建宿主机目录并安装 nginx 配置；以下命令在仓库检出目录中以未来执行更新的部署用户运行：
-
-```bash
-sudo install -d -m 755 /srv/timetrace
-sudo install -d -o "$USER" -g "$(id -gn)" -m 700 \
-  /srv/timetrace/runtime /srv/timetrace/config
-sudo install -d -o "$USER" -g "$(id -gn)" -m 755 /srv/timetrace/web
-install -d -m 700 "$HOME/TimeTraceData" "$HOME/.config/timetrace-server"
-
-sudo install -m 644 deploy/nginx-timetrace.yukirin.me.conf \
-  /etc/nginx/sites-available/timetrace
-sudo ln -sfn /etc/nginx/sites-available/timetrace \
-  /etc/nginx/sites-enabled/timetrace
-sudo nginx -t
-sudo systemctl reload nginx
-
-install -d "$HOME/.local/bin"
-install -m 755 timetrace-update.sh "$HOME/.local/bin/timetrace-update"
-```
-
-确认该用户可执行 `docker version`，并按实际部署补齐环境文件、token 与数据目录；不要把凭据提交进仓库。完成一次性 bootstrap 后，日常手动更新只有一句：
-
-```bash
-timetrace-update
-```
-
-若 GHCR 包不是公开可读，需先用仅含 `read:packages` 权限的 token 执行一次 `docker login ghcr.io`。指定完整 Git SHA 运行 `timetrace-update <sha>` 可部署旧版本；脚本仍会进行健康检查并在失败时恢复上一套后端与 SPA。
+首次安装、网关配置、更新器与兼容门禁、备份和回滚步骤统一在 [部署手册](infra/architecture/web-deployment.md)。最近一次有记录的生产验收见 [2026-10-23 归档](devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)，当前待验收事项见 [PLAN](devlogs/PLAN.md)。
 
 ---
 
@@ -231,7 +196,8 @@ src/timetrace/
 ## 项目文档
 
 - [devlogs/PLAN.md](devlogs/PLAN.md) — **当前未完成项与下一步，先看这里**
-- [infra/readme.md](infra/readme.md) — 当前架构地图与深度文档索引
+- [infra/readme.md](infra/readme.md) — 当前架构地图与深度文档索引（仓库内 Markdown Wiki）
+- [部署手册](infra/architecture/web-deployment.md) — 私网入口、首次安装、发布、健康检查、备份与回滚
 - [devlogs/README.md](devlogs/README.md) — 按时间和主题索引开发/排障事实；具体 archive 是历史快照
 - [`.env.example`](.env.example) — VLM 启用模板
 - [CLAUDE.md](CLAUDE.md) — AI agent 的项目约束、运行命令和不可破坏的不变量

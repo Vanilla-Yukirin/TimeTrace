@@ -86,11 +86,11 @@ def should_capture(ctx: CaptureContext, privacy_cfg: PrivacyConfig) -> bool:
 
 - **业务路由全部鉴权**：`/v1/records` / `/search` / `/feedback` / `/thumbs` 等被 `require_principal` 守，需 cookie session（密码登录）或 bearer token
 - **默认 admin/admin 首登强制改密**，且改密闸是后端 403（非浏览器客户端也绕不过）
-- **登录限速**双层（nginx + server 内存 per-IP 锁定）防暴破
+- **登录限速**由 server 内存 per-IP 锁定承担；当前 nginx 模板没有配置额外的 `limit_req`
 - **缩略图也鉴权**：`/thumbs/{path}` 从旧的 `StaticFiles` 公开挂载改成带 `require_principal` 的路由 + path-traversal 防护——原始截图不再是"知道 URL 就能拿"
 - **MCP / ingest 仅 bearer**：机器对机器，token 是唯一入口；ingest 是写入面，连 cookie 都不接
 - **`/docs` / `/openapi.json` 藏在登录后**，不向公网扫描器泄露 API 地图
-- **监听仍 loopback-only**（8765），公网经 nginx + FRP 隧道，链路可一键掐断（见 [公网部署的应急止血](../architecture/web-deployment.md#数据泄露应急止血)）
+- **监听仍 loopback-only**（8765），私人 Tailscale Serve 经 19446 nginx 接入；旧公网/FRP Web 路径已退役，见 [当前部署与应急处理](../architecture/web-deployment.md#数据泄露应急止血)
 
 token 的生命周期、cookie 属性、CSRF 防护等细节统一在 [登录鉴权系统](../architecture/auth-system.md)。
 

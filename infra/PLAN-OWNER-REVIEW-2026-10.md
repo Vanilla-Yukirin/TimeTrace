@@ -1,11 +1,11 @@
 # 2026-10 Owner Review：性能 / 图标 / 交互 / 多设备 / 检索与 Agent / 时区
 
 **创建：** 2026-10-22
-**基线：** `main` @ `fbffc13`（Linux 本地 617 passed / 7 skipped；Windows-only 采集测试由 CI 覆盖）
-**状态：** W1–W6 已合入 `main`（PR #14–#21），未部署。图标替换等 owner 方案。归档见 [`archive-202610220210-owner-review-w1-w6.md`](../devlogs/infra/archive-202610220210-owner-review-w1-w6.md)。
+**原设计基线：** `main` @ `fbffc13`。当前测试基线统一看 [滚动 PLAN](../devlogs/PLAN.md)。
+**状态（2026-11-10 校准）：** W1–W6 已合入 `main`（PR #14–#21），包含于 `81a10b6` 的 [2026-10-23 部署验收](../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)。全历史回填与客户端迁移仍需独立验收，图标替换等 owner 方案。实现过程见 [W1–W6 归档](../devlogs/infra/archive-202610220210-owner-review-w1-w6.md)。
 
 > Owner 在日常使用中提出 5 个不舒服的方向 + 1 个时区决策。本文记录代码层面定位到的根因与修改方向，
-> 作为下列 PR 的执行依据。无法访问生产数据，所有改动以架构与测试为依据。
+> 下文保留当时的问题定位与工作包设计，不作为新的未完成清单；当前未完成项只维护在 [滚动 PLAN](../devlogs/PLAN.md)。
 
 ---
 
@@ -21,7 +21,7 @@
 | W6 | 设备级摘要金字塔 v2 | §4（= PLAN 原 PR 3） | #21 |
 | — | 图标替换 | §2，只列 TODO，等 owner 方案 | — |
 
-部署不在本轮范围：所有 PR 只合入 `main`，不推进 `deploy`。
+原实施轮次只合入 `main`，部署由后续 PR #24 发布完成；不能再把当轮的“未部署”用于描述当前进展。
 
 ---
 

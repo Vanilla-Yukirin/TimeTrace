@@ -83,7 +83,7 @@ samesite = lax          (拦经典跨站 POST)
 path     = /
 ```
 
-`cookie_secure` 的开关逻辑见 [公网部署文档](web-deployment.md#cookie_secure-与-insecure_cookie)。
+`cookie_secure` 的开关逻辑见 [私人部署手册](web-deployment.md#cookie_secure-与-insecure_cookie)。
 
 ### 登录限速（防暴破）
 
@@ -95,7 +95,7 @@ path     = /
 - **重启清零**：计数器在内存里，重启即丢——对单用户系统可接受，攻击者熬过重启也没占到便宜
 - per-IP keying：单用户够用；要多租户则把 key 换成 `(ip, username)`，免得共享 NAT 下一个租户把另一个锁出去
 
-**这里的 IP 不能信 `X-Forwarded-For`**。nginx 用 `$proxy_add_x_forwarded_for` 把真实 peer **追加**到客户端传来的 XFF 之后，其最左值完全受攻击者控制——攻击者每次请求换一个 XFF 就拿到全新的限速桶，锁定永不触发。所以 `_client_ip()` 信的是 nginx 用 `$remote_addr` **覆盖**（非追加）写入的 `X-Real-IP`，回退到直连 ASGI peer（loopback / dev 没有 nginx 时）。信任边界细节见 [公网部署文档](web-deployment.md#x-real-ip-信任边界)。
+**这里的 IP 不能信 `X-Forwarded-For`**。nginx 用 `$proxy_add_x_forwarded_for` 把真实 peer **追加**到客户端传来的 XFF 之后，其最左值完全受攻击者控制——攻击者每次请求换一个 XFF 就拿到全新的限速桶，锁定永不触发。所以 `_client_ip()` 信的是 nginx 用 `$remote_addr` **覆盖**（非追加）写入的 `X-Real-IP`，回退到直连 ASGI peer（loopback / dev 没有 nginx 时）。信任边界细节见 [私人部署手册](web-deployment.md#x-real-ip-信任边界)。
 
 ### 登录限速
 

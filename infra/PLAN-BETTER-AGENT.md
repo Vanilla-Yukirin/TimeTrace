@@ -1,8 +1,10 @@
 # PLAN · 更好的 Agent —— 分层记忆金字塔 + 薄路由器
 
-> **状态（2026-07-20 校准）**：**部分实装**。固定时间窗 `summaries`、指标级联、source_hash、rollup/narrate loop、`query_stats` 与 `search_summaries` 已上线；signals/episode、完整 thin-router、deep scan/子 agent fallback 仍是设计。本文保留原始设计推导，历史工具数和阶段描述不代表当前代码；当前待办以 [`devlogs/PLAN.md`](../devlogs/PLAN.md) 为准。
->
-> **这不是 devlog**：放在 `infra/` wiki 是因为它是前瞻性活计划，会随推进更新；不进 `devlogs/`（那里只追加历史快照）。完工后可整理为 devlog 归档 + 翻新相关 wiki 子页。
+## **⚠️ 下文保留原始设计，未实装部分不代表当前能力**
+
+2026-11-10 校准：固定时间窗金字塔、设备级摘要、统一文本检索、最新活动、粗到细总览及稳定分页已实现，包含于 2026-10-23 验收的发布版本。signals/episode、完整 thin-router、deep scan/子 agent fallback 仍为设计；下文旧工具上限、模型规格和“今天的痛”是原设计背景。读取行为看 [MCP 契约](architecture/mcp-layer.md)，当前待办与运行证据看 [PLAN](../devlogs/PLAN.md)。
+
+> 本文是演进设计参考；实现范围以页首说明为准。已完成过程进入 devlog，具体待办统一维护在 PLAN，避免同一能力在多处重复排期。
 >
 > **设计演进**：承重层由早期的"语义 episode 变长切分"改为"**固定时间窗 tumbling 级联**"（5min→1h→6h→天→周），绕掉边界检测（γ）这个最大质量风险点；并新增**自描述结果**（每个工具结果自带 coverage / 压缩率 / 下钻提示 / next_tools）与 **MCP 多入口引导**。
 >

@@ -1,7 +1,7 @@
 # 打包与依赖分发
 
-> 本文档说明 TimeTrace 的打包方式、入口点、可选依赖分组、systemd 部署单元与公网拓扑。
-> 面向想读懂当前架构的工程师。部署操作细节见 [devlogs/infra/archive-202605161000-deployment-architecture.md](../../devlogs/infra/archive-202605161000-deployment-architecture.md)。
+> 本文说明包结构、CLI 入口、可选依赖、Windows Release 与 server 容器分发。
+> 当前部署操作见 [私人部署与运维](web-deployment.md)。历史 systemd 模板不代表当前生产启动方式。
 
 ## 构建后端
 
@@ -19,7 +19,7 @@
 |------|------|------|
 | `timetrace` | `timetrace.main:main` | 单进程默认；pystray 主线程 + asyncio 管理 capture、server 主任务、report scheduler 及受开关控制的 rollup/narrate，不依赖固定任务数 |
 | `timetrace-client` | `timetrace.client.cli:main` | 客户端守护；子命令 `init`（交互 / `--non-interactive`）、`print-config` |
-| `timetrace-server` | `timetrace.server.cli:main` | 服务端守护；子命令 `info`、`tokens list/add/revoke`、`backfill`、`narrate`。与 `main.py` 共享 `server/bootstrap.py` |
+| `timetrace-server` | `timetrace.server.cli:main` | 服务端守护；子命令 `info`、`tokens list/add/revoke`、`backfill`、`narrate`、`repair-data-quality`。与 `main.py` 共享 `server/bootstrap.py` |
 | `timetrace-embserver` | `timetrace.embserver.cli:main` | embedding 服务；子命令 `serve / info / status / load / unload / ttl / selftest`（控制类走 daemon `/admin/` HTTP，仿 `lms`） |
 
 运行模式（单进程 vs 双进程）的语义见 CLAUDE.md「运行模式」表。
@@ -76,32 +76,19 @@ uv sync --extra embserver
 - **单一制品**：多阶段 Dockerfile 同时构建 Python server 与 React/Vite SPA，最终镜像携带 server runtime、`frontend-dist`、Compose 和部署脚本；Node 工具链不进入最终镜像
 - **无入站部署依赖**：workflow 只向 GHCR 写入 `<sha>` 镜像，不持有部署机 SSH key，也不经 FRP 连接部署机
 - **主机主动激活**：部署机的 Docker 组用户运行 `timetrace-update [<sha>]`，通过出站 HTTPS 解析 `deploy`、拉镜像、提取 release，随后进行后端/SPA 健康检查与原子切换；失败恢复上一套
-- **数据边界**：SQLite、截图和 token 目录继续原位 bind mount；GPU、LM Studio、nginx 和 Cloudflare Tunnel 留在宿主机
+- **数据边界**：SQLite、截图和 token 目录继续原位 bind mount；GPU、LM Studio、nginx 和 Tailscale 留在宿主机；本项目无 Cloudflare 公网回退
 
 **手工运维边界**：不要在部署机运行源码 `git pull/reset`、直接 `docker compose up` 或手动重启旧 systemd unit。主 server 的唯一激活入口是 `timetrace-update`；LM Studio 与可选 embserver 继续按各自宿主机入口管理。
 
-## 公网拓扑
+## Windows 客户端发行
 
-```
-浏览器 / MCP 客户端
-   │ HTTPS
-   ▼
-Cloudflare Edge
-   │ outbound Cloudflare Tunnel
-   ▼
-家里小主机 nginx 127.0.0.1:8080
-   ├── /                         → /srv/timetrace/web/current
-   └── API / MCP / 文件路径      → timetrace-server 127.0.0.1:8765
-                                                │ 本地调
-                                                ▼
-                                          LM Studio（宿主机）
-```
+[windows-client-release.yml](../../.github/workflows/windows-client-release.yml) 由 `vX.Y.Z` 标签触发，在 Windows 构建并校验客户端 ZIP，发布到 GitHub Release，同时附 SHA-256。标签必须属于 `main`，并与 Python 包版本一致。
 
-- MCP（streamable HTTP）的 nginx location 需长连接友好配置（`proxy_http_version 1.1` + 关 buffering + 长 timeout）
-- **Web UI / OpenAPI 鉴权后才开公网**；dev server 按需起 `ssh -L` 隧道访问
-- embserver（8766）仅本机回环，不经 nginx 暴露
+安装器支持当前用户安装、手工原子更新、托盘、登录自启动和单实例；不会把服务端打进客户端安装包。当前没有代码签名或自动更新器。安装/卸载、校验和版本边界见 [Windows 包说明](../../packaging/windows/README.md)，最近发布版本见 [PLAN](../../devlogs/PLAN.md)。
 
-生产 Compose 使用 host network，让容器可访问宿主机 LM Studio 的 loopback 端点；应用端口仍只由本机 nginx/Tunnel 使用，不通过路由器直接暴露。
+## 私人网络拓扑
+
+Tailscale Serve → `127.0.0.1:19446` nginx → SPA / `127.0.0.1:8765` API；鉴权和 MCP Host/Origin 检查继续启用。Compose 使用 host network 访问 LM Studio 的 loopback 端点。embserver 的 8766 不经 nginx 暴露，旧公网/8080 链路已退役。首次安装与配置统一看 [部署手册](web-deployment.md)。
 
 ## 数据 / 配置目录
 

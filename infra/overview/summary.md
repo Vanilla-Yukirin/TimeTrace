@@ -2,7 +2,7 @@
 
 > 返回 [Wiki 首页](../readme.md)
 
-TimeTrace 是一个 **Windows Only、本地优先**的桌面活动记忆层。它在后台低打扰地采集你"看过什么、做过什么"——活跃窗口元数据 + 关键帧截图，落地到本地 SQLite + 文件系统，再异步用 VLM 理解内容、用文本 embedding 向量化，最后提供时间轴回放、多模态搜索，以及给 AI Agent 用的 MCP 上下文导出。
+TimeTrace 是一个 **Windows 采集端 + 跨平台服务端、本地优先**的桌面活动记忆层。它在后台低打扰地采集你"看过什么、做过什么"——活跃窗口元数据 + 关键帧截图，落地到本地 SQLite + 文件系统，再异步用 VLM 理解内容、用文本 embedding 向量化，最后提供时间轴回放、多模态搜索，以及给 AI Agent 用的 MCP 上下文导出。
 
 核心价值是"**可回放、可检索的桌面行为时间轴**"，而不是录屏，也不是 AI 伴侣主体。
 
@@ -31,14 +31,14 @@ TimeTrace 是一个 **Windows Only、本地优先**的桌面活动记忆层。�
 
 ## 核心特征
 
-- **Windows Only**：使用 pywin32 / ctypes 访问 Windows 窗口 API（`QueryFullProcessImageNameW` 直取进程名）。
-- **本地优先**：数据默认存在本机 `~/TimeTraceData/`（不在仓库内）；公网访问需鉴权后开启。
+- **Windows 采集端**：使用 pywin32 / ctypes 访问 Windows 窗口 API（`QueryFullProcessImageNameW` 直取进程名）。
+- **本地优先**：数据默认存在本机 `~/TimeTraceData/`（不在仓库内）；当前部署通过私人 Tailscale 入口访问，并保留应用鉴权。
 - **降低打扰的设计**：基于窗口切换 / 内容变化触发采集，不做无脑高频录屏；CPU/内存长期基准仍待补。
 - **多模态检索**：关键词（FTS5 trigram + BM25）+ 以图搜图（pHash BK-tree）+ 语义（VLM 描述），三路经 RRF 融合（`server/retrieval.py:reciprocal_rank_fusion`）。
 - **VLM 已实装**（非桩）：后台 worker 调 LM Studio（Qwen3-VL）为截图生成结构化描述，写回 `analysis_results.vlm_desc` + `category_final`。**VLM 产出的描述既进 FTS5 关键词索引、又是文本 embedding 的输入**，已是检索的核心语义通道之一。
 - **文本 embedding 已接生产搜索**：worker best-effort 写 `analysis_results.text_embedding`；`GET /v1/search/text` 调 `db.vector_search`（numpy cosine）并与关键词结果做 RRF，embedding 不可用时降级 keyword-only。
-- **登录 + 公网**：bcrypt 用户 + HttpOnly cookie session + bearer token 双通道鉴权（`server/auth.py`，`require_principal`）；Cloudflare Tunnel 出站接入家里小主机的 loopback nginx，由 nginx 统一托管 SPA 并反代 API 到 `127.0.0.1:8765`。
-- **分层记忆**：`5min→1h→6h→day→week` 指标与 LLM 叙述自底向上级联，`search_summaries` 可先读 day/week 再按时间窗下钻。
+- **登录 + 私网**：bcrypt 用户 + HttpOnly cookie session + Bearer 双通道鉴权；Tailscale Serve 接入 `127.0.0.1:19446` nginx，统一托管 SPA 并反代 API 到 `127.0.0.1:8765`，不保留公网回退。
+- **分层记忆**：`5min→1h→6h→day→week` 指标与 LLM 叙述自底向上级联，设备级金字塔分别生成叙述，全局按设备拼装；overview 自动粗到细补齐，`search_summaries` 按指定粒度下钻。
 - **Agent 友好**：MCP 提供检索、统计、分层叙述、标签修改和高层问答；`apply_label` 是唯一写工具。实时清单以 `server/mcp_layer/server.py` 为准。
 - **可观测与发布**：分析审计、LLM 请求账本、金字塔/LLM 页面已上线；`deploy` push 只构建包含 server + SPA 的 GHCR 不可变镜像，部署机运行 `timetrace-update` 后通过出站 HTTPS 主动拉取，并原子切换同 SHA 的 Compose 与 SPA release。数据/token 原位 bind mount，GPU/LM Studio 与 nginx 保持宿主机服务。
 
@@ -68,16 +68,16 @@ TimeTrace 是一个 **Windows Only、本地优先**的桌面活动记忆层。�
 | **检索** | 时间范围/应用/分类过滤；pHash 图搜；FTS5/LIKE 关键词；`/v1/search/text` 文本向量召回；多通道 RRF |
 | **回放** | 日历 + 单日时间轴、多轨道视图、hover 详情、点击进入记录详情 |
 | **摘要** | 五层固定时间窗指标级联 + LLM summary-of-summaries；source_hash 重发；backfill/narrate CLI |
-| **隐私** | 黑名单、暂停记录、隐私模式、不存图策略、外部接口不返原图 |
+| **隐私** | 黑名单、暂停记录与不存图策略；OCR/落盘前模糊未实现。MCP 不返原图，REST 原图路由受鉴权保护 |
 | **鉴权** | bcrypt 登录 + cookie session（admin/admin 首启强制改密 + 登录限速）+ bearer token；token CRUD 经 CLI / 前端 Settings |
 | **MCP/API** | MCP 检索/统计/摘要/问答、REST API、bearer 鉴权；MCP 不返回原始截图 |
-| **前端** | 时间轴、搜索、设置、Agent、报告、审计、金字塔、LLM 请求日志；Vite 构建后由 `yukirin-server` 的 nginx 从 `/srv/timetrace/web/current` 托管 |
+| **前端** | 多设备时间轴、搜索、设置与设备管理、Agent、报告、审计、金字塔、LLM 请求日志；Vite 构建后由 `yukirin-server` 的 nginx 从 `/srv/timetrace/web/current` 托管 |
 
 ---
 
 ## 当前优先级
 
-当前从功能扩张切换到可靠性和可控性：先收敛 main/deploy 与事实文档，再验证客户端 endpoint failover、隐私/存储生命周期和 schema 恢复；Classifier V2 先做可复现 shadow 评估，不直接改生产分类。唯一动态清单见 [滚动 PLAN](../../devlogs/PLAN.md)，本页不再复制 TODO。
+当前从功能扩张切换到可靠性和可控性：先补客户端迁移与历史摘要覆盖验收，再验证 endpoint failover、隐私/存储生命周期和 schema 恢复；Classifier V2 先做可复现 shadow 评估，不直接改生产分类。唯一动态清单见 [滚动 PLAN](../../devlogs/PLAN.md)，本页不再复制 TODO。
 
 ---
 

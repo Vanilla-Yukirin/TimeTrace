@@ -1,5 +1,9 @@
 # PLAN：看板报告准确性修复 + per-app 覆盖 + Pyramid 落地排期
 
+## **⚠️ 本文为历史设计，演示排期和旧部署步骤已失效**
+
+Phase 0 和金字塔主链已实现；设备级金字塔与后续 Agent 契约亦已进入主线并包含于 2026-10-23 验收的发布版本。下文的日期、模型、数量和冻结安排只描述当时，不是当前待办。现在的工作看 [滚动 PLAN](../devlogs/PLAN.md)，运行证据看 [最新部署归档](../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)。
+
 > 状态（2026-06-02）：**Phase 0 已部署上线 + 已验证**（box 跑新代码：`/v1/settings/app-overrides` 返 401、healthz 200）；**Phase 1 前端编辑器已完成**（`9cb754f`，npm build 过）；**P1.2 回填已部分完成**（授权范围内：Vanish/Claude 共 231 条 NULL→work，已备份）。**Phase 2（pyramid）+ 给 4 篇架构文档补评审修正 —— 排期到周三（2026-06-03）演示之后再开始，演示前冻结不动。**
 > 综合来源：4 篇架构文档评审（[PLAN-BETTER-AGENT.md](PLAN-BETTER-AGENT.md) + [pyramid-schema](storage/pyramid-schema.md) + [episode-pipeline](architecture/episode-and-rollup-pipeline.md) + [thin-router](architecture/thin-router-agent.md)）+ 线上 box DB 只读取证 + 2 个功能设计 + 完备性批判（14-agent workflow）。
 > **核心结论：看板报告不是因为 AI 不认识应用而出错，而是『数据标签 + Prompt + 死规则』三层 bug。** 三个廉价修复即可让报告准确；pyramid 是正确的长期方向，但必须 gate 在数据清洗之后。
