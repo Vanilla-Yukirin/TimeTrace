@@ -125,7 +125,7 @@ token 存在 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600，Wi
 
 - 选 JSON 不选 TOML：stdlib `json` 能读能写，`tomllib` 只读，为一个文件拉 `tomli-w` 不值
 - **schema 单一 owner**：所有读写都走 `ServerAuth.read_tokens` / `write_tokens`（public classmethod）。`admin_cmd.py`（CLI）和 admin 路由（Web UI）都复用，不各自实现 JSON 形状，schema 改动只在 `auth.py` 一处涟漪
-- **首启自动 mint**：`ServerAuth.load_or_generate()` 在文件不存在时铸一个 `tt_live_<token_urlsafe(32)>`，返回 `was_generated=True`，bootstrap 把它 `logger.info` 出来供用户拷进 `timetrace-client init`
+- **首启自动 mint**：`ServerAuth.load_or_generate()` 在文件不存在时生成 token，返回 `was_generated=True`。bootstrap 只记录凭据文件位置；用户从文件读取 token 用于 `timetrace-client init`，密钥不进入日志。
 - token 校验是内存集合查找；`find_label()` 反查 label（不是 value）给 `BearerPrincipal`，使审计日志能说"是哪个集成在打 /v1/records"而绝不打印密钥本身
 
 ### token CRUD：两条路径

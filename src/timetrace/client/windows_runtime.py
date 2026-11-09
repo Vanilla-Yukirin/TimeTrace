@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import ctypes
-import logging
 import sys
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import structlog
 from PIL import Image, ImageDraw
+
+from timetrace.common.logging import configure_logging
 
 APP_USER_MODEL_ID = "VanillaYukirin.TimeTrace.Client"
 _INSTANCE_MUTEX = rf"Local\{APP_USER_MODEL_ID}"
@@ -63,32 +62,9 @@ def configure_windows_app_identity() -> None:
 
 def configure_client_logging(logs_dir: Path) -> Path:
     """Log to a rotating file, plus stderr when a source console is present."""
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / "client.log"
-    handlers: list[logging.Handler] = [
-        RotatingFileHandler(
-            log_path,
-            maxBytes=5 * 1024 * 1024,
-            backupCount=3,
-            encoding="utf-8",
-        )
-    ]
-    if sys.stderr is not None:
-        handlers.append(logging.StreamHandler(sys.stderr))
-    logging.basicConfig(level=logging.INFO, handlers=handlers, format="%(message)s", force=True)
-    structlog.configure(
-        processors=[
-            structlog.stdlib.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso", utc=True),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.JSONRenderer(ensure_ascii=False),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
-    )
-    return log_path
+    path = configure_logging("client", logs_dir=logs_dir)
+    assert path is not None
+    return path
 
 
 class ClientInstance:

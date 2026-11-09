@@ -5,13 +5,36 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
+  quality-gate:
+    if: always()
+    needs: [lint-and-test, frontend, e2e, docker-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful acceptance
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          for job, result in results.items():
+              allowed = {'success', 'skipped'} if job == 'docker-image' else {'success'}
+              assert result['result'] in allowed, f"{job}: {result['result']}"
+          PY
+
   lint-and-test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -19,34 +42,56 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
-          version: "latest"
+          version: "0.12.5"
 
       - name: Set up Python
         run: uv python install
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
 
       - name: Lint (ruff)
-        run: uv run ruff check src/
-
-      - name: Format check (ruff)
-        run: uv run ruff format --check src/
+        run: uv run python scripts/check.py lint
 
       - name: Run tests
-        run: uv run pytest --tb=short
+        run: uv run python scripts/check.py unit
 
       - name: Build Windows client package
-        if: github.event_name == 'pull_request'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/windows/build-client.ps1
 
       - name: Verify Windows client package
-        if: github.event_name == 'pull_request'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $version = (uv run python -c "from timetrace import __version__; print(__version__)").Trim()
           ./scripts/windows/verify-client-package.ps1 -ExpectedVersion $version
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-${{ matrix.os }}
+          path: artifacts/unit.xml
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Two-container acceptance
+        run: python scripts/check.py e2e
+      - name: Upload logs, metrics, browser trace and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: two-container-e2e
+          path: artifacts/
+          if-no-files-found: error
 
   frontend:
     runs-on: ubuntu-latest
@@ -61,18 +106,14 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci --prefix frontend
-
-      - name: Lint
-        run: npm run lint --prefix frontend
-
-      - name: Build
-        run: npm run build --prefix frontend
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Frontend checks
+        run: python scripts/check.py frontend
 
   docker-image:
-    # The deploy workflow builds the production image. Keep this job on PRs so
-    # container changes are validated once, without rebuilding after merge.
+    # Deployment compatibility and hardening checks supplement the shared E2E.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20

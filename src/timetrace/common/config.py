@@ -12,6 +12,13 @@ def _env_truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _loop_seconds(name: str, default: float) -> float:
+    value = float(os.getenv(name, str(default)))
+    if not 0 < value <= 86400:
+        raise ValueError(f"{name} must be greater than 0 and at most 86400 seconds")
+    return value
+
+
 @dataclass
 class VLMConfig:
     """VLM endpoint credentials and provider quirks.
@@ -145,6 +152,8 @@ class RollupConfig:
     def from_env(cls) -> RollupConfig:
         return cls(
             enabled=_env_truthy(os.getenv("TIMETRACE_ROLLUP_ENABLED")),
+            loop_initial_delay_s=_loop_seconds("TIMETRACE_ROLLUP_INITIAL_DELAY_S", 45),
+            loop_interval_s=_loop_seconds("TIMETRACE_ROLLUP_INTERVAL_S", 300),
             device_pyramid=os.getenv("TIMETRACE_DEVICE_PYRAMID", "1").strip().lower()
             not in ("0", "false", "no", "off"),
         )
@@ -173,7 +182,11 @@ class NarrativeConfig:
 
     @classmethod
     def from_env(cls) -> NarrativeConfig:
-        return cls(enabled=_env_truthy(os.getenv("TIMETRACE_NARRATE_ENABLED")))
+        return cls(
+            enabled=_env_truthy(os.getenv("TIMETRACE_NARRATE_ENABLED")),
+            loop_initial_delay_s=_loop_seconds("TIMETRACE_NARRATE_INITIAL_DELAY_S", 90),
+            loop_interval_s=_loop_seconds("TIMETRACE_NARRATE_INTERVAL_S", 300),
+        )
 
 
 @dataclass
@@ -292,5 +305,5 @@ class AppConfig:
     vlm: VLMConfig | None = field(default_factory=VLMConfig.from_env)
     embedding: EmbeddingConfig | None = field(default_factory=EmbeddingConfig.from_env)
     auth: AuthConfig = field(default_factory=AuthConfig.from_env)
-    api_host: str = "127.0.0.1"
-    api_port: int = 8765
+    api_host: str = field(default_factory=lambda: os.getenv("TIMETRACE_API_HOST", "127.0.0.1"))
+    api_port: int = field(default_factory=lambda: int(os.getenv("TIMETRACE_API_PORT", "8765")))

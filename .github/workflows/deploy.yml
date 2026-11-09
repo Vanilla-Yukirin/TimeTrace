@@ -17,6 +17,9 @@ env:
   IMAGE_NAME: ghcr.io/vanilla-yukirin/timetrace-server
 
 jobs:
+  quality-gate:
+    uses: ./.github/workflows/ci.yml
+
   resolve-ref:
     if: github.repository == 'Vanilla-Yukirin/TimeTrace'
     runs-on: ubuntu-latest
@@ -38,7 +41,7 @@ jobs:
 
   build-image:
     if: github.repository == 'Vanilla-Yukirin/TimeTrace'
-    needs: resolve-ref
+    needs: [resolve-ref, quality-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

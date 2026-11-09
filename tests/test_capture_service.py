@@ -4,15 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from timetrace.client.capture import service as service_module
 from timetrace.client.capture.service import CaptureService
-from timetrace.client.capture.window import WindowInfo
+from timetrace.client.capture.source import WindowInfo
 from timetrace.common.config import CaptureConfig, PrivacyConfig
 
 
 @dataclass
 class _Idle:
     idle_seconds: float = 0.0
+
+
+@pytest.fixture(autouse=True)
+def synthetic_idle(monkeypatch):
+    monkeypatch.setattr(service_module, "_default_idle", _Idle)
 
 
 class _Backend:

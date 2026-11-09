@@ -61,6 +61,15 @@ finally {
 }
 
 $Hash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+# Exercise the frozen entry point and its imports without starting capture.
+$Smoke = Start-Process -FilePath $ExePath -ArgumentList '--help' -WindowStyle Hidden -PassThru
+if (-not $Smoke.WaitForExit(30000)) {
+    Stop-Process -Id $Smoke.Id
+    throw 'Packaged client --help did not exit within 30 seconds'
+}
+if ($Smoke.ExitCode -ne 0) {
+    throw "Packaged client --help failed: $($Smoke.ExitCode)"
+}
 if ($WriteChecksum) {
     Set-Content -LiteralPath $ChecksumPath `
         -Value "$Hash  TimeTrace-Client-windows-x64.zip" `

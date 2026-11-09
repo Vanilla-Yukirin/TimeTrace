@@ -12,10 +12,13 @@ $DistRoot = Join-Path $RepoRoot 'dist\windows'
 
 Push-Location $RepoRoot
 try {
-    uv sync --group dev
+    uv sync --locked --group dev
+    if ($LASTEXITCODE -ne 0) { throw 'Locked dependency install failed' }
     uv run python packaging/windows/build_assets.py --output $BuildRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Windows asset generation failed' }
     uv run pyinstaller packaging/windows/timetrace-client.spec --noconfirm --clean `
         --distpath $DistRoot --workpath (Join-Path $BuildRoot 'pyinstaller')
+    if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed' }
 
     $PackageDir = Join-Path $DistRoot 'TimeTrace Client'
     if (-not (Test-Path -LiteralPath (Join-Path $PackageDir 'TimeTrace Client.exe'))) {

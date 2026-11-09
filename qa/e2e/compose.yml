@@ -1,0 +1,54 @@
+services:
+  server:
+    image: ${E2E_SERVER_IMAGE:?run scripts/check.py e2e}
+    command: [python, /qa/seed_server.py]
+    environment:
+      TIMETRACE_API_HOST: 0.0.0.0
+      TIMETRACE_TZ: Asia/Shanghai
+      TZ: Asia/Shanghai
+      TIMETRACE_INSECURE_COOKIE: "1"
+      TIMETRACE_ADMIN_INITIAL_PASSWORD: e2e-initial-password-123
+      TIMETRACE_VLM_BASE_URL: http://client:18080/v1
+      TIMETRACE_VLM_API_KEY: e2e-model-key
+      TIMETRACE_VLM_MODEL: fixture-vlm
+      TIMETRACE_EMBEDDING_MODEL: fixture-embedding
+      TIMETRACE_EMBEDDING_DIM: "8"
+      TIMETRACE_ROLLUP_ENABLED: "1"
+      TIMETRACE_NARRATE_ENABLED: "1"
+      TIMETRACE_ROLLUP_INITIAL_DELAY_S: "1"
+      TIMETRACE_ROLLUP_INTERVAL_S: "1"
+      TIMETRACE_NARRATE_INITIAL_DELAY_S: "2"
+      TIMETRACE_NARRATE_INTERVAL_S: "1"
+    volumes:
+      - server-home:/home/timetrace
+      - .:/qa:ro
+    networks: [test]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 40s
+  client:
+    image: ${E2E_CLIENT_IMAGE:?run scripts/check.py e2e}
+    healthcheck:
+      disable: true
+    init: true
+    environment:
+      TIMETRACE_TZ: Asia/Shanghai
+      TZ: Asia/Shanghai
+    networks: [test]
+    volumes:
+      - client-home:/home/timetrace
+      - artifacts:/artifacts
+    command: [python, /qa/runner.py]
+    shm_size: 256mb
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 15s
+networks:
+  test:
+    internal: true
+volumes:
+  server-home:
+  client-home:
+  artifacts:

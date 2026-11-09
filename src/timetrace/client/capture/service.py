@@ -10,14 +10,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from timetrace.client.capture.idle import IdleDetector
 from timetrace.client.capture.privacy import should_capture
-from timetrace.client.capture.screenshot import capture_active_window
-from timetrace.client.capture.window import get_active_window
 from timetrace.common.models import CaptureContext
 from timetrace.common.protocol import ScreenshotSubmission
 
 if TYPE_CHECKING:
+    from timetrace.client.capture.source import CaptureSource
     from timetrace.client.core.backend import BackendClient
     from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig
 
@@ -27,6 +25,24 @@ logger = structlog.get_logger(__name__)
 # the process was suspended, starved, or the machine slept; wall time across
 # that gap is not observed activity and must never be assigned to a record.
 _MAX_CONTINUOUS_OBSERVATION_GAP_S = 5.0
+
+
+def get_active_window():
+    from timetrace.client.capture.window import get_active_window as observe
+
+    return observe()
+
+
+def capture_active_window(*args):
+    from timetrace.client.capture.screenshot import capture_active_window as capture
+
+    return capture(*args)
+
+
+def _default_idle():
+    from timetrace.client.capture.idle import IdleDetector
+
+    return IdleDetector()
 
 
 class CaptureService:
@@ -39,6 +55,7 @@ class CaptureService:
         backend: BackendClient,
         storage_cfg: StorageConfig | None = None,
         on_capture: Callable[[str], None] | None = None,
+        source: CaptureSource | None = None,
     ) -> None:
         self._cfg = capture_cfg
         self._privacy = privacy_cfg
@@ -46,7 +63,8 @@ class CaptureService:
         self._storage_cfg = storage_cfg
         self._on_capture = on_capture
 
-        self._idle = IdleDetector()
+        self._source = source
+        self._idle = source if source is not None else _default_idle()
 
         self._last_capture_ts: float = 0.0
         # NB: type is `str` regardless of backend, but the *semantics* differ:
@@ -119,7 +137,7 @@ class CaptureService:
 
     async def _tick(self) -> None:
         now = time.monotonic()
-        wall_ms = int(time.time() * 1000)
+        wall_ms = int((self._source.wall_time() if self._source else time.time()) * 1000)
 
         # Detect discontinuity BEFORE idle/window handling. On Windows a wake
         # input can reset IdleDetector before this coroutine runs, so idle time
@@ -165,7 +183,7 @@ class CaptureService:
                 logger.info("capture.idle_end")
 
         # --- Get active window ---
-        win = get_active_window()
+        win = self._source.active_window() if self._source else get_active_window()
         if win is None:
             return
 
@@ -259,7 +277,7 @@ class CaptureService:
         try:
             await asyncio.sleep(self._cfg.switch_capture_delay_s)
 
-            current_win = get_active_window()
+            current_win = self._source.active_window() if self._source else get_active_window()
             if current_win is None or current_win.hwnd != expected_hwnd:
                 logger.debug(
                     "capture.screenshot_cancelled",
@@ -301,7 +319,7 @@ class CaptureService:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
-            capture_active_window,
+            self._source.screenshot if self._source else capture_active_window,
             record_id,
             self._storage_cfg,
             hwnd,

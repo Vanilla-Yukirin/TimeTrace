@@ -54,6 +54,7 @@
 | 角色 | 从这里开始 |
 |------|-----------|
 | **新开发者 / 新 agent** | [根 README](../README.md) → 本页「当前状态」→ [滚动 PLAN](../devlogs/PLAN.md) → 再按任务进入下方专题页 |
+| **开发验收 / CI / 可观测性** | [工程验收文档](architecture/engineering-workflow.md)：统一检查入口、双容器端到端、日志、readiness 与 metrics |
 | **存储 / 数据库** | [存储策略](storage/overview.md) → [数据库 Schema](storage/schema.md) → [相似检索层](storage/vector-search.md) |
 | **AI 接入 / MCP** | [MCP Layer](architecture/mcp-layer.md) → [Local API Server](architecture/api-server.md) → [隐私策略](privacy/strategy.md) |
 | **鉴权 / 部署** | [登录鉴权系统](architecture/auth-system.md) → [私人部署与运维](architecture/web-deployment.md) → [滚动 PLAN](../devlogs/PLAN.md) |
