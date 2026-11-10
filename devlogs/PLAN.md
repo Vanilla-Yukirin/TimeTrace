@@ -1,6 +1,6 @@
 # TimeTrace 当前状态与滚动计划
 
-**最后核对：2026-11-10。** 工程底座 PR #25 已合入 `main`（`b9c2abc`），本地和远端已合并分支已清理。当前工作分支 `codex/outbox-ack-recovery` 修复确认游标写入失败导致客户端退出的问题，已完成本地 Windows 与双容器验收；修复尚未合入主线。未部署，未修改生产数据或已安装客户端。
+**最后核对：2026-11-11。** Outbox 确认写入恢复已通过 [PR #26](https://github.com/Vanilla-Yukirin/TimeTrace/pull/26) 合入 `main`（`4d3b347`），对应本地和远端分支已清理。当前工作分支 `codex/summary-coverage` 修复摘要覆盖判定。
 
 本文是唯一的当前待办入口。架构看 [项目 Wiki](../infra/readme.md)，部署看 [部署手册](../infra/architecture/web-deployment.md)，历史过程看 [DevLog 索引](README.md)。事实冲突时以代码、对应提交的测试及有日期的运行证据为准；旧归档只说明当时的状态。
 
@@ -8,8 +8,8 @@
 
 | 对象 | 最近证据 | 边界 |
 |---|---|---|
-| 开发主线 | [PR #25](https://github.com/Vanilla-Yukirin/TimeTrace/pull/25) 合并至 `b9c2abc`；[合并后的 main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42775723309) 成功 | Outbox 修复基于该提交；远端修复验收以对应 PR 最新提交检查为准 |
-| 本地单元测试（11 月 10 日） | Windows：717 passed / 5 skipped，含 4 个真实 Windows 只读/句柄共享故障用例；Linux：711 passed / 11 skipped；Outbox 定向回归 52 passed | 临时目录和合成数据；跳过真实 VLM 测试及不适用的平台用例 |
+| 开发主线 | [PR #26](https://github.com/Vanilla-Yukirin/TimeTrace/pull/26) 合并至 `4d3b347`，[合并后的 main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42879578901) 成功 | 摘要覆盖修复基于该提交，远端修复验收以对应 PR 最新提交检查为准 |
+| 本地单元测试（11 月 11 日） | Windows 720 passed / 5 skipped，摘要契约定向 32 passed | 临时目录和合成数据，跳过真实 VLM 用例 |
 | 构建与静态检查（11 月 10 日） | Ruff、前端 lint/TypeScript/build、Windows ZIP 与冻结 EXE 启动、Actionlint 工作流检查通过 | 此处记录本地结果；远端 Actions 结果由 PR 检查保留 |
 | 双容器 E2E（11 月 10 日 15:43） | 11 个场景通过，含确认替换被拒绝后恢复；应用链路 29.61 秒；证据 `artifacts/timetrace-e2e-3117ee039b/` | 模拟画面/模型及 OS 替换故障，真实应用/网络/存储/浏览器；测试容器、网络和卷已清理 |
 | 发布分支与生产验收 | 11 月 10 日只读核对生产仍为 `81a10b6`；服务端近期分析和摘要持续推进 | 近期正常不代表历史覆盖完整；本轮不更新运行制品 |
@@ -40,18 +40,21 @@ W1–W6（PR #14–#21）及 PR #23/#24 已合入，且包含于最近验收的�
 - JSON 日志保留异常组、请求 ID 与 worker 记录 ID；客户端轮转日志；服务端和客户端提供指标，新增 readiness。
 - 工程底座已通过本地/远端验收并合入，见上表及 [工程底座记录](infra/archive-202611100308-engineering-foundation.md)。本轮补齐 Windows 文件替换拒绝验收；屏幕/托盘、远端分支保护与生产监控接入继续安排。
 
-## 当前修复：Outbox 确认写入恢复
+## 已合入：Outbox 确认写入恢复
 
-11 月 10 日故障为 `state.json.tmp → state.json` 的 `PermissionError [WinError 5]` 穿透 TaskGroup。原现场待发送数据仍保留，本轮没有操作该目录。工作分支现在只重试本地确认，成功前不推进游标，等待时释放队列锁并响应停止信号；扫描/压缩遇到磁盘错误后重新读取持久游标，避免沿用旧快照。控制页和日志显示存储错误及恢复过程。状态和日志替换改用独立临时文件，已有 JSONL/游标格式保持兼容。
+11 月 10 日故障为 `state.json.tmp → state.json` 的 `PermissionError [WinError 5]` 穿透 TaskGroup。修复后只重试本地确认，成功前保留游标，等待时释放队列锁并响应停止信号。扫描或压缩遇到磁盘错误后重新读取持久游标。控制页显示最近错误，日志记录存储错误和恢复过程。状态和日志替换改用独立临时文件，已有 JSONL/游标格式保持兼容。
 
 Windows 真实 OS 故障、串行/并发确认、停止与重启重放、压缩失败恢复及双容器整体链路已验证。队列事务化和容量策略仍是后续结构调整；修复发布到已安装客户端需要独立发行步骤。过程见 [修复记录](infra/archive-202611101543-outbox-ack-recovery.md)。
 
+## 当前修复：摘要覆盖判定
+
+旧版 overview 只检查时间窗。只读核验中，Yuki 10 月 19 日 04:00 至 26 日 04:00 周窗有 17,581 条原始记录，摘要只统计了 10,275 条，仍标为 `covered`。修复分支逐设备逐窗核对汇总条数，发现不符则返回 `partial` 和两侧条数。条数一致无法验证记录身份或叙述内容。见 [MCP 契约](../infra/architecture/mcp-layer.md)。
+
 ## 已确认的问题与后续顺序
 
-1. **P0：摘要 overview 会把内容不完整的历史窗标成 covered。** Yuki 10 月 19 日 04:00 至 26 日 04:00 周窗原始记录 17,581，摘要仅 10,275，差 7,306。当前判定依赖时间窗覆盖，需加入来源完整性校验，并用缺子窗 fixture 回归。
-2. **P1：历史设备摘要和归属尚未统一。** 只读审计：Yuki 日摘要 19/76、Tohru 17/25、unknown 0/24；unknown 记录 45,189。全局缺 17 个日窗、6 月 22 日 10 个 5min 窗 pending、6 月 38 条 analysis error_final。10 月 22 日以来设备小时及以上摘要完整；历史整理另行限定范围、备份和验收。
-3. **P1：前端依赖告警。** 11 月 10 日本地 `npm audit --omit=dev` 报 6 项：dompurify critical、react-router/react-router-dom/zod high、mermaid moderate、katex low。后续锁文件更新须重新执行浏览器 E2E；当前 CI 尚未增加依赖漏洞门禁。
-4. **P1：客户端能力与状态整理。** 明确采集、可靠发送、暂停/恢复、容量和错误诊断的边界；先以端到端验收约束行为，再评估用 SQLite 事务队列替换 JSONL + 游标文件。
+1. **P1：历史设备摘要和归属尚未统一。** 只读审计：Yuki 日摘要 19/76、Tohru 17/25、unknown 0/24；unknown 记录 45,189。全局缺 17 个日窗、6 月 22 日 10 个 5min 窗 pending、6 月 38 条 analysis error_final。10 月 22 日以来设备小时及以上摘要完整；历史整理另行限定范围、备份和验收。
+2. **P1：前端依赖告警。** 11 月 10 日本地 `npm audit --omit=dev` 报 6 项：dompurify critical、react-router/react-router-dom/zod high、mermaid moderate、katex low。后续锁文件更新须重新执行浏览器 E2E；当前 CI 尚未增加依赖漏洞门禁。
+3. **P1：客户端能力与状态整理。** 明确采集、可靠发送、暂停/恢复、容量和错误诊断的边界；先以端到端验收约束行为，再评估用 SQLite 事务队列替换 JSONL + 游标文件。
 
 ## 其他验收缺口
 

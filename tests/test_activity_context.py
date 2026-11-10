@@ -42,7 +42,7 @@ async def record(db, ts, device=A, title="record"):
     )
 
 
-async def summary(db, grain, start, end, device=A, text="summary", status="narrated"):
+async def summary(db, grain, start, end, device=A, text="summary", status="narrated", count=1):
     sid = await db.upsert_device_summary(
         device_scope=device,
         grain=grain,
@@ -50,8 +50,8 @@ async def summary(db, grain, start, end, device=A, text="summary", status="narra
         window_start=start,
         window_end=end,
         day_local="2001-01-01",
-        metrics_json='{"record_count": 1}',
-        record_count=1,
+        metrics_json=json.dumps({"record_count": count}),
+        record_count=count,
     )
     if status == "narrated":
         await db.save_device_summary_narrative(
@@ -269,6 +269,65 @@ async def test_overview_counts_once_and_excludes_covered_pending_children(db):
     assert row["pending_windows"] == 1
     record_reads = [s for s in statements if "FROM records r" in s]
     assert len(record_reads) == 1
+
+
+async def test_overview_marks_parent_partial_when_a_populated_child_is_missing(db):
+    await record(db, T + 1)
+    await record(db, T + 300_000)
+    await record(db, T + H)  # exactly at the exclusive end
+    await record(db, T + 1, device=B)
+    await summary(db, "5min", T, T + 300_000)
+    await summary(db, "1h", T, T + H, text="Only the first child")
+    await summary(db, "1h", T, T + H, device=B)
+
+    out = await tools.get_activity_overview(db, period="custom", **bounds(T, T + H))
+    rows = {d["device_id"]: d for d in out["devices"]}
+    row = rows[A]
+    assert row["summary_state"] == "partial"
+    assert row["coverage"]["records_in_returned_windows"] == 2
+    assert row["coverage"]["uncovered_ranges"] == []
+    assert row["coverage"]["source_mismatch_windows"] == 1
+    assert len(row["items"]) == 1
+    assert row["items"][0]["description"] == "Only the first child"
+    assert row["items"][0]["source_coverage"] == {
+        "captured_records": 2,
+        "summary_record_count": 1,
+        "record_count_matches": False,
+    }
+    assert rows[B]["summary_state"] == "covered"
+
+
+async def test_overview_late_record_changes_covered_to_partial_until_summary_catches_up(db):
+    await record(db, T + 1)
+    await summary(db, "5min", T, T + 300_000)
+    args = dict(period="custom", device_id=A, **bounds(T, T + 300_000))
+    assert (await tools.get_activity_overview(db, **args))["devices"][0][
+        "summary_state"
+    ] == "covered"
+
+    await record(db, T + 1, title="late upload with the same capture timestamp")
+    row = (await tools.get_activity_overview(db, **args))["devices"][0]
+    assert row["summary_state"] == "partial"
+    assert row["coverage"]["source_mismatch_windows"] == 1
+
+    await summary(db, "5min", T, T + 300_000, count=2)
+    row = (await tools.get_activity_overview(db, **args))["devices"][0]
+    assert row["summary_state"] == "covered"
+    assert row["items"][0]["source_coverage"]["record_count_matches"] is True
+
+
+async def test_overview_source_counts_are_compared_per_window(db):
+    for ts in (T, T + 1, T + H):
+        await record(db, ts)
+    await summary(db, "1h", T, T + H, count=1)
+    await summary(db, "1h", T + H, T + 2 * H, count=2)
+
+    out = await tools.get_activity_overview(
+        db, period="custom", device_id=A, **bounds(T, T + 2 * H)
+    )
+    row = out["devices"][0]
+    assert row["summary_state"] == "partial"
+    assert row["coverage"]["source_mismatch_windows"] == 2
 
 
 async def test_latest_unknown_query_uses_partial_index(db):

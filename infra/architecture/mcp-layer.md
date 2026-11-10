@@ -55,7 +55,7 @@
 - 分页默认 ASC 保持旧行为，新增 `order=desc`。`next_cursor` 变为不透明选择器，固定时间窗、设备和方向；同毫秒记录用 ID 破同值，取 `limit+1` 精确判断末页。旧 record-ID cursor 仍接受，但只新游标有固定窗/入库高水位保证。高水位并非数据库事务快照：已有记录的分析可更新，删除/VACUUM 等维护后应重新开始查询。
 - `get_activity_overview` 的 today/week/month 从请求时区自然日零点起，custom 使用半开区间，最大31天。存储金字塔的服务端时区和4点切日不变。旧统计和精确摘要的逻辑日语义保持兼容；跨入口对齐时回传明确起止。
 - 总览按设备取已闭合、已生成的最粗可用窗口；待生成/缺失/越界父窗回退到细窗，不重叠重复计入。**不裁剪整段叙述冒充子区间内容**。缺失设备历史摘要时报告 unavailable，不混入全设备旧摘要。
-- `coverage` 是实时记录落在返回窗口内的数量，不是叙述语义准确度或迟到数据已被重新总结的保证；`uncovered_ranges` 不是无活动时段。`limit` 按设备计算，`truncated=true` 时缩小范围。
+- `coverage` 保留实时记录落在返回窗口内的数量。`covered` 要求原始记录均落在返回窗内、未截断，且每个返回窗的汇总条数等于同一设备、同一半开区间的原始记录数。条数不符时设备为 `partial`，`coverage.source_mismatch_windows` 给出数量，条目 `source_coverage` 给出两侧条数与比对结果。按对应设备和窗口起止读取原始记录。条数相等无法验证记录身份或叙述内容。`uncovered_ranges` 表示返回窗之外的时段。`limit` 按设备计算，`truncated=true` 时缩小范围。
 - 精确 `search_summaries` 不做自动回退；它显式报告 `availability`、`window_closed`、`has_more`，查询词过滤后的无结果不能证明没有活动。
 - 最新记录包含 `server_received_at`（该记录首次入库）和设备 `last_contact_at`（服务端观察到的联系）；迟到上传不能冒充最新采集。空描述保留原始分析状态，所有设备的 `presence` 都是 unknown。
 - 摘要缺口按 `fallback_hint.arguments` 继续：未指定设备时读取相同 custom 范围的全局 `search_summaries(window_match="contained")`，仅作为全局背景；只用 ready 窗口，粗层无结果或存在缺口时保持原起止和 contained 下钻细层，已覆盖窗口不重复计入。不能改用逻辑日 period 扩大原自然日范围。指定设备时保持筛选并逐页读取原始记录，禁止把全局叙述归属给单台设备。
