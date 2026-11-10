@@ -12,6 +12,8 @@ from typing import Any
 
 import structlog
 
+from timetrace.client.activity_journal import ActivityJournal
+from timetrace.client.capture.settings import ScreenshotSettings, Theme
 from timetrace.client.core.config import ClientConfig
 from timetrace.client.core.endpoints import EndpointSelector, redact_endpoint_url
 from timetrace.client.core.outbox import Outbox, OutboxEntry
@@ -45,6 +47,8 @@ class ClientSnapshot:
     outbox_bytes: int
     outbox_oldest_at: float | None
     control_url: str | None
+    capture_strategy: str
+    outbox_images: int
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,7 @@ class ClientController:
         clock: Callable[[], float] = time.time,
         browser_opener: BrowserOpener = webbrowser.open,
         stats_ttl_s: float = 5.0,
+        journal: ActivityJournal | None = None,
     ) -> None:
         self.config = config
         self._outbox = outbox
@@ -92,6 +97,7 @@ class ClientController:
         self._save_controls = save_controls or self._default_save_controls
         self._clock = clock
         self._browser_opener = browser_opener
+        self.journal = journal
         self._mutation_lock = asyncio.Lock()
         self._stats_lock = asyncio.Lock()
         self._stats_ttl_s = max(0.0, stats_ttl_s)
@@ -132,6 +138,7 @@ class ClientController:
         snapshot = self._snapshot_without_outbox(
             pending=stats.pending_count if stats else None,
             pending_bytes=stats.pending_bytes if stats else None,
+            images=stats.pending_images if stats else None,
             oldest=(
                 stats.oldest_timestamp_ms / 1000 if stats and stats.oldest_timestamp_ms else None
             )
@@ -150,6 +157,7 @@ class ClientController:
         *,
         pending: int | None = None,
         pending_bytes: int | None = None,
+        images: int | None = None,
         oldest: float | None | object = _UNSET,
     ) -> ClientSnapshot:
         previous = getattr(self, "_cached", None)
@@ -188,6 +196,10 @@ class ClientController:
             if oldest is _UNSET
             else oldest,  # type: ignore[arg-type]
             control_url=self._control_url,
+            capture_strategy=self.config.capture.strategy,
+            outbox_images=images
+            if images is not None
+            else (previous.outbox_images if previous else 0),
         )
 
     def _set_cache(self, snapshot: ClientSnapshot | None = None) -> None:
@@ -201,6 +213,8 @@ class ClientController:
 
     def record_upload(self, _entry: OutboxEntry) -> None:
         self._last_upload_at = self._clock()
+        if _entry.image_bytes is not None:
+            self.record_event("success", "服务端已接收截图")
         self._set_cache()
 
     def record_send_error(self, _entry: OutboxEntry, error: Exception) -> None:
@@ -211,7 +225,30 @@ class ClientController:
         # Do not expose exception strings: HTTP errors can contain URLs or
         # payload fragments. The detailed exception remains in structured logs.
         self._last_error = f"{source}: {type(error).__name__}"
+        self.record_event("error", self._last_error)
         self._set_cache()
+
+    def record_event(self, kind: str, detail: str = "") -> None:
+        if self.journal is not None:
+            self.journal.emit(kind, detail)
+
+    async def set_dashboard_settings(
+        self, *, capture: ScreenshotSettings | None = None, theme: Theme | None = None
+    ) -> None:
+        async with self._mutation_lock:
+            try:
+                await asyncio.to_thread(
+                    self.config.save_dashboard_settings, capture=capture, theme=theme
+                )
+            except Exception as exc:
+                self.record_error("config_save", exc)
+                raise ControllerMutationError("客户端配置未保存") from exc
+            if capture is not None:
+                self.config.capture = capture
+                self.record_event("info", "截图设置已更新")
+            if theme is not None:
+                self.config.control.theme = theme
+            self._set_cache()
 
     async def set_paused(self, paused: bool) -> PauseResult:
         """Persist a privacy-safe pause transition.

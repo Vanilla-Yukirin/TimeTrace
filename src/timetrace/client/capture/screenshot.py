@@ -46,14 +46,7 @@ def capture_active_window(
     computation failed.
     """
     try:
-        with mss.mss() as sct:
-            if hwnd is not None:
-                region = _hwnd_to_region(hwnd, sct)
-            else:
-                region = sct.monitors[1]  # Primary monitor
-
-            sct_img = sct.grab(region)
-            img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+        img = grab_pixels(hwnd)
 
         sha256 = _image_hash(img)
         try:
@@ -112,7 +105,14 @@ def _image_hash(img: Image.Image) -> str:
     return h.hexdigest()
 
 
-def _hwnd_to_region(hwnd: int, sct: mss.base.MSSBase) -> dict:
+def grab_pixels(hwnd: int | None, *, strict: bool = False) -> Image.Image:
+    with mss.mss() as sct:
+        region = _hwnd_to_region(hwnd, sct, strict=strict) if hwnd is not None else sct.monitors[1]
+        grab = sct.grab(region)
+        return Image.frombytes("RGB", grab.size, grab.bgra, "raw", "BGRX")
+
+
+def _hwnd_to_region(hwnd: int, sct: mss.base.MSSBase, *, strict: bool = False) -> dict:
     """Convert a window handle to an mss capture region dict.
 
     Falls back to the primary monitor if the window bounds are invalid.
@@ -124,5 +124,8 @@ def _hwnd_to_region(hwnd: int, sct: mss.base.MSSBase) -> dict:
         if right > left and bottom > top:
             return {"left": left, "top": top, "width": right - left, "height": bottom - top}
     except Exception:
-        pass
+        if strict:
+            raise
+    if strict:
+        raise ValueError("active window has no visible bounds")
     return sct.monitors[1]

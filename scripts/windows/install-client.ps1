@@ -104,7 +104,8 @@ if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Recurse 
 
 try {
     Copy-Item -LiteralPath $Source -Destination $Staging -Recurse
-    if (Test-Path -LiteralPath $Target) {
+    $IsUpgrade = Test-Path -LiteralPath $Target
+    if ($IsUpgrade) {
         Move-Item -LiteralPath $Target -Destination $Backup
     }
     Move-Item -LiteralPath $Staging -Destination $Target
@@ -114,6 +115,7 @@ try {
     $Shell = New-Object -ComObject WScript.Shell
     $Shortcut = $Shell.CreateShortcut((Join-Path $StartMenu 'TimeTrace Client.lnk'))
     $Shortcut.TargetPath = Join-Path $Target 'TimeTrace Client.exe'
+    $Shortcut.Arguments = '--gui'
     $Shortcut.WorkingDirectory = $Target
     $Shortcut.IconLocation = (Join-Path $Target 'TimeTrace Client.exe') + ',0'
     $Shortcut.Description = 'TimeTrace Windows capture client'
@@ -126,7 +128,7 @@ try {
             Remove-Item -LiteralPath $StartupShortcut -Force
         }
     }
-    else {
+    elseif (-not $IsUpgrade -or (Test-Path -LiteralPath $StartupShortcut)) {
         [System.IO.Directory]::CreateDirectory($Startup) | Out-Null
         $Autostart = $Shell.CreateShortcut($StartupShortcut)
         $Autostart.TargetPath = Join-Path $Target 'TimeTrace Client.exe'
@@ -159,12 +161,12 @@ finally {
 
 if (-not $NoLaunch) {
     Start-Process -FilePath (Join-Path $Target 'TimeTrace Client.exe') `
-        -WorkingDirectory $Target -WindowStyle Hidden
+        -ArgumentList '--gui' -WorkingDirectory $Target -WindowStyle Hidden
 }
 
 Write-Host "Installed TimeTrace Client to $Target"
 Write-Host 'Existing configuration, Outbox, and screenshots under TimeTraceData were preserved.'
-if ($NoAutostart) {
+if (-not (Test-Path -LiteralPath $StartupShortcut)) {
     Write-Host 'Automatic startup is disabled for this installation.'
 }
 else {

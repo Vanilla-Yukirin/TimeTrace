@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
+import uuid
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -113,3 +115,50 @@ def notify_already_running() -> None:
         "TimeTrace Client",
         0x40,
     )
+
+
+def _startup_shortcut() -> Path | None:
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return None
+    from win32com.shell import shell, shellcon
+
+    return Path(shell.SHGetFolderPath(0, shellcon.CSIDL_STARTUP, None, 0)) / "TimeTrace Client.lnk"
+
+
+def autostart_enabled() -> bool | None:
+    shortcut = _startup_shortcut()
+    return shortcut.is_file() if shortcut is not None else None
+
+
+def set_autostart(enabled: bool) -> bool:
+    shortcut = _startup_shortcut()
+    if shortcut is None:
+        raise ValueError("自启动仅适用于 Windows 安装包")
+    if not enabled:
+        shortcut.unlink(missing_ok=True)
+        return False
+
+    import pythoncom
+    from win32com.client import Dispatch
+
+    executable = Path(sys.executable).resolve()
+    shortcut.parent.mkdir(parents=True, exist_ok=True)
+    temp = shortcut.with_name(f".TimeTrace-{uuid.uuid4().hex}.lnk")
+    link = None
+    pythoncom.CoInitialize()
+    try:
+        link = Dispatch("WScript.Shell").CreateShortcut(str(temp))
+        link.TargetPath = str(executable)
+        link.WorkingDirectory = str(executable.parent)
+        link.IconLocation = f"{executable},0"
+        link.Description = "Start TimeTrace when this user signs in"
+        link.Save()
+        os.replace(temp, shortcut)
+    finally:
+        link = None
+        pythoncom.CoUninitialize()
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return True

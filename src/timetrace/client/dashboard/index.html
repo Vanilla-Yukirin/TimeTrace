@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="timetrace-csrf" content="{{csrf}}">
+  <title>TimeTrace 客户端</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <aside class="rail">
+    <div class="brand"><span class="brand-icon" aria-hidden="true">◷</span><span>TimeTrace<small>Windows 客户端</small></span></div>
+    <nav aria-label="客户端页面">
+      <button class="nav" data-page="status" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>状态
+      </button>
+      <button class="nav" data-page="capture-config">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/></svg>截图配置
+      </button>
+      <button class="nav" data-page="software">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14m7-14v14m7-14v14M2 9h6m1 6h6m1-5h6"/></svg>软件设置
+      </button>
+    </nav>
+    <div class="rail-foot"><span id="live" class="badge">连接中</span><small id="version"></small></div>
+  </aside>
+  <main>
+    <section id="status" class="page">
+      <header class="page-head"><div><h1>状态</h1><p>查看采集、连接和上传进度。</p></div><button id="toggle" disabled>暂停采集</button></header>
+      <div class="cards">
+        <article class="tile"><span class="muted">服务端连接</span><strong id="active">—</strong><small id="endpoint-health">等待探测</small></article>
+        <article class="tile"><span class="muted">待上传截图</span><strong id="pending">—</strong><small id="backlog"></small></article>
+        <article class="tile"><span class="muted">当前模式</span><strong id="mode">—</strong><small id="capture">—</small></article>
+      </div>
+      <section id="error-box" class="notice" hidden><strong>最近错误</strong><span id="error"></span></section>
+      <section class="panel">
+        <header class="panel-head"><div><h2>活动流</h2><p>最新在上，往下滑加载较早记录。</p></div><span class="live-dot">实时更新</span></header>
+        <div id="feed" class="feed" tabindex="0" aria-label="客户端活动记录">
+          <ol id="events" class="event-list"></ol>
+          <p id="empty-events" class="empty">还没有活动记录</p>
+          <button id="older" class="subtle older" hidden>加载较早记录</button>
+        </div>
+        <div class="panel-foot"><span>最近截图 <b id="last-capture">—</b></span><span>最近上传 <b id="last-upload">—</b></span></div>
+      </section>
+      <details class="panel connections"><summary>连接路径</summary><div id="endpoints"></div></details>
+    </section>
+    <section id="capture-config" class="page" hidden>
+      <header class="page-head"><div><h1>截图配置</h1><p>只有成功取得图片的采集才会创建上传记录。</p></div></header>
+      <p id="images-disabled" class="notice" hidden>配置文件已关闭图片采集。启用 store_images 后才能截图。</p>
+      <form id="capture-form">
+        <section class="panel">
+          <header class="panel-head"><div><h2>截图方式</h2><p>选择固定间隔或按窗口活动采集。</p></div></header>
+          <label class="setting"><span>模式<small>保存后立即应用</small></span><select id="strategy" name="strategy"><option value="smart">智能截图</option><option value="interval">定时截图</option></select></label>
+          <div id="interval-fields" hidden>
+            <label class="setting"><span>截图间隔<small>每隔固定秒数截取当前活跃窗口</small></span><span class="number"><input name="interval_s" type="number" min="1" max="86400" step="any" required> 秒</span></label>
+          </div>
+          <div id="smart-fields">
+            <label class="setting"><span>切窗延迟<small>前台窗口稳定多久才截取</small></span><span class="number"><input name="switch_capture_delay_s" type="number" min="0" max="60" step="any" required> 秒</span></label>
+            <label class="setting"><span>最小截图间隔<small>快速切换时限制截图频率</small></span><span class="number"><input name="min_capture_interval_s" type="number" min="0" max="300" step="any" required> 秒</span></label>
+            <label class="setting"><span>最长截图间隔<small>窗口不变时定期补一张</small></span><span class="number"><input name="max_capture_interval_s" type="number" min="0.25" max="300" step="any" required> 秒</span></label>
+            <label class="setting"><span>去重<small>连续截图像素完全相同时跳过上传</small></span><input name="deduplicate" type="checkbox" role="switch"></label>
+          </div>
+        </section>
+        <section class="panel">
+          <header class="panel-head"><div><h2>图片与压缩</h2><p>设置上传图片的格式和质量。</p></div></header>
+          <label class="setting"><span>图片格式<small>PNG 为无损格式</small></span><select id="image-format" name="image_format"><option value="jpg">JPG</option><option value="png">PNG</option><option value="webp">WebP</option></select></label>
+          <label class="setting" id="quality-field"><span>编码质量<small>适用于 JPG 和 WebP</small></span><input name="quality" type="number" min="1" max="100" required></label>
+          <label class="setting"><span>智能压缩<small>优先保持尺寸，超过上传限制时调整质量或分辨率</small></span><input name="smart_compression" type="checkbox" role="switch"></label>
+        </section>
+        <div class="actions"><button id="save-capture" disabled>保存截图配置</button><span id="capture-message" role="status"></span></div>
+      </form>
+    </section>
+    <section id="software" class="page" hidden>
+      <header class="page-head"><div><h1>软件设置</h1><p>管理外观、Windows 登录启动和版本更新。</p></div></header>
+      <section class="panel">
+        <label class="setting"><span>外观<small>选择浅色、深色或跟随系统</small></span><select id="theme" disabled><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+        <label class="setting"><span>登录时启动<small id="autostart-hint">登录 Windows 后在托盘后台运行</small></span><input id="autostart" type="checkbox" role="switch" disabled></label>
+        <div class="setting"><span>版本更新<small id="update-result" role="status">查看 GitHub 上的最新正式版</small><a id="update-link" target="_blank" rel="noopener noreferrer" hidden>打开下载页 ↗</a></span><button id="check-update" class="subtle">检查更新</button></div>
+        <div class="setting"><span>退出 TimeTrace<small>停止本机采集和上传，未上传的截图留在队列中</small></span><button id="shutdown" class="subtle">退出客户端</button></div>
+      </section>
+      <p id="software-message" role="status"></p>
+    </section>
+  </main>
+</body>
+</html>

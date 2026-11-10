@@ -9,7 +9,12 @@ a = Analysis(
     [str(project_root / "packaging" / "windows" / "client_entry.py")],
     pathex=[str(project_root / "src")],
     binaries=[],
-    datas=[],
+    datas=[
+        (
+            str(project_root / "src" / "timetrace" / "client" / "dashboard"),
+            "timetrace/client/dashboard",
+        ),
+    ],
     hiddenimports=[
         "mss.windows",
         "pynput.keyboard._win32",

@@ -29,7 +29,7 @@
 
 连接已有服务端可从 [GitHub Releases](https://github.com/Vanilla-Yukirin/TimeTrace/releases) 下载 Windows x64 ZIP 和 SHA-256 校验文件，按 [安装与更新说明](packaging/windows/README.md) 校验、解压并运行安装器。安装包只提供采集客户端，仍需服务端地址、独立 Token 与设备配置。
 
-Release 对应特定标签，可能早于当前 `main`；最近版本和能力边界见 [PLAN](devlogs/PLAN.md)。客户端尚未代码签名，也没有自动更新器。
+Windows 客户端从开始菜单或托盘打开桌面窗口。状态页显示待上传截图和实时活动，截图配置支持定时、智能、去重及 JPG、PNG、WebP，软件设置支持主题、自启动和检查更新。检查更新提供正式版下载入口。最近版本和能力边界见 [PLAN](devlogs/PLAN.md)。
 
 ## 快速启动（单机单进程）
 

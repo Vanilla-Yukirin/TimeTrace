@@ -55,6 +55,7 @@ class OutboxStats:
     pending_count: int
     pending_bytes: int
     oldest_timestamp_ms: int | None
+    pending_images: int = 0
 
 
 class Outbox:
@@ -295,6 +296,7 @@ class Outbox:
             pending_count=len(entries),
             pending_bytes=pending_bytes,
             oldest_timestamp_ms=oldest,
+            pending_images=sum(bool(e.get("has_image")) for e in entries),
         )
 
     def _write_acked(self, value: int) -> None:

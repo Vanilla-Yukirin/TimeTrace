@@ -36,6 +36,7 @@ from timetrace.client.core.backend import resolve_path_under_data_dir
 from timetrace.client.core.outbox import Outbox, OutboxEntry
 
 if TYPE_CHECKING:
+    from timetrace.client.capture.image_encoding import EncodedFrame
     from timetrace.client.core.backend import HttpBackend
     from timetrace.common.models import CaptureContext
     from timetrace.common.protocol import ScreenshotSubmission
@@ -57,6 +58,35 @@ class OutboxBackend:
         # data_dir lets submit_screenshot resolve relative paths emitted by
         # capture_active_window. None means only absolute paths are accepted.
         self._data_dir = Path(data_dir).resolve() if data_dir is not None else None
+
+    async def submit_frame(
+        self, ctx: CaptureContext, frame: EncodedFrame, *, ts_start: int, reason: str
+    ) -> str:
+        """Queue metadata and image together, with a stable ID for replays."""
+        client_record_id = str(uuid.uuid4())
+        await self._outbox.append(
+            {
+                "kind": "ingest",
+                "client_record_id": client_record_id,
+                "ts_start": ts_start,
+                "app_name": ctx.app_name,
+                "process_name": ctx.process_name,
+                "window_title": ctx.window_title,
+                "url": ctx.url,
+                "capture_reason": reason,
+                "event_type": "window_switch" if reason == "switch" else "heartbeat",
+                "image_md5": _md5(frame.image),
+                "image_width": frame.width,
+                "image_height": frame.height,
+                "image_phash": frame.phash,
+                "image_format": frame.extension,
+                "thumb_md5": _md5(frame.thumb),
+                "thumb_format": "jpg",
+            },
+            image_bytes=frame.image,
+            thumb_bytes=frame.thumb,
+        )
+        return client_record_id
 
     # ---- BackendClient surface --------------------------------------------- #
 

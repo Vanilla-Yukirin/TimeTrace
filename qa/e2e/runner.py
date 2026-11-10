@@ -35,6 +35,7 @@ state = {
     "lost_ack": True,
     "accepted_before_ack_loss": False,
     "ingest_requests": 0,
+    "image_less_ingests": 0,
 }
 proxy = None
 
@@ -107,6 +108,10 @@ async def gateway(path: str, request: Request):
             return JSONResponse({"detail": "fixture network unavailable"}, status_code=503)
         if path.startswith("v1/ingest"):
             state["ingest_requests"] += 1
+        body = await request.body()
+        if path == "v1/ingest/record":
+            async with request.form() as form:
+                state["image_less_ingests"] += "image" not in form
         headers = {k: v for k, v in request.headers.items() if k not in ("host", "content-length")}
         headers["host"] = "127.0.0.1:8765"
         response = await proxy.request(
@@ -114,7 +119,7 @@ async def gateway(path: str, request: Request):
             "http://server:8765/" + path,
             params=request.query_params,
             headers=headers,
-            content=await request.body(),
+            content=body,
         )
         # Server committed, but acknowledgement was lost: the real sender must replay.
         if path == "v1/ingest/record" and response.is_success and state["lost_ack"]:
@@ -195,9 +200,18 @@ async def run(completed):
                     return response.json()
 
                 await until("client control", status)
-                await asyncio.sleep(8)
-                before = await status()
-                assert before["outbox_pending"] >= 6, before
+
+                async def captured_offline():
+                    value = await status()
+                    return (
+                        value
+                        if value["outbox_images"] == 3 and value["outbox_pending"] == 6
+                        else None
+                    )
+
+                before = await until(
+                    "three offline screenshots with closed records", captured_offline
+                )
                 # Kill the actual client process while disconnected, then reuse its volume.
                 process.kill()
                 await asyncio.to_thread(process.wait, 10)
@@ -239,6 +253,7 @@ async def run(completed):
 
                 await until("retry and drain", drained)
                 assert state["accepted_before_ack_loss"]
+                assert state["image_less_ingests"] == 0
                 completed.append("ack_permission_error_recovery")
                 completed.extend(
                     ["offline_capture", "client_crash_recovery", "lost_ack_idempotency"]
@@ -405,7 +420,8 @@ async def run(completed):
                         ).to_be_visible()
                         await page.screenshot(path=str(ARTIFACTS / "settings.png"), full_page=True)
                         await page.goto("http://127.0.0.1:18764/")
-                        await expect(page.locator("#pending")).to_have_text("0 项")
+                        await expect(page.locator("#pending")).to_have_text("0 张")
+                        await expect(page.get_by_text("上传成功", exact=True).first).to_be_visible()
                         await page.get_by_role("button", name="暂停采集", exact=True).click()
                         await expect(page.locator("#capture")).to_have_text("已暂停")
                         await page.get_by_role("button", name="继续采集", exact=True).click()
@@ -413,11 +429,27 @@ async def run(completed):
                         await page.screenshot(
                             path=str(ARTIFACTS / "client-control.png"), full_page=True
                         )
+                        await page.get_by_role("button", name="截图配置", exact=True).click()
+                        await page.locator("#strategy").select_option("interval")
+                        await page.locator("[name=interval_s]").fill("12")
+                        await page.locator("#image-format").select_option("webp")
+                        await page.get_by_role("button", name="保存截图配置", exact=True).click()
+                        await expect(page.locator("#capture-message")).to_have_text("已保存并应用")
+                        await page.get_by_role("button", name="软件设置", exact=True).click()
+                        await page.locator("#theme").select_option("dark")
+                        await expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+                        await page.screenshot(
+                            path=str(ARTIFACTS / "client-settings-dark.png"), full_page=True
+                        )
+                        await page.reload()
+                        await expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+                        await expect(page.locator("#mode")).to_have_text("定时截图")
                         assert not errors, errors
                     finally:
                         await context.tracing.stop(path=str(ARTIFACTS / "browser-trace.zip"))
                         await browser.close()
                 completed.append("browser_login_timeline_device_and_client_control")
+                completed.append("client_image_only_dashboard_settings")
 
                 historical_bounds = {
                     "period": "custom",

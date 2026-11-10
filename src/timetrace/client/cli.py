@@ -36,7 +36,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from timetrace import __version__  # noqa: E402
-from timetrace.client.capture.service import CaptureService  # noqa: E402
+from timetrace.client.activity_journal import ActivityJournal  # noqa: E402
+from timetrace.client.capture.recorder import ScreenshotRecorder  # noqa: E402
 from timetrace.client.controller import ClientController  # noqa: E402
 from timetrace.client.core.backend import HttpBackend  # noqa: E402
 from timetrace.client.core.config import ClientConfig  # noqa: E402
@@ -45,6 +46,11 @@ from timetrace.client.core.outbox import Outbox  # noqa: E402
 from timetrace.client.core.outbox_backend import OutboxBackend, make_http_sender  # noqa: E402
 from timetrace.client.core.outbox_sender import OutboxSender  # noqa: E402
 from timetrace.client.core.ssh_tunnel import SshTunnelManager  # noqa: E402
+from timetrace.client.dashboard_window import (  # noqa: E402
+    open_dashboard,
+    open_running_dashboard,
+    show_dashboard,
+)
 from timetrace.client.local_api import serve_local_control  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
 from timetrace.client.windows_runtime import (  # noqa: E402
@@ -66,6 +72,7 @@ timetrace-client — capture-only client half of TimeTrace.
 
 Usage:
   timetrace-client                 Run the capture loop (default).
+  timetrace-client --gui           Start the client and open its dashboard.
   timetrace-client init [opts]     Interactive first-time setup. Use
                                    --non-interactive for env-driven setup.
   timetrace-client print-config    Dump the resolved client.toml + env values.
@@ -123,6 +130,7 @@ async def _run(
     *,
     capture_source=None,
     show_tray: bool = True,
+    show_dashboard_on_start: bool = False,
 ) -> None:
     client_cfg.validate_device_identity(
         source="timetrace-client startup",
@@ -149,12 +157,15 @@ async def _run(
             runtime["selector"] = selector  # let the tray read live health
         await selector.select()
 
+        journal = ActivityJournal(client_cfg.storage.logs_dir / "activity.sqlite3")
         controller = ClientController(
             client_cfg,
             outbox,
             selector,
             quit_event,
             loop=asyncio.get_running_loop(),
+            browser_opener=open_dashboard,
+            journal=journal,
         )
         if runtime is not None:
             runtime["controller"] = controller
@@ -185,19 +196,27 @@ async def _run(
         backend = OutboxBackend(outbox, data_dir=client_cfg.storage.data_dir)
 
         # 4) Capture service feeds the outbox
-        capture_svc = CaptureService(
-            client_cfg.capture,
-            client_cfg.privacy,
+        capture_svc = ScreenshotRecorder(
+            client_cfg,
             backend,
-            storage_cfg=client_cfg.storage,
             on_capture=controller.record_capture,
+            on_event=controller.record_event,
             source=capture_source,
         )
 
         # 5) Sender drains outbox → HTTP
+        send_http = make_http_sender(http)
+
+        async def send_entry(entry):
+            if entry.image_bytes is not None:
+                controller.record_event(
+                    "send", selector.current().name if selector.current() else ""
+                )
+            await send_http(entry)
+
         sender = OutboxSender(
             outbox,
-            make_http_sender(http),
+            send_entry,
             max_kbps=client_cfg.upload.max_kbps,
             max_image_bytes=int(client_cfg.upload.max_image_mb * 1024 * 1024),
             on_send_failure=_on_send_failure,
@@ -251,9 +270,15 @@ async def _run(
             sender_task = tg.create_task(sender.run(sender_stop), name="sender")
             tg.create_task(selector.run(sender_stop), name="endpoints")
             tg.create_task(controller.refresh_loop(sender_stop), name="client_status")
+            tg.create_task(journal.run(quit_event), name="activity_journal")
             if client_cfg.control.enabled:
                 tg.create_task(
-                    serve_local_control(controller, quit_event, port=client_cfg.control.port),
+                    serve_local_control(
+                        controller,
+                        quit_event,
+                        port=client_cfg.control.port,
+                        show_dashboard=show_dashboard_on_start,
+                    ),
                     name="local_control",
                 )
             if tunnels.count:
@@ -267,6 +292,12 @@ def main() -> None:
     # because the default-no-args path runs the daemon, and argparse doesn't
     # express that cleanly without losing the bare ``timetrace-client`` UX.
     args = sys.argv[1:]
+    if len(args) == 2 and args[0] == "--window":
+        show_dashboard(args[1])
+        return
+    show_dashboard_on_start = args == ["--gui"]
+    if show_dashboard_on_start:
+        args = []
     if args and args[0] in ("-h", "--help"):
         print(_HELP_TEXT)
         return
@@ -312,7 +343,8 @@ def main() -> None:
     instance = ClientInstance.acquire()
     if not instance.acquired:
         logger.warning("client.already_running")
-        notify_already_running()
+        if not show_dashboard_on_start or not open_running_dashboard(client_cfg.control.port):
+            notify_already_running()
         return
     # First-launch ergonomics: mint a device_id and persist client.toml so the
     # user can edit it instead of staring at "where do I put my token".
@@ -351,7 +383,14 @@ def main() -> None:
 
     try:
         try:
-            loop.run_until_complete(_run(client_cfg, quit_event, runtime))
+            loop.run_until_complete(
+                _run(
+                    client_cfg,
+                    quit_event,
+                    runtime,
+                    show_dashboard_on_start=show_dashboard_on_start,
+                )
+            )
         except (KeyboardInterrupt, SystemExit):
             pass
         except Exception:

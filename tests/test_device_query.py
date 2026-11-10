@@ -87,10 +87,16 @@ async def test_text_search_scopes_per_device_and_returns_device(db):
 
 
 async def test_agent_tools_scope_and_label(db):
-    await _seed(db)
+    t, *_ = await _seed(db)
     res = await agent_tools.search_activity(db, "SQLite", hours_back=24, device_id=DEV_A)
     assert [i["device"] for i in res["items"]] == ["办公电脑"]
-    apps = await agent_tools.get_app_breakdown(db, period="today", device_id=DEV_B)
+    apps = await agent_tools.get_app_breakdown(
+        db,
+        period="custom",
+        start_iso=agent_tools.ms_to_iso(t - 1000),
+        end_iso=agent_tools.ms_to_iso(t + 60_000),
+        device_id=DEV_B,
+    )
     assert [i["app_name"] for i in apps["items"]] == ["Chrome"]
     cats = await agent_tools.get_category_stats(db, hours_back=24, device_id="_unknown_device")
     assert cats["total_seconds"] == 60

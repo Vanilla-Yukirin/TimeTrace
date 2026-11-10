@@ -31,9 +31,30 @@ pwsh -File scripts/windows/install-client.ps1
 
 The script gracefully stops a running client, atomically replaces
 `%LOCALAPPDATA%\Programs\TimeTrace`, creates Start Menu shortcuts, and launches
-the new version. Existing configuration, Outbox entries, and screenshots are
-preserved. It also creates a current-user Startup shortcut so capture resumes
-after sign-in. Pass `-NoAutostart` when running the installer to opt out.
+the dashboard. Existing configuration, Outbox entries, and screenshots are
+preserved. On a first install, pass `-NoAutostart` to opt out of launching on
+sign-in. Upgrades preserve the existing Startup shortcut preference.
+
+Open **Start Menu → TimeTrace → TimeTrace Client** or the tray's control panel
+item to open the desktop window. The Windows build uses WebView2. The same
+dashboard is available at the configured loopback control address.
+
+- **状态** shows the active connection, pending image count, capture strategy
+  and a live activity feed. Scrolling to the bottom loads older events.
+- **截图配置** applies changes as soon as they are saved. Interval mode captures
+  the foreground window on a fixed cadence. Smart mode uses switch delay,
+  minimum and maximum capture intervals, and optional exact pixel deduplication.
+  Both modes respect pause and the existing privacy filters.
+- Choose JPG, PNG or WebP. Quality applies to JPG and WebP. Smart compression
+  limits the long side to 2560 px and can lower quality or resolution to fit
+  the configured upload size. Frames that still exceed the limit are reported
+  in the feed.
+- **软件设置** offers system, light and dark appearance, a sign-in startup toggle
+  and an on-demand GitHub Release check with a download link.
+
+Each new screenshot carries its own metadata in a single ingest. Existing
+Outbox entries remain readable and replayable. Activity intervals use only
+the screenshot-backed observations made by the standalone recorder.
 
 Updates discover a non-default loopback control port from the running client
 process before requesting graceful shutdown. If the control UI is disabled or

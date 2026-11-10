@@ -45,7 +45,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from timetrace.common.config import CaptureConfig, PrivacyConfig, StorageConfig
+from timetrace.client.capture.settings import ScreenshotSettings, Theme
+from timetrace.common.config import PrivacyConfig, StorageConfig
 from timetrace.common.protocol import DeviceMetadata, validate_device_id
 
 _DEFAULT_PATH = Path.home() / "TimeTraceData" / "client.toml"
@@ -135,6 +136,7 @@ class ControlSection:
 
     enabled: bool = True
     port: int = 8764
+    theme: Theme = "system"
 
 
 @dataclass
@@ -145,7 +147,7 @@ class ClientConfig:
     upload: UploadSection = field(default_factory=UploadSection)
     control: ControlSection = field(default_factory=ControlSection)
     storage: StorageConfig = field(default_factory=StorageConfig)
-    capture: CaptureConfig = field(default_factory=CaptureConfig)
+    capture: ScreenshotSettings = field(default_factory=ScreenshotSettings)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
 
     # ------------------------------------------------------------------ #
@@ -229,6 +231,7 @@ class ClientConfig:
             control=ControlSection(
                 enabled=bool(control_data.get("enabled", ControlSection.enabled)),
                 port=int(control_data.get("port", ControlSection.port)),
+                theme=control_data.get("theme", ControlSection.theme),
             ),
             storage=_storage_from_toml(storage_data),
             capture=_capture_from_toml(capture_data),
@@ -328,6 +331,8 @@ class ClientConfig:
     def validate_control(self, *, source: str = "client configuration") -> None:
         if not 1 <= self.control.port <= 65535:
             raise ValueError(f"{source} has invalid control.port: expected 1..65535")
+        if self.control.theme not in ("system", "light", "dark"):
+            raise ValueError(f"{source} has invalid control.theme")
 
     def save(self, path: Path | None = None) -> Path:
         """Write the current config out to `path` (default location if None).
@@ -380,6 +385,21 @@ class ClientConfig:
                 "endpoint is managed by legacy server.url; add [[server.endpoints]] before editing"
             )
 
+        return file_config._save_file_layer(path)
+
+    def save_dashboard_settings(
+        self,
+        path: Path | None = None,
+        *,
+        capture: ScreenshotSettings | None = None,
+        theme: Theme | None = None,
+    ) -> Path:
+        path = path or _DEFAULT_PATH
+        file_config = self._load_file_or_default(path)
+        if capture is not None:
+            file_config.capture = capture
+        if theme is not None:
+            file_config.control.theme = theme
         return file_config._save_file_layer(path)
 
     def save_seeded_device(self, path: Path | None = None) -> Path:
@@ -443,16 +463,13 @@ class ClientConfig:
             "[control]",
             _kv("enabled", self.control.enabled),
             _kv("port", self.control.port),
+            _kv("theme", self.control.theme),
             "",
             "[storage]",
             _kv("data_dir", str(self.storage.data_dir)),
             "",
             "[capture]",
-            _kv("min_capture_interval_s", self.capture.min_capture_interval_s),
-            _kv("max_capture_interval_s", self.capture.max_capture_interval_s),
-            _kv("idle_threshold_s", self.capture.idle_threshold_s),
-            _kv("switch_capture_delay_s", self.capture.switch_capture_delay_s),
-            _kv("capture_mode", self.capture.capture_mode),
+            *[_kv(key, value) for key, value in self.capture.model_dump().items()],
             "",
             "[privacy]",
             _kv("mode", self.privacy.mode),
@@ -503,19 +520,9 @@ def _storage_from_toml(data: dict) -> StorageConfig:
     return StorageConfig()
 
 
-def _capture_from_toml(data: dict) -> CaptureConfig:
-    return CaptureConfig(
-        min_capture_interval_s=float(
-            data.get("min_capture_interval_s", CaptureConfig.min_capture_interval_s)
-        ),
-        max_capture_interval_s=float(
-            data.get("max_capture_interval_s", CaptureConfig.max_capture_interval_s)
-        ),
-        idle_threshold_s=float(data.get("idle_threshold_s", CaptureConfig.idle_threshold_s)),
-        switch_capture_delay_s=float(
-            data.get("switch_capture_delay_s", CaptureConfig.switch_capture_delay_s)
-        ),
-        capture_mode=str(data.get("capture_mode", CaptureConfig.capture_mode)),
+def _capture_from_toml(data: dict) -> ScreenshotSettings:
+    return ScreenshotSettings.model_validate(
+        {key: data[key] for key in ScreenshotSettings.model_fields if key in data}
     )
 
 

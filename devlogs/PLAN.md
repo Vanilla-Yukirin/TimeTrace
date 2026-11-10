@@ -1,6 +1,6 @@
 # TimeTrace 当前状态与滚动计划
 
-**最后核对：2026-11-11。** Outbox 确认写入恢复已通过 [PR #26](https://github.com/Vanilla-Yukirin/TimeTrace/pull/26) 合入 `main`（`4d3b347`），对应本地和远端分支已清理。当前工作分支 `codex/summary-coverage` 修复摘要覆盖判定。
+**最后核对：2026-11-11。** Outbox 确认写入恢复和摘要覆盖判定已通过 [PR #26](https://github.com/Vanilla-Yukirin/TimeTrace/pull/26) 与 [PR #27](https://github.com/Vanilla-Yukirin/TimeTrace/pull/27) 合入 `main`。Windows 客户端 0.2.0 加入桌面窗口、截图策略与软件设置。
 
 本文是唯一的当前待办入口。架构看 [项目 Wiki](../infra/readme.md)，部署看 [部署手册](../infra/architecture/web-deployment.md)，历史过程看 [DevLog 索引](README.md)。事实冲突时以代码、对应提交的测试及有日期的运行证据为准；旧归档只说明当时的状态。
 
@@ -8,10 +8,10 @@
 
 | 对象 | 最近证据 | 边界 |
 |---|---|---|
-| 开发主线 | [PR #26](https://github.com/Vanilla-Yukirin/TimeTrace/pull/26) 合并至 `4d3b347`，[合并后的 main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42879578901) 成功 | 摘要覆盖修复基于该提交，远端修复验收以对应 PR 最新提交检查为准 |
-| 本地单元测试（11 月 11 日） | Windows 720 passed / 5 skipped，摘要契约定向 32 passed | 临时目录和合成数据，跳过真实 VLM 用例 |
-| 构建与静态检查（11 月 10 日） | Ruff、前端 lint/TypeScript/build、Windows ZIP 与冻结 EXE 启动、Actionlint 工作流检查通过 | 此处记录本地结果；远端 Actions 结果由 PR 检查保留 |
-| 双容器 E2E（11 月 10 日 15:43） | 11 个场景通过，含确认替换被拒绝后恢复；应用链路 29.61 秒；证据 `artifacts/timetrace-e2e-3117ee039b/` | 模拟画面/模型及 OS 替换故障，真实应用/网络/存储/浏览器；测试容器、网络和卷已清理 |
+| 开发主线 | [PR #27](https://github.com/Vanilla-Yukirin/TimeTrace/pull/27) 合并至 `569d8bd`，[合并后的 main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42883758655) 成功 | Windows 0.2.0 的验收见对应 tag 工作流 |
+| 本地单元测试（11 月 11 日） | Windows 726 passed / 5 skipped | 临时目录和合成数据，跳过真实 VLM 用例 |
+| 构建与静态检查（11 月 11 日） | Ruff、前端 lint/TypeScript/build、Windows ZIP 与冻结 EXE 窗口验收 | 临时快捷方式验证登录启动的设置与取消 |
+| 双容器 E2E（11 月 11 日） | 13 个场景通过，含确认写入恢复、带图入队、截图配置和主题。应用链路 35.05 秒，证据 `artifacts/timetrace-e2e-31cc1d58e5/` | 模拟画面、模型及文件替换故障，真实应用、网络、存储和浏览器 |
 | 发布分支与生产验收 | 11 月 10 日只读核对生产仍为 `81a10b6`；服务端近期分析和摘要持续推进 | 近期正常不代表历史覆盖完整；本轮不更新运行制品 |
 | Windows 安装包 | 两台设备上报 v0.1.1；其客户端源文件与 `81a10b6` 一致 | 不能只根据发布日期判断客户端过时；代码签名和自动更新仍未完成 |
 
@@ -46,15 +46,15 @@ W1–W6（PR #14–#21）及 PR #23/#24 已合入，且包含于最近验收的�
 
 Windows 真实 OS 故障、串行/并发确认、停止与重启重放、压缩失败恢复及双容器整体链路已验证。队列事务化和容量策略仍是后续结构调整；修复发布到已安装客户端需要独立发行步骤。过程见 [修复记录](infra/archive-202611101543-outbox-ack-recovery.md)。
 
-## 当前修复：摘要覆盖判定
+## 已合入：摘要覆盖判定
 
-旧版 overview 只检查时间窗。只读核验中，Yuki 10 月 19 日 04:00 至 26 日 04:00 周窗有 17,581 条原始记录，摘要只统计了 10,275 条，仍标为 `covered`。修复分支逐设备逐窗核对汇总条数，发现不符则返回 `partial` 和两侧条数。条数一致无法验证记录身份或叙述内容。见 [MCP 契约](../infra/architecture/mcp-layer.md)。
+旧版 overview 只检查时间窗。只读核验中，Yuki 10 月 19 日 04:00 至 26 日 04:00 周窗有 17,581 条原始记录，摘要只统计了 10,275 条，仍标为 `covered`。新版本逐设备逐窗核对汇总条数，发现不符则返回 `partial` 和两侧条数。条数一致无法验证记录身份或叙述内容。见 [MCP 契约](../infra/architecture/mcp-layer.md)。
 
 ## 已确认的问题与后续顺序
 
 1. **P1：历史设备摘要和归属尚未统一。** 只读审计：Yuki 日摘要 19/76、Tohru 17/25、unknown 0/24；unknown 记录 45,189。全局缺 17 个日窗、6 月 22 日 10 个 5min 窗 pending、6 月 38 条 analysis error_final。10 月 22 日以来设备小时及以上摘要完整；历史整理另行限定范围、备份和验收。
 2. **P1：前端依赖告警。** 11 月 10 日本地 `npm audit --omit=dev` 报 6 项：dompurify critical、react-router/react-router-dom/zod high、mermaid moderate、katex low。后续锁文件更新须重新执行浏览器 E2E；当前 CI 尚未增加依赖漏洞门禁。
-3. **P1：客户端能力与状态整理。** 明确采集、可靠发送、暂停/恢复、容量和错误诊断的边界；先以端到端验收约束行为，再评估用 SQLite 事务队列替换 JSONL + 游标文件。
+3. **P1：客户端容量与长测。** 桌面窗口已有活动记录、采集策略、暂停和软件设置。继续验证长时间离线的容量和恢复，再评估用 SQLite 事务队列替换 JSONL + 游标文件。
 
 ## 其他验收缺口
 
@@ -63,7 +63,7 @@ Windows 真实 OS 故障、串行/并发确认、停止与重启重放、压缩�
 1. **补齐另一台 Windows 客户端与外部 MCP 消费端证据。** 服务端确认 Tohru v0.1.1 最近一次收件为 11 月 9 日 23:08，7 日内 14,753 条；其本机 endpoint 与 Outbox 尚未直接核验。Setsuna 消费端仍需刷新工具并验证 latest → overview → drill-down 和分页。
 2. **历史数据整改。** 只读覆盖审计已发现上列缺口。修复或回填使用 `repair-data-quality --apply`、`backfill`、`narrate`，事先确定范围、备份与授权；不凭猜测给旧记录补设备身份。
 3. **完成传输与恢复长测。** 已有 endpoint 选择、sender 重试和重放幂等测试；补齐多路径故障→切换→恢复回切→排空的整体证据，以及两台设备同时补传、长期离线容量和受控生产回滚演练。真机断网/故障注入单独安排，不能从单元测试推断生产长测完成。
-4. **客户端发行。** 旧 v0.1.1 源码与现有生产客户端部分一致；本轮日志/指标/恢复改动进入后续新版本验收。发布需要对应授权。
+4. **客户端实机升级验收。** 0.2.0 包含桌面窗口、截图策略与 Outbox 修复。逐台验收升级后设备身份、队列重放、采集、自启动和服务端收件。
 
 验收至少记录时间、代码/制品版本、范围、观测结果和未覆盖项。原始截图、活动正文、凭据和私网访问地址不进入归档。
 

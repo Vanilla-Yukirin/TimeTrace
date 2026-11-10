@@ -49,7 +49,10 @@ try {
     foreach ($RequiredEntry in @(
         'TimeTrace Client/TimeTrace Client.exe',
         'TimeTrace Client/Install TimeTrace.ps1',
-        'TimeTrace Client/Uninstall TimeTrace.ps1'
+        'TimeTrace Client/Uninstall TimeTrace.ps1',
+        'TimeTrace Client/_internal/timetrace/client/dashboard/index.html',
+        'TimeTrace Client/_internal/timetrace/client/dashboard/app.js',
+        'TimeTrace Client/_internal/timetrace/client/dashboard/style.css'
     )) {
         if (-not $EntryNames.Contains($RequiredEntry)) {
             throw "Release archive is missing $RequiredEntry"
