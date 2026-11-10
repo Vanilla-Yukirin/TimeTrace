@@ -265,8 +265,8 @@ async def activity_overview(
     """Select disjoint ready windows, coarse first, separately for each device.
 
     Closed parents outside the requested range are not clipped and presented
-    as if their narrative described only that range. Descend instead. Metrics
-    coverage is checked against live record timestamps (not summary counts).
+    as if their narrative described only that range. Descend instead. Compare
+    each returned window's stored record count with the current source count.
     """
     now = int(time.time() * 1000)
     # Civil 31-day spans can be 31 days + 1 hour across a fall-back transition.
@@ -278,6 +278,11 @@ async def activity_overview(
     grains = grains[grains.index(max_grain) :]
     labels = await db.device_labels()
     clause, params = device_clause(device_id)
+    summary_clause = " AND device_scope=?" if device_id is not None else ""
+    summary_params = [device_id] if device_id is not None else []
+    placeholders = ",".join("?" for _ in grains)
+    # Compare records and summaries from the same view of the database. Ingest
+    # and rollup both take this lock, so neither can advance between reads.
     async with db.lock:
         async with db.conn.execute(
             "SELECT r.device_id,r.ts_start FROM records r "
@@ -285,7 +290,13 @@ async def activity_overview(
             (start, end, *params),
         ) as cur:
             captured = await cur.fetchall()
-    # One consistent timestamp read, then count windows outside the DB lock.
+        async with db.conn.execute(
+            f"SELECT * FROM device_summaries WHERE grain IN ({placeholders}) "
+            "AND window_start<? AND window_end>?" + summary_clause + " ORDER BY window_start",
+            (*grains, end, start, *summary_params),
+        ) as cur:
+            summaries = await cur.fetchall()
+
     timestamps: dict[str, list[int]] = {}
     for r in captured:
         timestamps.setdefault(r["device_id"] or UNKNOWN_DEVICE, []).append(r["ts_start"])
@@ -294,12 +305,8 @@ async def activity_overview(
     if device_id is not None:
         scopes = {device_id}
     rows_by_device: dict[str, list] = {d: [] for d in scopes}
-    for grain in grains:
-        rows = await db.get_device_summaries(
-            grain, start, end, device_scope=device_id, overlap=True
-        )
-        for row in rows:
-            rows_by_device.setdefault(row["device_scope"], []).append(row)
+    for row in sorted(summaries, key=lambda row: grains.index(row["grain"])):
+        rows_by_device.setdefault(row["device_scope"], []).append(dict(row))
     output = []
     for did, rows in sorted(rows_by_device.items()):
         selected: list[dict] = []
@@ -320,10 +327,24 @@ async def activity_overview(
         available = len(selected)
         selected = selected[:limit]
         times = timestamps.get(did, [])
-        covered = sum(
-            bisect_left(times, s["window_end"]) - bisect_left(times, s["window_start"])
-            for s in selected
-        )
+        covered = 0
+        source_mismatches = 0
+        items = []
+        for row in selected:
+            source_count = bisect_left(times, row["window_end"]) - bisect_left(
+                times, row["window_start"]
+            )
+            summary_count = row["record_count"]
+            matches = summary_count == source_count
+            covered += source_count
+            source_mismatches += not matches
+            item = summary_item(row, now)
+            item["source_coverage"] = {
+                "captured_records": source_count,
+                "summary_record_count": summary_count,
+                "record_count_matches": matches,
+            }
+            items.append(item)
         total = counts.get(did, 0)
         # Gaps are time ranges without returned narratives, not inactivity intervals.
         gap_bounds = []
@@ -346,7 +367,7 @@ async def activity_overview(
             {
                 "device_id": did,
                 "device": device_label(did, labels),
-                "items": [summary_item(s, now) for s in selected],
+                "items": items,
                 "returned_grains": sorted({s["grain"] for s in selected}, key=grains.index),
                 "fallback_used": any(s["grain"] != max_grain for s in selected),
                 "truncated": available > limit,
@@ -358,13 +379,14 @@ async def activity_overview(
                     "records_in_returned_windows": covered,
                     "records_outside_returned_windows": max(0, total - covered),
                     "uncovered_ranges": gaps,
+                    "source_mismatch_windows": source_mismatches,
                 },
                 "summary_state": "no_captured_records"
                 if not total
                 else "unavailable"
                 if not selected
                 else "partial"
-                if covered < total or available > limit
+                if covered < total or available > limit or source_mismatches
                 else "covered",
                 "pending_windows": sum(
                     r["window_end"] <= now
@@ -384,7 +406,7 @@ async def activity_overview(
         "device_id": device_id,
         "devices": output,
         "fallback_hint": {
-            "when": "summary_state=unavailable 或仍有 uncovered_ranges 时继续查询",
+            "when": "summary_state 为 partial 或 unavailable，或仍有 uncovered_ranges 时继续查询",
             "tool": "search_summaries" if device_id is None else "get_recent_activity",
             "scope": "global_context_only" if device_id is None else "same_device",
             "arguments": (
@@ -398,7 +420,9 @@ async def activity_overview(
                 if device_id is None
                 else {"device_id": device_id, "start_iso": iso(start), "end_iso": iso(end)}
             ),
-            "instruction": (
+            "instruction": "如有 source_mismatch_windows，按对应设备和条目的窗口起止用"
+            " get_recent_activity 核对原始记录。其他缺口按以下方式查询。"
+            + (
                 "用 search_summaries 按 arguments 查询：保留原 custom 起止，"
                 "window_match=contained，"
                 "不传 device_id；只接受 ready 的范围内窗口。粗层无结果或还有缺口，保持起止和"
@@ -409,7 +433,8 @@ async def activity_overview(
             ),
         },
         "note": "按设备选择已闭合且已生成的摘要；粗层不可用时自动下钻，返回窗不重叠。"
-        "coverage 只表示记录落在返回摘要的时间窗内，不保证叙述包含每个细节或最新迟到记录。"
+        "covered 要求原始记录均落在返回窗内、未截断，且逐窗汇总条数与当前记录数一致。"
+        "source_coverage 比对条数，不能验证记录身份或叙述内容。"
         "uncovered_ranges 不等于无活动；历史设备摘要未回填时不会混入全设备摘要。"
         "truncated=true 时缩小时间范围，或用 search_summaries 指定粒度读取。" + PRESENCE_NOTE,
     }

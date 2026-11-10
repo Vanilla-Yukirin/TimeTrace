@@ -20,6 +20,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from playwright.async_api import async_playwright, expect
+from seed_server import HISTORY_END_MS, HISTORY_START_MS, UNKNOWN_DEVICE
 
 ARTIFACTS = Path("/artifacts")
 TOKEN = "e2e-only-machine-token"
@@ -417,6 +418,49 @@ async def run(completed):
                         await context.tracing.stop(path=str(ARTIFACTS / "browser-trace.zip"))
                         await browser.close()
                 completed.append("browser_login_timeline_device_and_client_control")
+
+                historical_bounds = {
+                    "period": "custom",
+                    "start_iso": dt.datetime.fromtimestamp(
+                        HISTORY_START_MS / 1000, dt.timezone.utc
+                    ).isoformat(),
+                    "end_iso": dt.datetime.fromtimestamp(
+                        HISTORY_END_MS / 1000, dt.timezone.utc
+                    ).isoformat(),
+                    "device_id": UNKNOWN_DEVICE,
+                }
+
+                async def upload_historical_record(client_id, ts_start):
+                    response = await api.post(
+                        "/v1/ingest/record",
+                        data={
+                            "record": json.dumps(
+                                {"client_record_id": client_id, "ts_start": ts_start}
+                            )
+                        },
+                    )
+                    response.raise_for_status()
+                    assert response.json()["was_new"]
+
+                await upload_historical_record("e2e-historical-original", HISTORY_START_MS)
+                before = (await mcp("get_activity_overview", historical_bounds))["devices"][0]
+                assert before["summary_state"] == "covered", before
+                # The late record falls in the next 5min child, absent from the saved hour.
+                await upload_historical_record("e2e-historical-late", HISTORY_START_MS + 300_000)
+                after = (await mcp("get_activity_overview", historical_bounds))["devices"][0]
+                assert after["summary_state"] == "partial", after
+                assert after["coverage"]["uncovered_ranges"] == []
+                assert after["coverage"]["source_mismatch_windows"] == 1
+                assert after["items"][0]["source_coverage"] == {
+                    "captured_records": 2,
+                    "summary_record_count": 1,
+                    "record_count_matches": False,
+                }
+                (ARTIFACTS / "summary-coverage.json").write_text(
+                    json.dumps({"before": before, "after": after}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                completed.append("summary_coverage_late_record")
             return completed
         finally:
             if process and process.poll() is None:
