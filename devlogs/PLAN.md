@@ -1,6 +1,6 @@
 # TimeTrace 当前状态与滚动计划
 
-**最后核对：2026-11-10。** 已完成客户端与服务端只读核验，以及工程底座的本地实现和验收：双容器端到端、本地/CI 统一入口、日志与指标。工程底座通过 `codex/engineering-foundation` 工作分支进入 PR 验收，尚未合入 main；未部署，未修改生产数据。
+**最后核对：2026-11-10。** 工程底座 PR #25 已合入 `main`（`b9c2abc`），本地和远端已合并分支已清理。当前工作分支 `codex/outbox-ack-recovery` 修复确认游标写入失败导致客户端退出的问题，已完成本地 Windows 与双容器验收；修复尚未合入主线。未部署，未修改生产数据或已安装客户端。
 
 本文是唯一的当前待办入口。架构看 [项目 Wiki](../infra/readme.md)，部署看 [部署手册](../infra/architecture/web-deployment.md)，历史过程看 [DevLog 索引](README.md)。事实冲突时以代码、对应提交的测试及有日期的运行证据为准；旧归档只说明当时的状态。
 
@@ -8,10 +8,10 @@
 
 | 对象 | 最近证据 | 边界 |
 |---|---|---|
-| 开发主线 | 文档整理已推送 `cfbc31b`；工程底座工作分支基于此提交 | 工作分支进入 PR 验收；远端检查以对应 PR 最新提交的结果为准 |
-| 本地单元测试（11 月 10 日） | Windows：704 passed / 5 skipped；Linux：702 passed / 7 skipped；日志脱敏补充回归 3 passed | 临时数据库与隔离 Linux 容器；跳过真实 VLM 和不适用的平台测试 |
+| 开发主线 | [PR #25](https://github.com/Vanilla-Yukirin/TimeTrace/pull/25) 合并至 `b9c2abc`；[合并后的 main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42775723309) 成功 | Outbox 修复基于该提交；远端修复验收以对应 PR 最新提交检查为准 |
+| 本地单元测试（11 月 10 日） | Windows：717 passed / 5 skipped，含 4 个真实 Windows 只读/句柄共享故障用例；Linux：711 passed / 11 skipped；Outbox 定向回归 52 passed | 临时目录和合成数据；跳过真实 VLM 测试及不适用的平台用例 |
 | 构建与静态检查（11 月 10 日） | Ruff、前端 lint/TypeScript/build、Windows ZIP 与冻结 EXE 启动、Actionlint 工作流检查通过 | 此处记录本地结果；远端 Actions 结果由 PR 检查保留 |
-| 双容器 E2E（11 月 10 日 03:08） | 10 个验收场景通过；应用链路 29.70 秒，含构建整轮 3 分 31 秒；证据 `artifacts/timetrace-e2e-96aa1d60bd/` | 模拟画面/模型、真实应用/网络/存储/浏览器；测试容器、网络和卷已清理 |
+| 双容器 E2E（11 月 10 日 15:43） | 11 个场景通过，含确认替换被拒绝后恢复；应用链路 29.61 秒；证据 `artifacts/timetrace-e2e-3117ee039b/` | 模拟画面/模型及 OS 替换故障，真实应用/网络/存储/浏览器；测试容器、网络和卷已清理 |
 | 发布分支与生产验收 | 11 月 10 日只读核对生产仍为 `81a10b6`；服务端近期分析和摘要持续推进 | 近期正常不代表历史覆盖完整；本轮不更新运行制品 |
 | Windows 安装包 | 两台设备上报 v0.1.1；其客户端源文件与 `81a10b6` 一致 | 不能只根据发布日期判断客户端过时；代码签名和自动更新仍未完成 |
 
@@ -38,15 +38,20 @@ W1–W6（PR #14–#21）及 PR #23/#24 已合入，且包含于最近验收的�
 - 两个容器跑真实采集、Outbox、传输、服务端、数据库、分析/摘要、MCP 和浏览器；画面与模型响应固定，验证断网、客户端终止、回执丢失和服务端重启。
 - 服务端与 Windows 制品发布依赖整套 CI；远端分支保护配置仍需核验。
 - JSON 日志保留异常组、请求 ID 与 worker 记录 ID；客户端轮转日志；服务端和客户端提供指标，新增 readiness。
-- 本地验收已通过，见上表及 [本轮记录](infra/archive-202611100308-engineering-foundation.md)。Windows 真机屏幕/托盘/NTFS 故障验收、远端分支保护与生产监控接入仍待后续阶段执行。
+- 工程底座已通过本地/远端验收并合入，见上表及 [工程底座记录](infra/archive-202611100308-engineering-foundation.md)。本轮补齐 Windows 文件替换拒绝验收；屏幕/托盘、远端分支保护与生产监控接入继续安排。
+
+## 当前修复：Outbox 确认写入恢复
+
+11 月 10 日故障为 `state.json.tmp → state.json` 的 `PermissionError [WinError 5]` 穿透 TaskGroup。原现场待发送数据仍保留，本轮没有操作该目录。工作分支现在只重试本地确认，成功前不推进游标，等待时释放队列锁并响应停止信号；扫描/压缩遇到磁盘错误后重新读取持久游标，避免沿用旧快照。控制页和日志显示存储错误及恢复过程。状态和日志替换改用独立临时文件，已有 JSONL/游标格式保持兼容。
+
+Windows 真实 OS 故障、串行/并发确认、停止与重启重放、压缩失败恢复及双容器整体链路已验证。队列事务化和容量策略仍是后续结构调整；修复发布到已安装客户端需要独立发行步骤。过程见 [修复记录](infra/archive-202611101543-outbox-ack-recovery.md)。
 
 ## 已确认的问题与后续顺序
 
-1. **P0：Windows Outbox 确认落盘会导致整个客户端退出。** 11 月 10 日完整异常为 `state.json.tmp → state.json` 的 `PermissionError [WinError 5]`，通过 TaskGroup 传播终止进程。现场游标 177、临时游标 178、日志 180 条，3 条待发送仍在。当前只补完整日志与可重现环境，队列事务化/恢复策略下一阶段处理；不能把捕获异常日志视为故障已修复。
-2. **P0：摘要 overview 会把内容不完整的历史窗标成 covered。** Yuki 10 月 19 日 04:00 至 26 日 04:00 周窗原始记录 17,581，摘要仅 10,275，差 7,306。当前判定依赖时间窗覆盖，需加入来源完整性校验，并用缺子窗 fixture 回归。
-3. **P1：历史设备摘要和归属尚未统一。** 只读审计：Yuki 日摘要 19/76、Tohru 17/25、unknown 0/24；unknown 记录 45,189。全局缺 17 个日窗、6 月 22 日 10 个 5min 窗 pending、6 月 38 条 analysis error_final。10 月 22 日以来设备小时及以上摘要完整；历史整理另行限定范围、备份和验收。
-4. **P1：前端依赖告警。** 11 月 10 日本地 `npm audit --omit=dev` 报 6 项：dompurify critical、react-router/react-router-dom/zod high、mermaid moderate、katex low。后续锁文件更新须重新执行浏览器 E2E；当前 CI 尚未增加依赖漏洞门禁。
-5. **P1：客户端能力与状态整理。** 明确采集、可靠发送、暂停/恢复、容量和错误诊断的边界；先以端到端验收约束行为，再评估用 SQLite 事务队列替换 JSONL + 游标文件。
+1. **P0：摘要 overview 会把内容不完整的历史窗标成 covered。** Yuki 10 月 19 日 04:00 至 26 日 04:00 周窗原始记录 17,581，摘要仅 10,275，差 7,306。当前判定依赖时间窗覆盖，需加入来源完整性校验，并用缺子窗 fixture 回归。
+2. **P1：历史设备摘要和归属尚未统一。** 只读审计：Yuki 日摘要 19/76、Tohru 17/25、unknown 0/24；unknown 记录 45,189。全局缺 17 个日窗、6 月 22 日 10 个 5min 窗 pending、6 月 38 条 analysis error_final。10 月 22 日以来设备小时及以上摘要完整；历史整理另行限定范围、备份和验收。
+3. **P1：前端依赖告警。** 11 月 10 日本地 `npm audit --omit=dev` 报 6 项：dompurify critical、react-router/react-router-dom/zod high、mermaid moderate、katex low。后续锁文件更新须重新执行浏览器 E2E；当前 CI 尚未增加依赖漏洞门禁。
+4. **P1：客户端能力与状态整理。** 明确采集、可靠发送、暂停/恢复、容量和错误诊断的边界；先以端到端验收约束行为，再评估用 SQLite 事务队列替换 JSONL + 游标文件。
 
 ## 其他验收缺口
 

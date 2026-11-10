@@ -1,6 +1,7 @@
 """Real client composition with a synthetic OS observation source."""
 
 import asyncio
+import errno
 import hashlib
 import signal
 import sys
@@ -72,6 +73,23 @@ async def main():
     cfg.capture.min_capture_interval_s = 0.1
     cfg.capture.switch_capture_delay_s = 0.1
     cfg.control.port = 18764
+    if "--deny-ack" in sys.argv:
+        # Linux cannot reproduce NTFS sharing modes. Inject the same failure
+        # at Path.replace; native Windows tests exercise the actual OS denial.
+        replace = Path.replace
+
+        def replace_with_ack_fault(path, target):
+            if (
+                Path(target) == cfg.outbox.root_dir / "state.json"
+                and not Path("/artifacts/release-ack").exists()
+            ):
+                Path("/artifacts/ack-blocked").touch()
+                error = PermissionError(errno.EACCES, "fixture: state replacement denied")
+                error.winerror = 5
+                raise error
+            return replace(path, target)
+
+        Path.replace = replace_with_ack_fault
     quit_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in [signal.SIGINT, signal.SIGTERM]:

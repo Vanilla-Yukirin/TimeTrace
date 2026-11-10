@@ -203,6 +203,7 @@ async def _run(
             on_send_failure=_on_send_failure,
             on_send_success=controller.record_upload,
             on_send_error=controller.record_send_error,
+            on_storage_error=controller.record_error,
             concurrency=client_cfg.upload.concurrency,
         )
         sender_stop = asyncio.Event()
