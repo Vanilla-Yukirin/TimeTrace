@@ -10,7 +10,6 @@ For the all-in-one single-process default, see ``src/timetrace/main.py``.
 from __future__ import annotations
 
 import asyncio
-import logging
 import signal
 import sys
 
@@ -21,6 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from timetrace.common.config import AppConfig  # noqa: E402
+from timetrace.common.logging import configure_logging  # noqa: E402
 from timetrace.server.bootstrap import build_server_components, serve  # noqa: E402
 
 logger = structlog.get_logger(__name__)
@@ -72,10 +72,7 @@ def main() -> None:
         print(_HELP_TEXT, file=sys.stderr)
         sys.exit(2)
 
-    logging.basicConfig(level=logging.WARNING)
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-    )
+    configure_logging("server")
 
     config = AppConfig()
     loop = asyncio.new_event_loop()
@@ -94,6 +91,9 @@ def main() -> None:
         loop.run_until_complete(_run(config, quit_event))
     except (KeyboardInterrupt, SystemExit):
         pass
+    except Exception:
+        logger.exception("server.crashed")
+        raise
     finally:
         pending = asyncio.all_tasks(loop)
         for t in pending:

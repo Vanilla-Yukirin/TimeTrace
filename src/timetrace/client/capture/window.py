@@ -5,11 +5,12 @@ from __future__ import annotations
 import ctypes
 import re
 from ctypes import wintypes
-from dataclasses import dataclass
 
 import structlog
 import win32gui
 import win32process
+
+from timetrace.client.capture.source import WindowInfo
 
 logger = structlog.get_logger(__name__)
 
@@ -63,16 +64,6 @@ def _query_full_process_image_name(handle: int) -> str:
 _BROWSER_PROCESSES = frozenset(
     {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe"}
 )
-
-
-@dataclass
-class WindowInfo:
-    app_name: str  # Friendly name (e.g. "Visual Studio Code")
-    process_name: str  # Executable name (e.g. "Code.exe")
-    window_title: str  # Full window title
-    hwnd: int  # Window handle
-    pid: int  # Process ID
-    url: str | None = None
 
 
 def get_active_window() -> WindowInfo | None:

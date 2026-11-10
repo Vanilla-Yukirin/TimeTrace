@@ -120,6 +120,9 @@ async def _run(
     client_cfg: ClientConfig,
     quit_event: asyncio.Event,
     runtime: dict | None = None,
+    *,
+    capture_source=None,
+    show_tray: bool = True,
 ) -> None:
     client_cfg.validate_device_identity(
         source="timetrace-client startup",
@@ -188,6 +191,7 @@ async def _run(
             backend,
             storage_cfg=client_cfg.storage,
             on_capture=controller.record_capture,
+            source=capture_source,
         )
 
         # 5) Sender drains outbox → HTTP
@@ -236,7 +240,8 @@ async def _run(
         # The tray starts only after the controller exists, so its background
         # thread can never mutate config directly or race daemon composition.
         try:
-            start_tray_thread(controller=controller)
+            if show_tray:
+                start_tray_thread(controller=controller)
         except Exception:  # noqa: BLE001
             logger.warning("client.tray_start_failed", exc_info=True)
 
@@ -348,6 +353,9 @@ def main() -> None:
             loop.run_until_complete(_run(client_cfg, quit_event, runtime))
         except (KeyboardInterrupt, SystemExit):
             pass
+        except Exception:
+            logger.exception("client.crashed")
+            raise
         finally:
             pending = asyncio.all_tasks(loop)
             for t in pending:

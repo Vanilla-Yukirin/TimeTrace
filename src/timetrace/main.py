@@ -17,7 +17,6 @@ quit, VLM/DB cleanup) lives in bootstrap and is shared.
 from __future__ import annotations
 
 import asyncio
-import logging
 import signal
 
 import structlog
@@ -30,6 +29,7 @@ from timetrace.client.capture.service import CaptureService  # noqa: E402
 from timetrace.client.core.backend import InProcessBackend  # noqa: E402
 from timetrace.client.tray import start_tray_thread  # noqa: E402
 from timetrace.common.config import AppConfig  # noqa: E402
+from timetrace.common.logging import configure_logging  # noqa: E402
 from timetrace.server.bootstrap import build_server_components, serve  # noqa: E402
 
 logger = structlog.get_logger(__name__)
@@ -55,10 +55,7 @@ async def _run(config: AppConfig, quit_event: asyncio.Event) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.WARNING)
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-    )
+    configure_logging("standalone")
 
     config = AppConfig()
     loop = asyncio.new_event_loop()
@@ -83,6 +80,9 @@ def main() -> None:
     except (KeyboardInterrupt, SystemExit):
         # Fallback: double Ctrl+C or OS-level interrupt bypasses our handler.
         pass
+    except Exception:
+        logger.exception("standalone.crashed")
+        raise
     finally:
         pending = asyncio.all_tasks(loop)
         for t in pending:

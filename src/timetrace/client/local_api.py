@@ -13,6 +13,7 @@ import structlog
 import uvicorn
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import BaseModel, ConfigDict
 
 from timetrace.client.controller import (
@@ -20,6 +21,7 @@ from timetrace.client.controller import (
     ControllerMutationError,
 )
 from timetrace.client.core.endpoints import redact_endpoint_url
+from timetrace.client.metrics import render_client_metrics
 
 logger = structlog.get_logger(__name__)
 
@@ -115,6 +117,13 @@ def create_local_app(
     async def status() -> dict:
         return asdict(await controller.snapshot())
 
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        return Response(
+            render_client_metrics(await controller.snapshot()),
+            headers={"Content-Type": CONTENT_TYPE_LATEST},
+        )
+
     @app.get("/api/config")
     async def config() -> dict:
         cfg = controller.config
@@ -170,6 +179,10 @@ async def serve_local_control(
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        # POSIX restart must be able to bind while the previous connection is
+        # in TIME_WAIT. SO_REUSEPORT remains off: only one listener owns it.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind((_CONTROL_HOST, port))
         sock.listen(128)

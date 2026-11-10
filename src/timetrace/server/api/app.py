@@ -36,6 +36,7 @@ from timetrace.server.api.routes import (
 from timetrace.server.api.routes import auth as auth_routes
 from timetrace.server.auth import make_bearer_dependency
 from timetrace.server.mcp_layer.server import build_mcp_server
+from timetrace.server.observability import install_observability
 from timetrace.server.tz import TimezoneMiddleware
 
 _logger = structlog.get_logger(__name__)
@@ -110,6 +111,7 @@ def create_app(
     # api_host / api_port default values; overridden by main.py if needed
     app.state.api_host = "127.0.0.1"
     app.state.api_port = 8765
+    install_observability(app, db)
 
     # Phase 1 (login system): cookie-session routes.
     if users is not None and auth_cfg is not None:

@@ -24,6 +24,7 @@ Thumbs.db
 # build so the SPA and server always share one immutable SHA.
 frontend/node_modules
 frontend-dist
+artifacts
 node_modules
 
 # Local data, credentials, and tokens are bind mounts, never image content.

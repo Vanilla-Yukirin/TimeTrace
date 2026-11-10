@@ -77,7 +77,7 @@ uv sync
 uv run timetrace-server                  # 起服务，默认监听 127.0.0.1:8765
 ```
 
-首次启动会自动生成一个 bearer token 写到 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600）并打印到日志，**复制这个 token**。
+首次启动会自动生成 bearer token，写到 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600）。从该文件读取 token，用于客户端初始化；日志只显示凭据文件位置。
 
 服务端管理命令：
 
@@ -142,14 +142,15 @@ uv run timetrace-client print-config                # 看实际生效的配置�
 ## 开发
 
 ```bash
-uv sync
-uv run pytest                               # 全套测试
+uv sync --locked
+python scripts/check.py all                # lint + 单元测试 + 前端 + 双容器端到端
 uv run pytest tests/test_storage.py -k name # 单测
-uv run ruff check src/
-uv run ruff format src/
+python scripts/check.py e2e                # 单独运行双容器验收
 ```
 
-GitHub Actions 对 `main` 的 push 和 PR 运行 lint、format check 与 pytest。最近一次带日期和 commit 的全量结果只记录在 [滚动 PLAN](devlogs/PLAN.md)，避免多个 README 复制后漂移。
+完整检查需要 Python 3.12+、uv、Node.js 22 和 Docker Linux engine。E2E 启动真实客户端与服务端，注入固定画面和模型响应，覆盖离线恢复、回执丢失、分析、摘要、MCP 与浏览器；证据保存在 `artifacts/`。操作与日志/指标规范见 [工程验收文档](infra/architecture/engineering-workflow.md)。
+
+GitHub Actions 对 `main` 的 push 和 PR 执行同一检查入口，另在 Windows/Linux 验证单元测试并构建 Windows 安装包。服务端和客户端制品发布复用 CI 门禁。最近一次实际执行结果只记录在 [滚动 PLAN](devlogs/PLAN.md)。
 
 ---
 
@@ -197,6 +198,7 @@ src/timetrace/
 
 - [devlogs/PLAN.md](devlogs/PLAN.md) — **当前未完成项与下一步，先看这里**
 - [infra/readme.md](infra/readme.md) — 当前架构地图与深度文档索引（仓库内 Markdown Wiki）
+- [工程验收文档](infra/architecture/engineering-workflow.md) — 本地/CI 同一入口、双容器 E2E、日志和指标
 - [部署手册](infra/architecture/web-deployment.md) — 私网入口、首次安装、发布、健康检查、备份与回滚
 - [devlogs/README.md](devlogs/README.md) — 按时间和主题索引开发/排障事实；具体 archive 是历史快照
 - [`.env.example`](.env.example) — VLM 启用模板

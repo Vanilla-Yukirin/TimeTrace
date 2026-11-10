@@ -92,6 +92,8 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
     # inside llm_log so they can't break the actual LLM call.
     async def _llm_request_sink(entry: LLMRequestLog) -> None:
         await db.insert_llm_request(**asdict(entry))
+        app.state.metrics.llm_calls.labels(entry.caller, entry.status).inc()
+        app.state.metrics.llm_duration.labels(entry.caller).observe(entry.duration_ms / 1000)
 
     set_default_sink(_llm_request_sink)
 
@@ -121,11 +123,11 @@ async def build_server_components(config: AppConfig) -> ServerComponents:
     blob_storage = LocalBlobStorage(config.storage.data_dir)
     auth, was_generated, generated = ServerAuth.load_or_generate()
     if was_generated and generated is not None:
-        # First-start banner — user copies this into client.toml's auth_token.
+        # Tell the operator where to retrieve the token without logging it.
         logger.info(
             "auth.token_generated",
             label=generated.label,
-            value=generated.value,
+            token_file=str(auth.token_path()),
         )
 
     # Login-system: seed admin/admin (or env-configured username) on first
@@ -278,7 +280,9 @@ async def serve(
                 counts = await builder.build_recent(int(time.time() * 1000))
                 if counts:
                     logger.info("rollup.tick", **{f"n_{g}": n for g, n in counts.items()})
+                components.app.state.metrics.tick_success.labels("rollup").set(time.time())
             except Exception:  # noqa: BLE001
+                components.app.state.metrics.tick_errors.labels("rollup").inc()
                 logger.warning("rollup.tick_failed", exc_info=True)
             await asyncio.sleep(config.rollup.loop_interval_s)
 
@@ -330,7 +334,9 @@ async def serve(
                     )
                     if any(counts.values()):
                         logger.info("narrate.tick", **{f"n_{g}": n for g, n in counts.items()})
+                    components.app.state.metrics.tick_success.labels("narrate").set(time.time())
                 except Exception:  # noqa: BLE001
+                    components.app.state.metrics.tick_errors.labels("narrate").inc()
                     logger.warning("narrate.tick_failed", exc_info=True)
                 await asyncio.sleep(config.narrate.loop_interval_s)
         finally:
@@ -338,13 +344,21 @@ async def serve(
 
     try:
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(components.worker.run(), name="worker")
+            components.app.state.background_tasks["worker"] = tg.create_task(
+                components.worker.run(), name="worker"
+            )
             tg.create_task(server.serve(), name="api")
             tg.create_task(_watch_quit(), name="quit_watcher")
-            tg.create_task(_reclaim_loop(), name="reclaim")
+            components.app.state.background_tasks["reclaim"] = tg.create_task(
+                _reclaim_loop(), name="reclaim"
+            )
             tg.create_task(_report_scheduler(), name="report_scheduler")
-            tg.create_task(_rollup_loop(), name="rollup")
-            tg.create_task(_narrate_loop(), name="narrate")
+            rollup_task = tg.create_task(_rollup_loop(), name="rollup")
+            narrate_task = tg.create_task(_narrate_loop(), name="narrate")
+            if config.rollup.enabled:
+                components.app.state.background_tasks["rollup"] = rollup_task
+            if config.narrate.enabled and config.vlm is not None:
+                components.app.state.background_tasks["narrate"] = narrate_task
             for name, coro in (extra_tasks or {}).items():
                 tg.create_task(coro, name=name)
     finally:

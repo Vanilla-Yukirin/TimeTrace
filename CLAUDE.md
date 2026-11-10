@@ -10,7 +10,8 @@ TimeTrace 是一个 **Windows 采集端 + 跨平台服务端、本地优先**的
 
 ```bash
 # 后端
-uv sync                                    # 安装/同步依赖
+uv sync --locked                           # 安装锁定依赖
+python scripts/check.py all                 # 交付门槛：静态检查、单元、前端、双容器 E2E
 uv run timetrace                           # 单进程模式：捕获 + 分析 + API + 托盘 全在一个进程
 uv run pytest                              # 全部测试
 uv run pytest tests/test_storage.py -k name  # 单测
@@ -22,7 +23,16 @@ cd frontend && npm run dev                 # http://127.0.0.1:5173/，vite 代�
 cd frontend && npm run build               # 产物到仓库根的 frontend-dist/
 ```
 
-API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先登录并完成首次改密。
+API 启动后用 `/healthz` 检查存活、`/readyz` 检查数据库和后台任务；`/metrics` 使用已有 cookie/Bearer 鉴权。`/docs` 与 `/openapi.json` 需要先登录并完成首次改密。
+
+## 代码交付门槛
+
+- 修改应用代码、依赖、构建或运行配置后，必须执行 `python scripts/check.py all`。允许在同一最终工作树上分别执行 `lint`、`unit`、`frontend`、`e2e`；报告实际结果和 `artifacts/` 证据路径。纯文档修改检查内容与链接即可。
+- 双容器 E2E 使用 `qa/e2e/compose.yml`：真实客户端采集流程、Outbox、HTTP、服务端、SQLite、分析/摘要循环和浏览器，仅画面/窗口输入和模型响应使用固定样例。不得将 ASGITransport 单元测试计作完整 E2E。
+- 测试环境只使用独立命名卷与内部网络；禁止挂载用户 `TimeTraceData`、生产凭据或访问生产接口。缺 Docker 时启动本机 Docker；无法运行时明确记录阻塞，不把缺测记为通过。
+- Windows 入口、采集、控制台或打包改动还需运行 `scripts/windows/build-client.ps1` 和 `verify-client-package.ps1`。容器覆盖跨平台业务链路，Windows 屏幕/托盘/NTFS 故障另作平台验收。
+- CI 在 Windows/Linux 跑单元测试，并执行前端、E2E、Windows 制品验收；服务端和客户端发布复用 CI 门禁。提交、推送、发布与生产激活按本次授权执行。
+- 完整环境、故障场景与可观测性规范见 [工程验收文档](infra/architecture/engineering-workflow.md)。
 
 ## 运行模式（重要：常被混淆）
 
@@ -44,7 +54,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - 主线程跑 pystray 托盘 + asyncio event loop
 - `asyncio.TaskGroup` 并行管理 `capture`、`worker`、`api`、`quit_watcher`、`reclaim`、`report_scheduler`，以及受配置开关控制的 `rollup` / `narrate`；不要依赖固定任务数判断拓扑
 - SIGINT / 托盘 Quit / uvicorn 退出**统一路由到** `quit_event`（`loop.call_soon_threadsafe(quit_event.set)`），由 `_watch_quit` 设置 `server.should_exit=True` 并取消同伴任务，避免 uvicorn 二次抛 SIGINT 中断 event loop
-- `_reclaim_loop` 每 60s 清理 worker 异常退出残留的 `analysis_task` 行
+- `_reclaim_loop` 每 60s 回收 `analysis_results` 中 worker 异常退出遗留的处理中状态
 
 **VLM 接入**（已实装，非桩）：
 
@@ -67,8 +77,8 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 
 **数据流挂钩**：
 
-- `Capture → Database`：每条 record 触发 `INSERT INTO analysis_tasks` 入队
-- `Worker → VLM`：从 `analysis_tasks` 拉任务、调 VLM、回写 `analysis_results.vlm_desc` + `category_final`
+- `Capture → Database`：记录与分析状态写入 `records` / `analysis_results`，没有独立的 `analysis_tasks` 表
+- `Worker → VLM`：从 `analysis_results` 领取待处理记录、调 VLM、回写描述与分类
 - `Capture → PHashIndex`：每张 thumb 计算 pHash，加入内存 BK-tree（`PHashIndex.from_db` 启动时从 DB 重建）
 - `API /v1/search/by-image`：pHash 视觉通道（BK-tree 距离）+ 图→VLM 描述→文本 embedding 余弦（无 embedder 时退回 `_desc_token_search` 词重叠）+ RRF
 - **统一检索**：`/v1/search/text`、Web Agent 与 MCP 的 `search_activity` 都走 `server/retrieval.py::retrieve_records`（FTS5/LIKE + embedding，RRF；范围过滤在各通道候选阶段）；`search_summaries` 的 query 走 `summaries_fts`。embedder 由调用方注入 `dispatch_tool(..., embedding=)`，不从模型参数取
@@ -96,10 +106,10 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
   - `OutboxBackend`：把 capture 调用先 append 进 Outbox，由 `OutboxSender` 后台 drain 给 HttpBackend；已是 timetrace-client 默认 backend
 - **Outbox**：`client/core/outbox.py`，append-only `log.jsonl` + `blobs/` + `state.json`（atomic rename + fsync）。`_read_log` 对末尾 partial JSON 行容错。`OutboxSender` 默认单并发 FIFO，也支持滑动窗口并发：同 record 保序、只按连续完成前缀推进 ack；另有指数 backoff + 可选 token bucket 限速 + `compact_every_n_acks=200` inline compaction（crash-safe 顺序：state.acked=0 先于 log 重写，最坏 at-least-once replay）。
 - **活动区间不变量**：capture 的 1s loop 若出现 >5s monotonic gap（休眠/暂停），用 gap 前最后观测墙钟关闭旧 record，resume 新开；close 的可信时间随 Outbox 原样重放。DB 写边界拒绝负数或 >5min 区间，常驻维护 loop 每分钟回收 >5min open lease；历史异常只通过 `repair-data-quality --apply` 在一致性备份后显式修复，不再在 `db.init()` 静默改历史。
-- **Auth**：`server/auth.py::ServerAuth`，`load_or_generate()` 读 `~/.config/timetrace-server/tokens.json`（POSIX 上 chmod 600）或首启自动生成 `tt_live_<32urlbytes>`；`/v1/ingest/*` 与 `/mcp` 是 bearer-only，records/search/feedback 等浏览器业务路由要求 cookie 或 bearer principal，只有 `/healthz` 是公开探活。token CRUD 通过 `timetrace-server tokens` 子命令或 Web admin；CLI 改完重启 server 才生效。
+- **Auth**：`server/auth.py::ServerAuth` 读取或首启生成 `~/.config/timetrace-server/tokens.json`（POSIX chmod 600）；日志只显示文件位置。`/v1/ingest/*` 与 `/mcp` 是 bearer-only，records/search/feedback 等浏览器业务路由和 `/metrics` 要求 cookie 或 bearer principal，`/healthz`、`/readyz` 公开探活。token CRUD 通过 `timetrace-server tokens` 子命令或 Web admin；CLI 改完重启 server 才生效。
 - **Ingest 路由幂等性**：`/v1/ingest/record` 用 `client_record_id` UNIQUE 索引做 record 级幂等；`screenshots(record_id, hash_sha256)` UNIQUE 索引做 screenshot 级幂等防 outbox at-least-once replay 双插。`/close` 路由按 server id 或 client_record_id 兜底，未知 id 返 404；blob 路径用 record.ts_start 算日期目录（不是上传时刻）。
 - **数据目录**：`%USERPROFILE%/TimeTraceData/`（不在仓库内）
-- **日志**：`structlog.get_logger(__name__)`，禁用 `print`
+- **日志**：`common/logging.py` 统一 JSON，使用 `structlog.get_logger(__name__)`，禁用业务 `print`。完整异常使用 `logger.exception`；不得记录 token、截图或活动正文。服务端请求有 `request_id`，worker 有 `record_id`。指标与日志规范见工程验收文档。
 - **前端代码风格**：以 inline style + Tailwind 工具类混用为主，已装 `@radix-ui/react-dialog/select/separator/slot/tooltip`、`@tanstack/react-query`、`lucide-react`，新增 UI 优先复用
 - **文档过期警告格式**：所有"本页/本段内容已过期"的标注统一用 `## **⚠️ 一句话标题**`（H2 + 加粗紧贴 emoji，无空格）。这样 `grep '^## \*\*⚠️' infra/ devlogs/` 能稳定枚举所有 deprecation 标注，不会因为下个人写成 H3 / blockquote / `> ⚠️` 而漏命中
 - **devlog 写完即不改**：`devlogs/**/archive-*.md` 是历史快照，只追加新归档，不回改老归档。`devlogs/PLAN.md` 是当前计划，`devlogs/README.md` 和 `infra/readme.md` 是索引，均应持续更新。状态变化区分代码合入、制品发布、主机激活、历史数据验收，并保留证据日期；不把历史运行快照当成今天的在线状态。
@@ -109,7 +119,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 - **GitHub identity**：仓库是 `Vanilla-Yukirin/TimeTrace`。本地 git config 的 `Yuki` 只是临时本地标签，不要混
 - **部署目标**：家里 Ubuntu 小主机（NAT 后）；GitHub Actions 只发布 GHCR 制品，主机通过出站 HTTPS 主动拉取，不再依赖 CI 经 FRP SSH 入站；历史拓扑见 [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
 - **私人入口**：Tailscale Serve → `127.0.0.1:19446` nginx；nginx 从 `/srv/timetrace/web/current` 托管 SPA，并把 `/v1`、`/mcp`、`/healthz`、`/thumbs`、`/blob` 等路径反代到 `127.0.0.1:8765`。迁移后不保留公网回退；敏感接口仍必须经过现有鉴权，MCP 不返回原始截图。MCP 的 Host/Origin 需要按实际私有域名精确配置，不关闭重绑定保护。部署脚本通过 `check-web-gateway.sh` 检查 loopback 网关，默认 19446，支持 `TIMETRACE_GATEWAY_URL` / `TIMETRACE_GATEWAY_HOST` 覆盖
-- **CI/CD 触发**：`push` 到 `deploy` 分支或 `workflow_dispatch` 只构建并发布不可变 GHCR 镜像，不连接部署机。GitHub 在触发时把 ref 固定为 `github.sha`，排队期间不会漂移。PR 会构建临时镜像做容器冒烟；main push 不重复构建 Docker
+- **CI/CD 触发**：main push / PR 执行完整 CI（含双容器 E2E）；deploy push / workflow_dispatch 和客户端标签发布先复用 CI，通过后才发布制品。GitHub 在触发时把 ref 固定为 `github.sha`，排队期间不会漂移。工作流不连接部署机。
 - **部署模型（唯一长期模型）**：`main` 是开发主干，`deploy` 是只接受 main fast-forward 的生产指针；发布制品命令是 `git push origin main:deploy`。`deploy.yml` 构建并推送同时包含 server、SPA 和部署资产的 `ghcr.io/vanilla-yukirin/timetrace-server:<sha>`；镜像就绪后，在部署机以 Docker 组用户执行 `timetrace-update`，由部署机通过出站 HTTPS 解析 `deploy` SHA、拉镜像并原子切换 `/srv/timetrace/runtime/releases/<sha>` 与 `/srv/timetrace/web/releases/<sha>`，失败自动恢复上一套
 - **容器边界**：只容器化 `timetrace-server`。生产 Compose 使用 Linux host network，使容器仍可访问宿主机 LM Studio `127.0.0.1:1234`；GPU、LM Studio、nginx、Tailscale 留在宿主机；本项目已撤掉 Cloudflare 公网入口。现有 `/home/vanilla/TimeTraceData` 与 `/home/vanilla/.config/timetrace-server` 原位 bind mount，不搬库、不复制截图；首次切换会无插值解析旧仓库 `.env`，再以 Compose 安全的单引号 dotenv 规范化到 `/srv/timetrace/config/timetrace.env`，保留引号、转义与字面 `$` 的原值
 - **旧源码部署已退役但保留回滚**：`~/Github/TimeTrace` 与 `timetrace-server.service` 不改名、不删除。首次容器切换会停旧 unit、做 stopped-service SQLite 快照并启动容器；失败则自动恢复旧 unit，成功才 disable 旧 unit。`deploy/deploy.sh` 与 unit 模板仅作历史/应急参考，不再是自动部署主路径
@@ -126,7 +136,7 @@ API 启动后用 `/healthz` 公开探活；`/docs` 与 `/openapi.json` 需要先
 
 - 最近一次全量基线与日期只维护在 `devlogs/PLAN.md`；不要在本文件复制动态测试数。金字塔与 agent 相关入口包括：`test_rollup_cascade / test_summary_windows / test_source_hash / test_narrative / test_agent_tools / test_agent_runner / test_query_stats / test_mcp_tools / test_mcp_auth / test_admin_backfill / test_admin_cmd / test_llm_log / test_pyramid_routes`
 - `pytest-asyncio` `asyncio_mode = "auto"`（pyproject.toml）
-- 不 mock DB，全部用 `tmp_path` 下的真实 SQLite 文件；HttpBackend E2E 用 `httpx.ASGITransport(app=...)` 直接打 in-process FastAPI，零 socket 零线程
+- 不 mock DB，单元测试用 `tmp_path` 下的真实 SQLite 文件；HttpBackend 的 ASGITransport 测试属于进程内集成检查。完整 E2E 用独立双容器和真实 TCP，由 `scripts/check.py e2e` 执行
 - VLM 测试分两层：`test_vlm.py` 单元（mock httpx），`test_vlm_smoke.py` 真实端点（需 `.env`，无 key 自动 skip）
 
 ## 开发日志与文档入口

@@ -171,6 +171,12 @@ class AnalysisWorker:
                 await asyncio.sleep(_POLL_INTERVAL_S)
 
     async def _handle_one(self, task: dict, worker_id: int) -> None:
+        with structlog.contextvars.bound_contextvars(
+            record_id=task["record_id"], worker_id=worker_id
+        ):
+            await self._process_one(task, worker_id)
+
+    async def _process_one(self, task: dict, worker_id: int) -> None:
         record_id = task["record_id"]
         retry_count = task.get("retry_count") or 0
 
