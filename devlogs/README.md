@@ -91,6 +91,7 @@ devlogs/
 
 | 文件 | 摘要 |
 |------|------|
+| [archive-202611101543-outbox-ack-recovery.md](infra/archive-202611101543-outbox-ack-recovery.md) | PR #25 合并与分支清理；Outbox 确认 I/O 失败可恢复、压缩后重读游标，真实 Windows 文件故障和双容器验收，未部署或修改生产数据 |
 | [archive-202611100308-engineering-foundation.md](infra/archive-202611100308-engineering-foundation.md) | 本地双容器 E2E、统一检查入口、发布 CI 门禁、JSON 日志与指标；Windows/Linux、前端、安装包及真实浏览器验收通过，记录 Outbox 与历史摘要后续问题，未提交/部署 |
 | [archive-202611100206-docs-and-branch-cleanup.md](infra/archive-202611100206-docs-and-branch-cleanup.md) | 核对主线上游，删除两个已合并远端分支，将旧备份转为本地归档标签；校准 PLAN/README/Wiki 与私网部署手册，移除过时 SSE 草稿，保留历史验收边界 |
 | [archive-202610230447-private-ts-pr24-deployment.md](infra/archive-202610230447-private-ts-pr24-deployment.md) | 私人 TS 入口迁移、关闭 CF 路由/DNS 与 8080；PR #24 固化双层 CA 和网关检查、修复外部端口丢失引发的 CSRF；发布 81a10b6 并验收真实 Cookie 写入、MCP/摘要/分页，保留备份与 Setsuna 待回执边界，清理已合并本地分支 |

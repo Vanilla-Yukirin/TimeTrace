@@ -130,6 +130,7 @@ class OutboxSender:
         on_send_failure: Callable[[], Awaitable[None]] | None = None,
         on_send_success: Callable[[OutboxEntry], None] | None = None,
         on_send_error: Callable[[OutboxEntry, Exception], None] | None = None,
+        on_storage_error: Callable[[str, OSError], None] | None = None,
         concurrency: int = 1,
     ) -> None:
         self._outbox = outbox
@@ -142,6 +143,7 @@ class OutboxSender:
         self._on_send_failure = on_send_failure
         self._on_send_success = on_send_success
         self._on_send_error = on_send_error
+        self._on_storage_error = on_storage_error
         self._backoff_initial = backoff_initial_s
         self._backoff_max = backoff_max_s
         self._idle_interval = idle_poll_interval_s
@@ -160,12 +162,29 @@ class OutboxSender:
     async def run(self, stop_event: asyncio.Event | None = None) -> None:
         """Main drain loop. Returns when `stop_event` is set or task is cancelled."""
         stop_event = stop_event or asyncio.Event()
+        storage_attempt = 0
+        storage_backoff = self._backoff_initial
         try:
             while not stop_event.is_set():
-                if self._concurrency > 1:
-                    drained = await self._drain_window_concurrent(stop_event)
-                else:
-                    drained = await self._drain_pending(stop_event)
+                try:
+                    if self._concurrency > 1:
+                        drained = await self._drain_window_concurrent(stop_event)
+                    else:
+                        drained = await self._drain_pending(stop_event)
+                except OSError as exc:
+                    # A failed compaction may already have reset the cursor.
+                    # Discard this drain's snapshot and reread durable state;
+                    # continuing it could acknowledge the wrong head entry.
+                    storage_attempt += 1
+                    await self._wait_for_storage(
+                        "scan_or_compact", exc, storage_attempt, storage_backoff, stop_event
+                    )
+                    storage_backoff = min(storage_backoff * 2, self._backoff_max)
+                    continue
+                if storage_attempt:
+                    logger.info("outbox_sender.storage_recovered", operation="scan_or_compact")
+                    storage_attempt = 0
+                    storage_backoff = self._backoff_initial
                 if drained == 0 and not stop_event.is_set():
                     # Nothing to do — wait either for the idle interval or for
                     # someone to flip the stop event, whichever comes first.
@@ -204,7 +223,8 @@ class OutboxSender:
             # FIFO queue forever (they can't be uploaded reliably). Ack to step
             # past them; the record-only entry for the same capture still sends.
             if self._is_oversize_image(entry):
-                await self._outbox.ack_next(entry.entry_id)
+                if not await self._ack_with_backoff(entry, stop_event):
+                    return sent
                 self._acks_since_compact += 1
                 continue
             # Pre-emptive bandwidth gate: wait BEFORE the network attempt so the
@@ -216,7 +236,8 @@ class OutboxSender:
             await self._send_with_backoff(entry, stop_event)
             if stop_event.is_set():
                 return sent
-            await self._outbox.ack_next(entry.entry_id)
+            if not await self._ack_with_backoff(entry, stop_event):
+                return sent
             sent += 1
             self._acks_since_compact += 1
             if (
@@ -291,7 +312,8 @@ class OutboxSender:
                     t.cancel()
                 if not done[e.entry_id].is_set():
                     break  # stop fired before this entry succeeded — leave it pending
-                await self._outbox.ack_next(e.entry_id)
+                if not await self._ack_with_backoff(e, stop_event):
+                    break
                 sent += 1
                 self._acks_since_compact += 1
                 if (
@@ -308,6 +330,52 @@ class OutboxSender:
                     t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
         return sent
+
+    async def _wait_for_storage(
+        self, operation: str, exc: OSError, attempt: int, backoff: float, stop_event: asyncio.Event
+    ) -> None:
+        if self._on_storage_error is not None:
+            try:
+                self._on_storage_error("outbox_" + operation, exc)
+            except Exception:
+                logger.warning("outbox_sender.storage_observer_failed", exc_info=True)
+        logger.warning(
+            "outbox_sender.storage_failed",
+            operation=operation,
+            attempt=attempt,
+            backoff_s=backoff,
+            errno=exc.errno,
+            winerror=getattr(exc, "winerror", None),
+            exc_info=True,
+        )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+        except TimeoutError:
+            pass
+
+    async def _ack_with_backoff(self, entry: OutboxEntry, stop_event: asyncio.Event) -> bool:
+        # Delivery already succeeded. Retry only the local durable ack, without
+        # repeating HTTP or triggering endpoint failover. Waiting releases the
+        # outbox lock so capture and the control panel remain available.
+        attempt = 0
+        backoff = self._backoff_initial
+        while not stop_event.is_set():
+            try:
+                await self._outbox.ack_next(entry.entry_id)
+            except OSError as exc:
+                attempt += 1
+                await self._wait_for_storage("ack", exc, attempt, backoff, stop_event)
+                backoff = min(backoff * 2, self._backoff_max)
+                continue
+            if attempt:
+                logger.info(
+                    "outbox_sender.storage_recovered",
+                    operation="ack",
+                    entry_id=entry.entry_id,
+                    attempts=attempt + 1,
+                )
+            return True
+        return False
 
     async def _send_with_backoff(self, entry: OutboxEntry, stop_event: asyncio.Event) -> None:
         """Try to send `entry`, retrying with exponential backoff on failure.

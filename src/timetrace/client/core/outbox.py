@@ -1,4 +1,4 @@
-"""Append-only client outbox for at-most-once HttpBackend delivery.
+"""Append-only client outbox for at-least-once HttpBackend delivery.
 
 Layout under ``root_dir``:
 
@@ -28,7 +28,7 @@ import json
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -239,13 +239,9 @@ class Outbox:
 
     def _rewrite_log(self, entries: list[dict]) -> None:
         """Atomically replace log.jsonl with the given entries (compaction)."""
-        tmp = self._log_path.with_suffix(".jsonl.tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            for entry in entries:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.replace(self._log_path)
+        self._replace_text(
+            self._log_path, (json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries)
+        )
 
     def _read_log(self) -> list[dict]:
         if not self._log_path.exists():
@@ -302,13 +298,25 @@ class Outbox:
         )
 
     def _write_acked(self, value: int) -> None:
-        # Write to a tmp file then rename so we never have a half-written state.json
-        tmp = self._state_path.with_suffix(".json.tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            f.write(json.dumps({"acked": value}))
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.replace(self._state_path)
+        self._replace_text(self._state_path, [json.dumps({"acked": value})])
+
+    @staticmethod
+    def _replace_text(path: Path, chunks: Iterable[str]) -> None:
+        # A previous crash or an external reader may still hold the old temp
+        # file. Use a fresh sibling; never truncate the durable destination.
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with tmp.open("x", encoding="utf-8") as f:
+                f.writelines(chunks)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.replace(path)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                # Preserve the original write/replace failure for the sender.
+                logger.warning("outbox.temp_cleanup_failed", path=str(tmp), exc_info=True)
 
     async def _read_blob_if(self, entry: dict, kind: str) -> bytes | None:
         if not entry.get(f"has_{kind}"):

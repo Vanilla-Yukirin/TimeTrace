@@ -1,6 +1,6 @@
 """Two-container acceptance: real TCP/auth/client/server/worker/MCP/SPA.
 
-The fixture boundary replaces screen pixels and upstream model responses only.
+Fixtures replace screen pixels/model responses and inject an OS replace failure.
 All application persistence, queues, HTTP payloads and analysis loops are real.
 """
 
@@ -33,6 +33,7 @@ state = {
     "embedding_calls": 0,
     "lost_ack": True,
     "accepted_before_ack_loss": False,
+    "ingest_requests": 0,
 }
 proxy = None
 
@@ -103,6 +104,8 @@ async def gateway(path: str, request: Request):
     if path.startswith(("v1/", "mcp", "healthz", "readyz", "metrics", "thumbs/", "blob/")):
         if state["offline"] and path.startswith(("v1/ingest", "healthz")):
             return JSONResponse({"detail": "fixture network unavailable"}, status_code=503)
+        if path.startswith("v1/ingest"):
+            state["ingest_requests"] += 1
         headers = {k: v for k, v in request.headers.items() if k not in ("host", "content-length")}
         headers["host"] = "127.0.0.1:8765"
         response = await proxy.request(
@@ -171,9 +174,14 @@ async def run(completed):
                 assert (await proxy.get("http://server:8765/metrics")).status_code == 401
                 completed.append("authentication")
 
-                def start(capture):
+                def start(capture, *, deny_ack=False):
                     return subprocess.Popen(
-                        [sys.executable, "/qa/client.py", *(["--capture"] if capture else [])],
+                        [
+                            sys.executable,
+                            "/qa/client.py",
+                            *(["--capture"] if capture else []),
+                            *(["--deny-ack"] if deny_ack else []),
+                        ],
                         stdout=client_log,
                         stderr=subprocess.STDOUT,
                     )
@@ -192,14 +200,35 @@ async def run(completed):
                 # Kill the actual client process while disconnected, then reuse its volume.
                 process.kill()
                 await asyncio.to_thread(process.wait, 10)
-                process = start(False)
+                process = start(False, deny_ack=True)
 
                 async def recovered():
                     value = await status()
                     return value if value["outbox_pending"] >= before["outbox_pending"] else None
 
-                await until("durable outbox after process kill", recovered)
+                recovered_status = await until("durable outbox after process kill", recovered)
                 state["offline"] = False
+
+                async def ack_blocked():
+                    value = await status()
+                    return (
+                        value if value.get("last_error") == "outbox_ack: PermissionError" else None
+                    )
+
+                blocked_status = await until("ack failure visible in live client", ack_blocked)
+                assert (ARTIFACTS / "ack-blocked").exists()
+                assert process.poll() is None
+                (ARTIFACTS / "ack-blocked-status.json").write_text(json.dumps(blocked_status))
+                assert blocked_status["outbox_pending"] == recovered_status["outbox_pending"], (
+                    blocked_status,
+                    recovered_status,
+                )
+                requests_before = state["ingest_requests"]
+                await asyncio.sleep(1.2)
+                assert process.poll() is None
+                assert (await status())["outbox_pending"] == recovered_status["outbox_pending"]
+                assert state["ingest_requests"] == requests_before
+                (ARTIFACTS / "release-ack").touch()
 
                 async def drained():
                     value = await status()
@@ -209,6 +238,7 @@ async def run(completed):
 
                 await until("retry and drain", drained)
                 assert state["accepted_before_ack_loss"]
+                completed.append("ack_permission_error_recovery")
                 completed.extend(
                     ["offline_capture", "client_crash_recovery", "lost_ack_idempotency"]
                 )
