@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$InnoCompiler = ''
+)
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) {
@@ -9,6 +11,31 @@ if (-not $IsWindows) {
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $BuildRoot = Join-Path $RepoRoot 'build\windows'
 $DistRoot = Join-Path $RepoRoot 'dist\windows'
+
+if (-not $InnoCompiler) {
+    $CompilerVersion = '6.7.4'
+    $CompilerDir = Join-Path $BuildRoot "inno-$CompilerVersion"
+    $InnoCompiler = Join-Path $CompilerDir 'ISCC.exe'
+    if (-not (Test-Path -LiteralPath $InnoCompiler -PathType Leaf)) {
+        $null = New-Item -ItemType Directory -Path $BuildRoot -Force
+        $Download = Join-Path $BuildRoot "innosetup-$CompilerVersion.exe"
+        $CompilerTag = $CompilerVersion.Replace('.', '_')
+        $Url = "https://github.com/jrsoftware/issrc/releases/download/is-$CompilerTag/innosetup-$CompilerVersion.exe"
+        Invoke-WebRequest -Uri $Url -OutFile $Download -MaximumRetryCount 2 -TimeoutSec 120
+        if ((Get-FileHash -LiteralPath $Download -Algorithm SHA256).Hash -ne
+            'a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c') {
+            throw 'Inno Setup compiler download checksum mismatch'
+        }
+        $CompilerLog = Join-Path $BuildRoot 'inno-setup.log'
+        $Options = "/CURRENTUSER /PORTABLE=1 /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=`"$CompilerDir`" /LOG=`"$CompilerLog`""
+        $Process = Start-Process -FilePath $Download -ArgumentList $Options -WindowStyle Hidden -Wait -PassThru
+        if ($Process.ExitCode -ne 0) {
+            Get-Content -LiteralPath $CompilerLog -Tail 30 -ErrorAction SilentlyContinue
+            throw "Inno Setup portable installation failed: $($Process.ExitCode)"
+        }
+    }
+}
+$InnoCompiler = (Resolve-Path -LiteralPath $InnoCompiler).Path
 
 Push-Location $RepoRoot
 try {
@@ -24,18 +51,16 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $PackageDir 'TimeTrace Client.exe'))) {
         throw "Packaged executable was not created under $PackageDir"
     }
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\windows\install-client.ps1') `
-        -Destination (Join-Path $PackageDir 'Install TimeTrace.ps1') -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\windows\uninstall-client.ps1') `
-        -Destination (Join-Path $PackageDir 'Uninstall TimeTrace.ps1') -Force
-
-    $ZipPath = Join-Path $DistRoot 'TimeTrace-Client-windows-x64.zip'
-    if (Test-Path -LiteralPath $ZipPath) {
-        Remove-Item -LiteralPath $ZipPath -Force
+    $Version = (uv run --no-sync python -c "from timetrace import __version__; print(__version__)").Trim()
+    if ($LASTEXITCODE -ne 0 -or $Version -notmatch '^\d+\.\d+\.\d+$') {
+        throw 'Could not determine the client package version'
     }
-    Compress-Archive -LiteralPath $PackageDir -DestinationPath $ZipPath -CompressionLevel Optimal
+    $AppIcon = Join-Path $BuildRoot 'timetrace.ico'
+    & $InnoCompiler /Qp "/DAppVersion=$Version" "/DPackageDir=$PackageDir" "/DOutputDir=$DistRoot" `
+        "/DAppIcon=$AppIcon" 'packaging/windows/timetrace-client.iss'
+    if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed' }
     Write-Host "Built: $PackageDir"
-    Write-Host "Archive: $ZipPath"
+    Write-Host "Installer: $(Join-Path $DistRoot 'TimeTrace-Client-Setup-x64.exe')"
 }
 finally {
     Pop-Location

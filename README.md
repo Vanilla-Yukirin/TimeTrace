@@ -27,7 +27,7 @@
 
 ## Windows 客户端安装包
 
-连接已有服务端可从 [GitHub Releases](https://github.com/Vanilla-Yukirin/TimeTrace/releases) 下载 Windows x64 ZIP 和 SHA-256 校验文件，按 [安装与更新说明](packaging/windows/README.md) 校验、解压并运行安装器。安装包只提供采集客户端，仍需服务端地址、独立 Token 与设备配置。
+下载 [Windows x64 Setup.exe](https://github.com/Vanilla-Yukirin/TimeTrace/releases/latest/download/TimeTrace-Client-Setup-x64.exe)，双击后按向导安装。升级前从系统托盘退出 TimeTrace，安装器会保留原配置、截图和待上传队列。连接已有服务端需要服务端地址、独立 Token 和设备配置。详见 [安装与更新说明](packaging/windows/README.md)。
 
 Windows 客户端从开始菜单或托盘打开桌面窗口。状态页显示待上传截图和实时活动，截图配置支持定时、智能、去重及 JPG、PNG、WebP，软件设置支持主题、自启动和检查更新。检查更新提供正式版下载入口。最近版本和能力边界见 [PLAN](devlogs/PLAN.md)。
 

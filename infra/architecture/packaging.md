@@ -82,9 +82,9 @@ uv sync --extra embserver
 
 ## Windows 客户端发行
 
-[windows-client-release.yml](../../.github/workflows/windows-client-release.yml) 由 `vX.Y.Z` 标签触发，在 Windows 构建并校验客户端 ZIP，发布到 GitHub Release，同时附 SHA-256。标签必须属于 `main`，并与 Python 包版本一致。
+[windows-client-release.yml](../../.github/workflows/windows-client-release.yml) 由 `vX.Y.Z` 标签触发，在 Windows 构建并测试客户端 Setup.exe，发布到 GitHub Release，同时附 SHA-256。标签必须属于 `main`，并与 Python 包版本一致。
 
-安装器支持当前用户安装、手工原子更新、托盘、登录自启动和单实例；不会把服务端打进客户端安装包。当前没有代码签名或自动更新器。安装/卸载、校验和版本边界见 [Windows 包说明](../../packaging/windows/README.md)，最近发布版本见 [PLAN](../../devlogs/PLAN.md)。
+安装向导支持当前用户安装、覆盖升级、登录自启动选项和 Windows 设置卸载入口。安装包包含采集客户端和桌面控制台。签名和自动更新器仍待实现。安装、卸载和校验见 [Windows 包说明](../../packaging/windows/README.md)，最近发布版本见 [PLAN](../../devlogs/PLAN.md)。
 
 ## 私人网络拓扑
 

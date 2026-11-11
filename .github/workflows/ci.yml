@@ -68,6 +68,12 @@ jobs:
           $version = (uv run python -c "from timetrace import __version__; print(__version__)").Trim()
           ./scripts/windows/verify-client-package.ps1 -ExpectedVersion $version
 
+      - name: Test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./scripts/windows/test-client-installer.ps1
+
       - name: Upload test evidence
         if: always()
         uses: actions/upload-artifact@v4

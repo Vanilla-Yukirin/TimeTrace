@@ -79,15 +79,20 @@ jobs:
             -ExpectedVersion $env:TIMETRACE_RELEASE_VERSION `
             -WriteChecksum
 
+      - name: Test Windows installer
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./scripts/windows/test-client-installer.ps1
+
       - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $zip = (Resolve-Path 'dist/windows/TimeTrace-Client-windows-x64.zip').Path
-          $checksum = (Resolve-Path 'dist/windows/TimeTrace-Client-windows-x64.zip.sha256').Path
-          $zipAsset = "$zip#Windows x64 installer"
+          $installer = (Resolve-Path 'dist/windows/TimeTrace-Client-Setup-x64.exe').Path
+          $checksum = (Resolve-Path "$installer.sha256").Path
+          $installerAsset = "$installer#Windows x64 Setup.exe"
           $checksumAsset = "$checksum#SHA-256 checksum"
 
           $existingDraft = gh release view $tag --json isDraft --jq '.isDraft' 2>$null
@@ -95,15 +100,16 @@ jobs:
             if ($existingDraft.Trim() -ne 'true') {
               throw "Release $tag already exists and is published; refusing to replace immutable assets"
             }
-            gh release upload $tag $zipAsset $checksumAsset --clobber
+            gh release upload $tag $installerAsset $checksumAsset --clobber
             if ($LASTEXITCODE -ne 0) { throw "Could not resume asset upload for draft $tag" }
             gh release edit $tag --draft=false --latest
             if ($LASTEXITCODE -ne 0) { throw "Could not publish resumed draft $tag" }
           }
           else {
-            gh release create $tag $zipAsset $checksumAsset `
+            gh release create $tag $installerAsset $checksumAsset `
               --verify-tag `
               --generate-notes `
+              --notes "下载 Windows x64 Setup.exe，双击按向导安装。升级前请从系统托盘退出 TimeTrace。" `
               --title "TimeTrace Client $tag" `
               --latest
             if ($LASTEXITCODE -ne 0) { throw "Could not create release $tag" }
@@ -118,6 +124,6 @@ jobs:
           - Tag: ``$env:GITHUB_REF_NAME``
           - Commit: ``$env:TIMETRACE_RELEASE_COMMIT``
           - Version: ``$env:TIMETRACE_RELEASE_VERSION``
-          - Assets: Windows x64 ZIP + SHA-256 checksum
+          - Assets: Windows x64 Setup.exe + SHA-256 checksum
           - Outcome: ``${{ job.status }}``
           "@ >> $env:GITHUB_STEP_SUMMARY

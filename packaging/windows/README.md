@@ -1,12 +1,12 @@
 # TimeTrace Windows client package
 
-This is a current-user, portable-directory installation of the standalone
-capture client. It does not install Python, require administrator privileges,
-or move `%USERPROFILE%\TimeTraceData`.
+The Windows x64 setup wizard installs the standalone capture client for the
+current user. It includes the Python runtime and installs without administrator
+privileges. Client data lives in `%USERPROFILE%\TimeTraceData`.
 
 ## Build
 
-From a PowerShell 7 prompt at the repository root:
+Use PowerShell 7 and uv on Windows. From the repository root:
 
 ```powershell
 pwsh -File scripts/windows/build-client.ps1
@@ -15,25 +15,25 @@ pwsh -File scripts/windows/build-client.ps1
 The build creates:
 
 - `dist/windows/TimeTrace Client/` — unpacked application directory;
-- `dist/windows/TimeTrace-Client-windows-x64.zip` — distributable archive.
+- `dist/windows/TimeTrace-Client-Setup-x64.exe` — graphical installer.
 
+The build downloads and verifies a pinned Inno Setup compiler in `build/windows/`.
+Pass `-InnoCompiler` with the path to `ISCC.exe` to use a local compiler.
 PyInstaller is pinned by `uv.lock`. The executable is windowless, uses the
 stable app ID `VanillaYukirin.TimeTrace.Client`, and writes rotating logs to
 `%USERPROFILE%\TimeTraceData\logs\client.log`.
 
 ## Install or update
 
-Extract the ZIP and run `Install TimeTrace.ps1`, or install the local build:
+Download [TimeTrace-Client-Setup-x64.exe](https://github.com/Vanilla-Yukirin/TimeTrace/releases/latest/download/TimeTrace-Client-Setup-x64.exe)
+and double-click it. Setup installs to `%LOCALAPPDATA%\Programs\TimeTrace`,
+creates a Start Menu shortcut, and offers to open the dashboard when finished.
+The **Start TimeTrace when I sign in** checkbox controls login startup.
 
-```powershell
-pwsh -File scripts/windows/install-client.ps1
-```
-
-The script gracefully stops a running client, atomically replaces
-`%LOCALAPPDATA%\Programs\TimeTrace`, creates Start Menu shortcuts, and launches
-the dashboard. Existing configuration, Outbox entries, and screenshots are
-preserved. On a first install, pass `-NoAutostart` to opt out of launching on
-sign-in. Upgrades preserve the existing Startup shortcut preference.
+For an upgrade, exit TimeTrace from the system tray and close its dashboard
+window before running Setup. Setup updates existing installations, including
+those from the old ZIP, and carries forward the current Startup shortcut
+setting. Configuration, Outbox entries and screenshots stay in `TimeTraceData`.
 
 Open **Start Menu → TimeTrace → TimeTrace Client** or the tray's control panel
 item to open the desktop window. The Windows build uses WebView2. The same
@@ -56,53 +56,46 @@ Each new screenshot carries its own metadata in a single ingest. Existing
 Outbox entries remain readable and replayable. Activity intervals use only
 the screenshot-backed observations made by the standalone recorder.
 
-Updates discover a non-default loopback control port from the running client
-process before requesting graceful shutdown. If the control UI is disabled or
-unreachable, the installer waits for the grace period and only then uses a
-bounded process-stop fallback so manual updates cannot become permanently
-blocked.
-
 ## Uninstall
 
-Use **Start Menu → TimeTrace → Uninstall TimeTrace**. Uninstall removes only the
-program directory, Start Menu shortcuts, and Startup shortcut; it never removes
-`TimeTraceData`.
+Exit TimeTrace, then open **Windows Settings → Apps → Installed apps** and
+uninstall **TimeTrace Client**. This removes the installed program and shortcuts.
+`TimeTraceData` is retained.
 
 ## GitHub Releases
 
 Pushing a semantic version tag automatically builds the client on GitHub's
 Windows runner and publishes a GitHub Release containing:
 
-- `TimeTrace-Client-windows-x64.zip`;
-- `TimeTrace-Client-windows-x64.zip.sha256`.
+- `TimeTrace-Client-Setup-x64.exe`
+- `TimeTrace-Client-Setup-x64.exe.sha256`
 
 The tag must be exactly `vX.Y.Z`, must point to a commit in `main`, and must
 match both `[project].version` in `pyproject.toml` and `timetrace.__version__`.
-For example, after merging version `0.1.0` to `main`:
+For example, after merging version `0.2.1` to `main`:
 
 ```powershell
 git switch main
 git pull --ff-only
-git tag -a v0.1.0 -m "TimeTrace Client v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.1 -m "TimeTrace Client v0.2.1"
+git push origin v0.2.1
 ```
 
-Normal pushes to `main` do not publish a client release. Pull requests build
-and verify the Windows package in CI so the tag workflow is not the first time
-the installer path runs.
+Normal pushes to `main` run CI. The Windows runner tests installation,
+upgrade, startup settings, and uninstall on a clean profile. The tag workflow
+repeats these checks on the installer it publishes.
 
-On another authorized machine, download both release assets and verify the ZIP
-before extracting it:
+For an optional download integrity check, compare the installer's SHA-256
+with the companion file:
 
 ```powershell
-$expected = (Get-Content .\TimeTrace-Client-windows-x64.zip.sha256).Split()[0]
-$actual = (Get-FileHash .\TimeTrace-Client-windows-x64.zip -Algorithm SHA256).Hash
+$expected = (Get-Content .\TimeTrace-Client-Setup-x64.exe.sha256).Split()[0]
+$actual = (Get-FileHash .\TimeTrace-Client-Setup-x64.exe -Algorithm SHA256).Hash
 if ($actual -ne $expected) { throw 'TimeTrace client checksum mismatch' }
 ```
 
 ## Current distribution boundary
 
-GitHub Releases automate packaging and distribution, but the executable is not
-code-signed and the installed client has no automatic updater. Users still
-download a release and run the bundled atomic installer manually. Code signing
-and in-app update checks remain separate release-engineering steps.
+The installer is unsigned, so Windows may display a SmartScreen prompt.
+The client's **Check for updates** action opens the download page for a newer
+release. The user applies the update by running its setup wizard.

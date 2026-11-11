@@ -18,7 +18,7 @@ python scripts/check.py all
 | 自动化测试 | `python scripts/check.py unit` | 临时数据库、协议、鉴权、存储、恢复、摘要、可观测性；CI 同时运行 Windows/Linux |
 | 前端 | `python scripts/check.py frontend` | npm lock 安装、ESLint、TypeScript 和 SPA 构建 |
 | 双容器 E2E | `python scripts/check.py e2e` | 真实 TCP、客户端运行组合、服务端入口、worker、摘要循环、MCP、Chromium 浏览器 |
-| Windows 制品 | `scripts/windows/build-client.ps1` 和 `verify-client-package.ps1` | 构建安装包，核对版本/ZIP，并运行冻结 EXE 的 `--help` 检查入口依赖 |
+| Windows 制品 | `scripts/windows/build-client.ps1`、`verify-client-package.ps1` 和 `test-client-installer.ps1` | 构建 Setup.exe，核对版本与入口依赖，在 Windows CI 验证安装、升级、卸载和数据保留 |
 
 CI 的 `quality-gate` 汇总检查结果。服务器镜像发布和 Windows 标签发布都复用整套 CI，检查通过后才发布制品。生产激活使用现有 `timetrace-update`，见 [部署手册](web-deployment.md)。远端分支保护应将 `quality-gate` 设为必需检查；修改工作流本身不等于已配置远端保护。
 

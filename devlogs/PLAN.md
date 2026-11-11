@@ -1,6 +1,6 @@
 # TimeTrace 当前状态与滚动计划
 
-**最后核对：2026-11-11。** Outbox 确认写入恢复和摘要覆盖判定已通过 [PR #26](https://github.com/Vanilla-Yukirin/TimeTrace/pull/26) 与 [PR #27](https://github.com/Vanilla-Yukirin/TimeTrace/pull/27) 合入 `main`。Windows 客户端 0.2.0 加入桌面窗口、截图策略与软件设置。
+**最后核对：2026-11-11。** Outbox 确认写入恢复和摘要覆盖判定已通过 [PR #26](https://github.com/Vanilla-Yukirin/TimeTrace/pull/26) 与 [PR #27](https://github.com/Vanilla-Yukirin/TimeTrace/pull/27) 合入 `main`。Windows 客户端 0.2.0 加入桌面窗口、截图策略与软件设置，0.2.1 改用双击安装的 Setup.exe。
 
 本文是唯一的当前待办入口。架构看 [项目 Wiki](../infra/readme.md)，部署看 [部署手册](../infra/architecture/web-deployment.md)，历史过程看 [DevLog 索引](README.md)。事实冲突时以代码、对应提交的测试及有日期的运行证据为准；旧归档只说明当时的状态。
 
@@ -10,10 +10,10 @@
 |---|---|---|
 | 开发主线 | [PR #27](https://github.com/Vanilla-Yukirin/TimeTrace/pull/27) 合并至 `569d8bd`，[合并后的 main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42883758655) 成功 | Windows 0.2.0 的验收见对应 tag 工作流 |
 | 本地单元测试（11 月 11 日） | Windows 726 passed / 5 skipped | 临时目录和合成数据，跳过真实 VLM 用例 |
-| 构建与静态检查（11 月 11 日） | Ruff、前端 lint/TypeScript/build、Windows ZIP 与冻结 EXE 窗口验收 | 临时快捷方式验证登录启动的设置与取消 |
-| 双容器 E2E（11 月 11 日） | 13 个场景通过，含确认写入恢复、带图入队、截图配置和主题。应用链路 35.05 秒，证据 `artifacts/timetrace-e2e-31cc1d58e5/` | 模拟画面、模型及文件替换故障，真实应用、网络、存储和浏览器 |
+| 构建与静态检查（11 月 11 日） | Ruff、前端 lint/TypeScript/build、Windows Setup.exe 版本和冻结 EXE 启动检查 | Windows CI 在临时用户环境验证安装器 |
+| 双容器 E2E（11 月 11 日） | 13 个场景通过，含确认写入恢复、带图入队、截图配置和主题。应用链路 32.86 秒，证据 `artifacts/timetrace-e2e-18749a0f6a/` | 模拟画面、模型及文件替换故障，真实应用、网络、存储和浏览器 |
 | 发布分支与生产验收 | 11 月 10 日只读核对生产仍为 `81a10b6`；服务端近期分析和摘要持续推进 | 近期正常不代表历史覆盖完整；本轮不更新运行制品 |
-| Windows 安装包 | 两台设备上报 v0.1.1；其客户端源文件与 `81a10b6` 一致 | 不能只根据发布日期判断客户端过时；代码签名和自动更新仍未完成 |
+| Windows 安装包 | 0.2.1 使用 Setup.exe；Windows CI 覆盖首装、从旧 ZIP 升级、自启动、卸载及数据保留 | 代码签名和自动更新仍待实现，已安装设备版本以运行证据为准 |
 
 ## 已完成的主线
 
