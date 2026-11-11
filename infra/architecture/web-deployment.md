@@ -17,7 +17,7 @@ tailnet 浏览器 / Windows client / MCP 消费端
 
 只有 server 容器化。Compose 使用 host network 访问宿主机 LM Studio 的 `127.0.0.1:1234`；GPU、LM Studio、nginx 与 Tailscale 留在宿主机。现有数据和 Token 原位 bind mount，不复制数据库或截图来建立第二套服务端。
 
-TimeTrace 已撤掉 Cloudflare 公网路由和旧 8080 listener，不保留公网回退，也不启用 Funnel。具体迁移与验收见 [PR #24 归档](../../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)。主机上其他服务是否仍使用 Cloudflare 与本项目无关。
+TimeTrace 已撤掉 Cloudflare 公网路由和旧 8080 listener，不保留公网回退，也不启用 Funnel。具体迁移与验收见 [PR #24 归档](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202610230447-archive-private-ts-pr24-deployment.md)。主机上其他服务是否仍使用 Cloudflare 与本项目无关。
 
 ## 部署资产
 
@@ -103,7 +103,7 @@ Python 依赖要求 `certifi>=2026.10.19`，具体版本及哈希锁在 `uv.lock
 
 ## 历史与相关文档
 
-- [PR #24 私网迁移和部署验收](../../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)
-- [首次 pull-based 发布验收](../../devlogs/infra/archive-202608232320-pull-based-docker-production-acceptance.md)
-- [早期部署架构（历史）](../../devlogs/infra/archive-202605161000-deployment-architecture.md)
+- [PR #24 私网迁移和部署验收](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202610230447-archive-private-ts-pr24-deployment.md)
+- [首次 pull-based 发布验收](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202608232320-archive-pull-based-docker-production-acceptance.md)
+- [早期部署架构（历史）](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202605161000-archive-deployment-architecture.md)
 - [鉴权系统](auth-system.md) · [API](api-server.md) · [隐私策略](../privacy/strategy.md)

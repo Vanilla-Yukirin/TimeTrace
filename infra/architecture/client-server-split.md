@@ -225,5 +225,5 @@ acked 条目的 blob     ← step 3（best-effort unlink）
 - [Capture Service](capture-service.md) — 采集循环细节
 - [Local API Server](api-server.md) — `/v1/ingest/*` 与业务路由
 - [Analysis Worker](analysis-worker.md) — 消费 `analysis_results`（status 状态机）
-- 双进程接线设计：[`devlogs/infra/archive-202605151200-client-server-split-kickoff.md`](../../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)
-- compaction：[`devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md`](../../devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md)
+- 双进程接线设计：[PLA 客户端与服务端拆分](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202605151200-archive-client-server-split-kickoff.md)
+- compaction：[PLA Outbox 压缩与修复](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202605171501-archive-outbox-compaction-and-review-fixes.md)

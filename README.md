@@ -122,7 +122,7 @@ uv run timetrace-client
 
 当前私人入口为 **Tailscale Serve → loopback nginx → 同 SHA SPA / Docker API**。GitHub Actions 发布包含后端、前端与部署资产的 GHCR 不可变镜像，再由主机运行 `timetrace-update` 拉取并激活。生产发布需先通过目标 SHA 的 CI，并取得对应授权。
 
-首次安装、网关配置、更新器与兼容门禁、备份和回滚步骤统一在 [部署手册](infra/architecture/web-deployment.md)。最近一次有记录的生产验收见 [2026-10-23 归档](devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)，当前待验收事项见 [PLAN](devlogs/PLAN.md)。
+首次安装、网关配置、更新器与兼容门禁、备份和回滚步骤统一在 [部署手册](infra/architecture/web-deployment.md)。最近一次有记录的生产验收见 [2026-10-23 归档](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202610230447-archive-private-ts-pr24-deployment.md)，当前待验收事项见 [PLAN](devlogs/PLAN.md)。
 
 ---
 
@@ -186,7 +186,7 @@ src/timetrace/
 - [infra/readme.md](infra/readme.md) — 当前架构地图与深度文档索引（仓库内 Markdown Wiki）
 - [工程验收文档](infra/architecture/engineering-workflow.md) — 本地/CI 同一入口、双容器 E2E、日志和指标
 - [部署手册](infra/architecture/web-deployment.md) — 私网入口、首次安装、发布、健康检查、备份与回滚
-- [devlogs/README.md](devlogs/README.md) — 按时间和主题索引开发/排障事实；具体 archive 是历史快照
+- [devlogs/README.md](devlogs/README.md) — PLA 开发、排障与运维归档入口
 - [`.env.example`](.env.example) — VLM 启用模板
 - [CLAUDE.md](CLAUDE.md) — AI agent 的项目约束、运行命令和不可破坏的不变量
 

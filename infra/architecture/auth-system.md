@@ -227,4 +227,4 @@ FastAPI 的 `dependencies=[...]` 只包**注册在父 app 上的路由**，不�
 - [API Server](api-server.md) — 完整路由表、请求/响应形态
 - [公网部署与安全](web-deployment.md) — nginx 反代、cookie_secure、X-Real-IP 信任边界、应急止血
 - [隐私策略](../privacy/strategy.md) — 登录后隐私边界的转移
-- 设计归档：[`devlogs/infra/archive-202605280400-login-system-design.md`](../../devlogs/infra/archive-202605280400-login-system-design.md)
+- 设计归档：[PLA 登录系统设计](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202605280400-archive-login-system-design.md)

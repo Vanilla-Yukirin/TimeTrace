@@ -50,7 +50,7 @@ timetrace-embserver = "timetrace.embserver.cli:main"
 # Optional-dependencies are forward-looking buckets that DON'T install
 # today's union (that's already in `dependencies` above). They're for the
 # adapter swaps that land in later phases — each maps to a section of the
-# kickoff devlog (devlogs/infra/archive-202605151200-client-server-split-kickoff.md).
+# client/server split kickoff in the archive index (devlogs/README.md).
 #
 # Default deploy:
 #   uv sync                       # full union (single-process default works)

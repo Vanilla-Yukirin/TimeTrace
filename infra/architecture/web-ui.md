@@ -6,7 +6,7 @@
 
 ## **⚠️ 2026-05-28 起加入登录态（公网部署引出）**
 
-本页未覆盖登录系统改造。设计与决策见 [`devlogs/infra/archive-202605280400-login-system-design.md`](../../devlogs/infra/archive-202605280400-login-system-design.md)。
+本页未覆盖登录系统改造。设计与决策见 [PLA 登录系统设计](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202605280400-archive-login-system-design.md)。
 
 要点：
 - **新增页面**：`/login`（admin/admin 默认）、`/login/change-password`（首次强制改密）

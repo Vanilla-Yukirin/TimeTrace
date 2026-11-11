@@ -17,8 +17,8 @@
 
 ## 后续实现与验收
 
-- [Agent 活动读取契约](../devlogs/backend/archive-202610222147-agent-activity-contract.md)
-- [摘要回退范围修复](../devlogs/backend/archive-202610222353-summary-fallback-boundaries.md)
-- [PR #24 部署验收](../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)
+- [Agent 活动读取契约](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202610222147-archive-agent-activity-contract.md)
+- [摘要回退范围修复](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202610222353-archive-summary-fallback-boundaries.md)
+- [PR #24 部署验收](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202610230447-archive-private-ts-pr24-deployment.md)
 
 历史 embedding 切换、回填排期和跨 Agent 分工不再保留为本页待办；是否迁移模型、补历史摘要或调整外部消费端，按当前 PLAN 与实际环境决定。

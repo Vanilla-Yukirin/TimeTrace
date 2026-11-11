@@ -243,8 +243,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
 -- Login-system: admin user + browser sessions. Bearer tokens for
 -- machine-to-machine live separately in ``~/.config/timetrace-server/tokens.json``
 -- via ``ServerAuth`` (server/auth.py). Single-user by design — no ``role``
--- column, no ``user_id`` foreign keys elsewhere. See devlogs/infra/
--- archive-202605280400-login-system-design.md for the design rationale.
+-- column, no ``user_id`` foreign keys elsewhere. See
+-- infra/architecture/auth-system.md for the design rationale.
 CREATE TABLE IF NOT EXISTS auth_users (
     username             TEXT PRIMARY KEY,
     password_hash        TEXT NOT NULL,

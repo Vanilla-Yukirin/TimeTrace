@@ -21,7 +21,7 @@
 - **分层记忆金字塔**：固定时间窗 `5min→1h→6h→day→week` 自底向上级联；指标层纯 SQL、叙述层为 summary-of-summaries；`source_hash` 驱动重发，后台 rollup/narrate 默认关闭、生产通过 env 开启；设备级 `device_summaries` 独立级联与叙述，全局按设备拼装；`search_summaries` 支持按时间窗下钻，历史全量覆盖仍需审计。
 - **可观测性与页面**：LLM 请求账本已覆盖 worker VLM、narrative 与 MCP `ask_agent`，记录 caller/模型/耗时/token/字符数/错误；report 与 Web Agent streaming 尚未接入。Web 已有 `/audit`、`/pyramid`、`/llm-log` 页面。
 - **embserver**：本地 Qwen3-VL 多模态 embedding 守护服务（独立第四入口 + systemd unit），**未接进主 worker/检索**。详见 [embserver](architecture/embserver.md)。
-- **私人部署**：Tailscale Serve → `127.0.0.1:19446` nginx → 同 SHA SPA / host-network 容器 API；不保留 Cloudflare 公网回退。Actions 发布不可变 GHCR 镜像，部署机通过 `timetrace-update` 主动拉取、检查和激活。操作统一看 [部署手册](architecture/web-deployment.md)，最近运行证据见 [2026-10-23 归档](../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)。
+- **私人部署**：Tailscale Serve → `127.0.0.1:19446` nginx → 同 SHA SPA / host-network 容器 API；不保留 Cloudflare 公网回退。Actions 发布不可变 GHCR 镜像，部署机通过 `timetrace-update` 主动拉取、检查和激活。操作统一看 [部署手册](architecture/web-deployment.md)，最近运行证据见 [2026-10-23 归档](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202610230447-archive-private-ts-pr24-deployment.md)。
 
 ### 重构阶段状态
 
@@ -32,18 +32,18 @@
 | P2 / P2.5 接口抽象 | ✅ | BackendClient / Database / Queue / BlobStorage Protocol | kickoff devlog |
 | P3a HTTP + Outbox | ✅ | ingest 幂等、HttpBackend、默认 FIFO 与可选滑动窗口并发，ack 只推进连续完成前缀 | kickoff devlog |
 | P3a-5b 双入口接线 | ✅ | OutboxBackend（client 默认 backend）+ 三入口 + bootstrap 共享装配 | kickoff devlog |
-| P3b Auth + Init | ✅ | tokens.json 体系 / chmod 600 / init/admin CLI | [p3b3-cli-design](../devlogs/infra/archive-202605171500-p3b3-cli-design.md) |
-| P3c 部署设施 | ✅ 历史基线 | deploy.sh / systemd / nginx VPS / frp 是早期已落地但现已退役的链路 | [deployment-architecture（历史）](../devlogs/infra/archive-202605161000-deployment-architecture.md)、[cicd-workflow（历史）](../devlogs/infra/archive-202605161015-cicd-workflow.md) |
-| P4 客户端隐私管线 | ⚠️ 仅周边硬化 | Outbox compaction / _safe_close_record / ctypes 长路径完成；**OCR + 区域检测 + 模糊重编码未启**（隐私层仍是 v1 黑名单） | [outbox-compaction](../devlogs/infra/archive-202605171501-outbox-compaction-and-review-fixes.md) |
-| P5 容器化 + 适配器 | ⚠️ 容器完成 | Dockerfile / docker-compose / pyproject 平台标记；**PostgresDatabase / RedisQueue / S3BlobStorage 未启** | [packaging-and-container](../devlogs/infra/archive-202605171502-packaging-and-container.md) |
+| P3b Auth + Init | ✅ | tokens.json 体系 / chmod 600 / init/admin CLI | [p3b3-cli-design](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202605171500-archive-p3b3-cli-design.md) |
+| P3c 部署设施 | ✅ 历史基线 | deploy.sh / systemd / nginx VPS / frp 是早期已落地但现已退役的链路 | [deployment-architecture（历史）](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202605161000-archive-deployment-architecture.md)、[cicd-workflow（历史）](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202605161015-archive-cicd-workflow.md) |
+| P4 客户端隐私管线 | ⚠️ 仅周边硬化 | Outbox compaction / _safe_close_record / ctypes 长路径完成；**OCR + 区域检测 + 模糊重编码未启**（隐私层仍是 v1 黑名单） | [outbox-compaction](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202605171501-archive-outbox-compaction-and-review-fixes.md) |
+| P5 容器化 + 适配器 | ⚠️ 容器完成 | Dockerfile / docker-compose / pyproject 平台标记；**PostgresDatabase / RedisQueue / S3BlobStorage 未启** | [packaging-and-container](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202605171502-archive-packaging-and-container.md) |
 | P6 Headless TUI | ❌ 未启动 | — | — |
-| P7 分发自动化 | 🟡 部分完成 | `deploy` push 已发布 server + SPA 单一 GHCR SHA 制品，部署机主动拉取已实现；Windows 客户端已有当前用户级安装器、标签驱动 Release 与 SHA-256 校验，仍缺签名和自动更新 | [pull-based release correction](../devlogs/infra/archive-202608231819-pull-based-docker-release-correction.md)、[Windows package](../packaging/windows/README.md) |
+| P7 分发自动化 | 🟡 部分完成 | `deploy` push 已发布 server + SPA 单一 GHCR SHA 制品，部署机主动拉取已实现；Windows 客户端已有当前用户级安装器、标签驱动 Release 与 SHA-256 校验，仍缺签名和自动更新 | [pull-based release correction](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202608231819-archive-pull-based-docker-release-correction.md)、[Windows package](../packaging/windows/README.md) |
 
 ### 阅读约定
 
 - **与现状冲突以代码 + 最新 devlog 为准**：尚未实装的设计点在所属段落顶部加 H2 deprecation 警告。
 - **过期标注格式**：`## **⚠️ 一句话标题**`（H2 + 加粗紧贴 emoji，无空格）。递归定位全 infra 的过期标注：`grep -rn '^## \*\*⚠️' infra/`。
-- **完整重构脉络看 [kickoff devlog](../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)**；它是历史起点，不是当前阶段状态，当前状态只看本页与滚动 PLAN。
+- **完整重构脉络看 [kickoff devlog](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202605151200-archive-client-server-split-kickoff.md)**；它是历史起点，不是当前阶段状态，当前状态只看本页与滚动 PLAN。
 
 ---
 
@@ -58,7 +58,7 @@
 | **存储 / 数据库** | [存储策略](storage/overview.md) → [数据库 Schema](storage/schema.md) → [相似检索层](storage/vector-search.md) |
 | **AI 接入 / MCP** | [MCP Layer](architecture/mcp-layer.md) → [Local API Server](architecture/api-server.md) → [隐私策略](privacy/strategy.md) |
 | **鉴权 / 部署** | [登录鉴权系统](architecture/auth-system.md) → [私人部署与运维](architecture/web-deployment.md) → [滚动 PLAN](../devlogs/PLAN.md) |
-| **Agent / 记忆架构（已部分上线）** | [分层 schema](storage/pyramid-schema.md) → [写时管线](architecture/episode-and-rollup-pipeline.md) → [薄路由器](architecture/thin-router-agent.md) → [最新叙述层 devlog](../devlogs/backend/archive-202606270722-narrative-loop-search-golive.md) |
+| **Agent / 记忆架构（已部分上线）** | [分层 schema](storage/pyramid-schema.md) → [写时管线](architecture/episode-and-rollup-pipeline.md) → [薄路由器](architecture/thin-router-agent.md) → [最新叙述层 devlog](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202606270722-archive-narrative-loop-search-golive.md) |
 
 ---
 
