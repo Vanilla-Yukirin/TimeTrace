@@ -2,7 +2,7 @@
 
 **创建：** 2026-10-22
 **原设计基线：** `main` @ `fbffc13`。当前测试基线统一看 [滚动 PLAN](../devlogs/PLAN.md)。
-**状态（2026-11-10 校准）：** W1–W6 已合入 `main`（PR #14–#21），包含于 `81a10b6` 的 [2026-10-23 部署验收](../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)。全历史回填与客户端迁移仍需独立验收，图标替换等 owner 方案。实现过程见 [W1–W6 归档](../devlogs/infra/archive-202610220210-owner-review-w1-w6.md)。
+**状态（2026-11-10 校准）：** W1–W6 已合入 `main`（PR #14–#21），包含于 `81a10b6` 的 [2026-10-23 部署验收](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202610230447-archive-private-ts-pr24-deployment.md)。全历史回填与客户端迁移仍需独立验收，图标替换等 owner 方案。实现过程见 [W1–W6 归档](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202610220210-archive-owner-review-w1-w6.md)。
 
 > Owner 在日常使用中提出 5 个不舒服的方向 + 1 个时区决策。本文记录代码层面定位到的根因与修改方向，
 > 下文保留当时的问题定位与工作包设计，不作为新的未完成清单；当前未完成项只维护在 [滚动 PLAN](../devlogs/PLAN.md)。

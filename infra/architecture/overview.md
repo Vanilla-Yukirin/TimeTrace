@@ -13,7 +13,7 @@
 - 鉴权：`ServerAuth` token 体系；浏览器 admin UI 短期不做（CLI over SSH 足够）
 
 **当前事实**：
-- 完整重构路线 + 当前阶段状态：[`devlogs/infra/archive-202605151200-client-server-split-kickoff.md`](../../devlogs/infra/archive-202605151200-client-server-split-kickoff.md)
+- 完整重构路线 + 当前阶段状态：[PLA 客户端与服务端拆分](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202605151200-archive-client-server-split-kickoff.md)
 - 项目协作约定速读：[`CLAUDE.md`](../../CLAUDE.md)
 - 用户向使用流程：[`README.md`](../../README.md)
 

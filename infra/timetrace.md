@@ -156,4 +156,4 @@ TimeTrace 的重点不是持续录制视频，而是把桌面活动转化为一�
 - 代码仓库：`D:\Github\TimeTrace`
 - 关键实现：`client/core/outbox*.py`、`client/core/backend.py`、`server/api/routes/ingest.py`、`server/summary/`、`server/agent/`、`server/mcp_layer/server.py`
 - 架构材料：`infra/architecture/client-server-split.md`、`infra/PLAN-MULTIPATH-CLIENT.md`、`infra/PLAN-BETTER-AGENT.md`
-- 运行数据与排查记录：`devlogs/infra/archive-202606021128-upload-diagnosis-lan-direct.md`、`devlogs/backend/archive-202606222322-memory-pyramid-phase1.md`
+- 运行数据与排查记录：[上传链路排查](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202606021128-archive-upload-diagnosis-lan-direct.md)、[记忆金字塔第一阶段](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202606222322-archive-memory-pyramid-phase1.md)

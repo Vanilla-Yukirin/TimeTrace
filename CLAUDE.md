@@ -113,12 +113,12 @@ API 启动后用 `/healthz` 检查存活、`/readyz` 检查数据库和后台任
 - **日志**：`common/logging.py` 统一 JSON，使用 `structlog.get_logger(__name__)`，禁用业务 `print`。完整异常使用 `logger.exception`；不得记录 token、截图或活动正文。服务端请求有 `request_id`，worker 有 `record_id`。指标与日志规范见工程验收文档。
 - **前端代码风格**：以 inline style + Tailwind 工具类混用为主，已装 `@radix-ui/react-dialog/select/separator/slot/tooltip`、`@tanstack/react-query`、`lucide-react`，新增 UI 优先复用
 - **文档过期警告格式**：所有"本页/本段内容已过期"的标注统一用 `## **⚠️ 一句话标题**`（H2 + 加粗紧贴 emoji，无空格）。这样 `grep '^## \*\*⚠️' infra/ devlogs/` 能稳定枚举所有 deprecation 标注，不会因为下个人写成 H3 / blockquote / `> ⚠️` 而漏命中
-- **devlog 写完即不改**：`devlogs/**/archive-*.md` 是历史快照，只追加新归档，不回改老归档。`devlogs/PLAN.md` 是当前计划，`devlogs/README.md` 和 `infra/readme.md` 是索引，均应持续更新。状态变化区分代码合入、制品发布、主机激活、历史数据验收，并保留证据日期；不把历史运行快照当成今天的在线状态。
+- **历史开发记录**：开发、排障和发布验收归档在 PLA，按原记录时间理解。项目内保留当前计划 [devlogs/PLAN.md](devlogs/PLAN.md)、[归档入口](devlogs/README.md)和架构索引 [infra/readme.md](infra/readme.md)。状态变化区分代码合入、制品发布、主机激活和历史数据验收。
 
 ## 部署 / 运行环境
 
 - **GitHub identity**：仓库是 `Vanilla-Yukirin/TimeTrace`。本地 git config 的 `Yuki` 只是临时本地标签，不要混
-- **部署目标**：家里 Ubuntu 小主机（NAT 后）；GitHub Actions 只发布 GHCR 制品，主机通过出站 HTTPS 主动拉取，不再依赖 CI 经 FRP SSH 入站；历史拓扑见 [devlogs/infra/archive-202605161000-deployment-architecture.md](devlogs/infra/archive-202605161000-deployment-architecture.md)
+- **部署目标**：家里 Ubuntu 小主机（NAT 后）；GitHub Actions 只发布 GHCR 制品，主机通过出站 HTTPS 主动拉取，不再依赖 CI 经 FRP SSH 入站；历史拓扑见 [PLA 部署架构归档](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202605161000-archive-deployment-architecture.md)
 - **私人入口**：Tailscale Serve → `127.0.0.1:19446` nginx；nginx 从 `/srv/timetrace/web/current` 托管 SPA，并把 `/v1`、`/mcp`、`/healthz`、`/thumbs`、`/blob` 等路径反代到 `127.0.0.1:8765`。迁移后不保留公网回退；敏感接口仍必须经过现有鉴权，MCP 不返回原始截图。MCP 的 Host/Origin 需要按实际私有域名精确配置，不关闭重绑定保护。部署脚本通过 `check-web-gateway.sh` 检查 loopback 网关，默认 19446，支持 `TIMETRACE_GATEWAY_URL` / `TIMETRACE_GATEWAY_HOST` 覆盖
 - **CI/CD 触发**：main push / PR 执行完整 CI（含双容器 E2E）；deploy push / workflow_dispatch 和客户端标签发布先复用 CI，通过后才发布制品。GitHub 在触发时把 ref 固定为 `github.sha`，排队期间不会漂移。工作流不连接部署机。
 - **部署模型（唯一长期模型）**：`main` 是开发主干，`deploy` 是只接受 main fast-forward 的生产指针；发布制品命令是 `git push origin main:deploy`。`deploy.yml` 构建并推送同时包含 server、SPA 和部署资产的 `ghcr.io/vanilla-yukirin/timetrace-server:<sha>`；镜像就绪后，在部署机以 Docker 组用户执行 `timetrace-update`，由部署机通过出站 HTTPS 解析 `deploy` SHA、拉镜像并原子切换 `/srv/timetrace/runtime/releases/<sha>` 与 `/srv/timetrace/web/releases/<sha>`，失败自动恢复上一套
@@ -143,7 +143,7 @@ API 启动后用 `/healthz` 检查存活、`/readyz` 检查数据库和后台任
 ## 开发日志与文档入口
 
 - [infra/readme.md](infra/readme.md) — 架构 / 存储 / 隐私 / 路线图深度文档
-- [devlogs/README.md](devlogs/README.md) — 开发过程归档（按 backend / frontend / infra / research 分类，新会话排查问题前先翻一下相邻分类）
+- [devlogs/README.md](devlogs/README.md) — PLA 历史开发与运维归档入口
 - [README.md](README.md) — 用户向快速启动与 Windows 安装包入口
 - [infra/architecture/web-deployment.md](infra/architecture/web-deployment.md) — 当前私网部署与运维手册
 - `.env.example` — VLM 启用模板

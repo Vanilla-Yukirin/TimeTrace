@@ -13,7 +13,7 @@
 | 构建与静态检查（11 月 11 日） | Ruff、前端 lint/TypeScript/build、Windows Setup.exe 版本和冻结 EXE 启动检查 | Windows CI 在临时用户环境验证安装器 |
 | 双容器 E2E（11 月 11 日） | 14 个场景通过，含首次连接后截图上传、确认写入恢复、带图入队和摘要迟到记录。场景用时 33.66 秒，证据 `artifacts/timetrace-e2e-d0741d040e/` | 模拟画面、模型及文件替换故障，真实应用、网络、存储和浏览器 |
 | 发布分支与生产验收 | 11 月 11 日生产仍为 `81a10b6`，容器健康；Yuki-Win 5 月 17 日至 6 月 27 日的设备摘要已逐窗验收 | 该次验收使用数据库逐窗比对，覆盖误判修复仍待部署 |
-| Windows 安装包 | [v0.3.0](https://github.com/Vanilla-Yukirin/TimeTrace/releases/tag/v0.3.0) 已发布 Setup.exe，安装、升级、卸载及下载校验见 [归档](infra/archive-202611111421-windows-v0.3.0-release.md) | 代码签名和自动更新仍待实现，已安装设备版本以运行证据为准 |
+| Windows 安装包 | [v0.3.0](https://github.com/Vanilla-Yukirin/TimeTrace/releases/tag/v0.3.0) 已发布 Setup.exe，安装、升级、卸载及下载校验见 [归档](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202611111421-archive-windows-v0-3-0-release.md) | 代码签名和自动更新仍待实现，已安装设备版本以运行证据为准 |
 
 ## 已完成的主线
 
@@ -25,8 +25,8 @@
 | 分析与检索 | VLM 描述 + flat-6 分类；REST/MCP/Agent 共用文本检索；图搜为 pHash + 描述 embedding，缺 embedder 时退回词重叠 | `server/retrieval.py`、`server/api/routes/search.py` |
 | 分层记忆 | 五层指标/叙述；设备级 `device_summaries`；设备叙述公平调度，全局按设备拼装 | `server/summary/`、`tests/test_device_pyramid.py` |
 | Agent/MCP | 最新活动、粗到细摘要总览、精确下钻、稳定双向分页；缺记录不等于用户离线 | [MCP 契约](../infra/architecture/mcp-layer.md)、[PR #23](https://github.com/Vanilla-Yukirin/TimeTrace/pull/23) |
-| 前端与客户端 | 时间轴性能与交互修复；设置页设备管理；Windows 托盘、回环控制台、安装器与标签驱动 Release | [W1–W6](infra/archive-202610220210-owner-review-w1-w6.md)、[安装包说明](../packaging/windows/README.md) |
-| 私网部署 | Tailscale Serve → loopback nginx → 同 SHA SPA/API；GHCR 不可变镜像、主机主动更新与兼容门禁 | [PR #24 验收](infra/archive-202610230447-private-ts-pr24-deployment.md) |
+| 前端与客户端 | 时间轴性能与交互修复；设置页设备管理；Windows 托盘、回环控制台、安装器与标签驱动 Release | [W1–W6](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202610220210-archive-owner-review-w1-w6.md)、[安装包说明](../packaging/windows/README.md) |
+| 私网部署 | Tailscale Serve → loopback nginx → 同 SHA SPA/API；GHCR 不可变镜像、主机主动更新与兼容门禁 | [PR #24 验收](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202610230447-archive-private-ts-pr24-deployment.md) |
 
 W1–W6（PR #14–#21）及 PR #23/#24 已合入，且包含于最近验收的发布版本。原来的“设备查询待实现”“设备金字塔暂缓”“尚未部署”“缺 Release 工作流”等条目已移出待办。这里的完成不代表历史数据已全部修复、所有客户端均已更新或长期可靠性已验收。
 
@@ -38,13 +38,13 @@ W1–W6（PR #14–#21）及 PR #23/#24 已合入，且包含于最近验收的�
 - 两个容器跑真实采集、Outbox、传输、服务端、数据库、分析/摘要、MCP 和浏览器；画面与模型响应固定，验证断网、客户端终止、回执丢失和服务端重启。
 - 服务端与 Windows 制品发布依赖整套 CI；远端分支保护配置仍需核验。
 - JSON 日志保留异常组、请求 ID 与 worker 记录 ID；客户端轮转日志；服务端和客户端提供指标，新增 readiness。
-- 工程底座已通过本地/远端验收并合入，见上表及 [工程底座记录](infra/archive-202611100308-engineering-foundation.md)。本轮补齐 Windows 文件替换拒绝验收；屏幕/托盘、远端分支保护与生产监控接入继续安排。
+- 工程底座已通过本地/远端验收并合入，见上表及 [工程底座记录](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202611100308-archive-engineering-foundation.md)。本轮补齐 Windows 文件替换拒绝验收；屏幕/托盘、远端分支保护与生产监控接入继续安排。
 
 ## 已合入：Outbox 确认写入恢复
 
 11 月 10 日故障为 `state.json.tmp → state.json` 的 `PermissionError [WinError 5]` 穿透 TaskGroup。修复后只重试本地确认，成功前保留游标，等待时释放队列锁并响应停止信号。扫描或压缩遇到磁盘错误后重新读取持久游标。控制页显示最近错误，日志记录存储错误和恢复过程。状态和日志替换改用独立临时文件，已有 JSONL/游标格式保持兼容。
 
-Windows 真实 OS 故障、串行/并发确认、停止与重启重放、压缩失败恢复及双容器整体链路已验证。修复已随 Windows 安装包发布，设备需安装新版。队列事务化和容量策略仍是后续结构调整。过程见 [修复记录](infra/archive-202611101543-outbox-ack-recovery.md)。
+Windows 真实 OS 故障、串行/并发确认、停止与重启重放、压缩失败恢复及双容器整体链路已验证。修复已随 Windows 安装包发布，设备需安装新版。队列事务化和容量策略仍是后续结构调整。过程见 [修复记录](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace/202611101543-archive-outbox-ack-recovery.md)。
 
 ## 已合入：摘要覆盖判定
 
@@ -52,7 +52,7 @@ Windows 真实 OS 故障、串行/并发确认、停止与重启重放、压缩�
 
 ## 已验收的 Yuki-Win 历史设备摘要
 
-2026 年 11 月 11 日，按用户指定将 5 月 17 日至 6 月 27 日的 45,189 条无归属记录标记为 Yuki-Win，回读确认未归属记录剩余 0 条。副本演练后在生产回填了 2,341 个设备摘要窗，复用 134 个旧摘要正文，其余 2,207 个生成统计摘要。五级各覆盖 45,189 条，缺窗和条数不符均为 0，按设备查询和全文搜索通过。变更、验收与回滚备份见 [归档](infra/archive-202611112011-yuki-win-history-backfill.md)。
+2026 年 11 月 11 日，按用户指定将 5 月 17 日至 6 月 27 日的 45,189 条无归属记录标记为 Yuki-Win，回读确认未归属记录剩余 0 条。副本演练后在生产回填了 2,341 个设备摘要窗，复用 134 个旧摘要正文，其余 2,207 个生成统计摘要。五级各覆盖 45,189 条，缺窗和条数不符均为 0，按设备查询和全文搜索通过。变更、验收与回滚备份见 [归档](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202611112011-archive-yuki-win-history-backfill.md)。
 
 ## 已确认的问题与后续顺序
 

@@ -15,7 +15,7 @@
 | AI 上下文 | Web Agent、报告、MCP、最新活动、摘要总览、下钻与稳定分页 | 外部消费端是否刷新工具及遵循读取契约需单独验收 |
 | 发布与运维 | GHCR 同 SHA 后端/SPA、主机主动更新、私网入口、Windows 标签发布工作流 | 客户端签名/自动更新、生产恢复演练仍待补齐 |
 
-10 月 W1–W6 与 Agent 活动读取契约均已合入，并包含于 PR #24 的发布版本。设计来历见 [Owner Review](../PLAN-OWNER-REVIEW-2026-10.md)，实际发布证据见 [2026-10-23 归档](../../devlogs/infra/archive-202610230447-private-ts-pr24-deployment.md)。
+10 月 W1–W6 与 Agent 活动读取契约均已合入，并包含于 PR #24 的发布版本。设计来历见 [Owner Review](../PLAN-OWNER-REVIEW-2026-10.md)，实际发布证据见 [2026-10-23 归档](https://git.yukirin.me/patchouli-lib/archive/src/branch/main/timetrace-deployment/202610230447-archive-private-ts-pr24-deployment.md)。
 
 ## 当前阶段：可靠性与验收
 
