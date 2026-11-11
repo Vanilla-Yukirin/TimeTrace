@@ -91,6 +91,7 @@ devlogs/
 
 | 文件 | 摘要 |
 |------|------|
+| [archive-202611111421-windows-v0.3.0-release.md](infra/archive-202611111421-windows-v0.3.0-release.md) | v0.3.0 图形化连接设置与透明图标，记录本地双容器、主线和标签 CI、Windows EXE 下载及 SHA-256 校验 |
 | [archive-202611111127-windows-setup-release.md](infra/archive-202611111127-windows-setup-release.md) | v0.2.2 双击安装包发布，记录首轮失败修复、首装与覆盖升级验收、CI 和下载校验 |
 | [archive-202611101543-outbox-ack-recovery.md](infra/archive-202611101543-outbox-ack-recovery.md) | PR #25 合并与分支清理；Outbox 确认 I/O 失败可恢复、压缩后重读游标，真实 Windows 文件故障和双容器验收，未部署或修改生产数据 |
 | [archive-202611100308-engineering-foundation.md](infra/archive-202611100308-engineering-foundation.md) | 本地双容器 E2E、统一检查入口、发布 CI 门禁、JSON 日志与指标；Windows/Linux、前端、安装包及真实浏览器验收通过，记录 Outbox 与历史摘要后续问题，未提交/部署 |

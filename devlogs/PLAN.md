@@ -1,6 +1,6 @@
 # TimeTrace 当前状态与滚动计划
 
-**最后核对：2026-11-11。** Outbox 确认写入恢复和摘要覆盖判定已通过 [PR #26](https://github.com/Vanilla-Yukirin/TimeTrace/pull/26) 与 [PR #27](https://github.com/Vanilla-Yukirin/TimeTrace/pull/27) 合入 `main`。Windows 客户端 0.2.0 加入桌面窗口、截图策略与软件设置，0.2.2 改用双击安装的 Setup.exe。
+**最后核对：2026-11-11。** Outbox 确认写入恢复和摘要覆盖判定已通过 [PR #26](https://github.com/Vanilla-Yukirin/TimeTrace/pull/26) 与 [PR #27](https://github.com/Vanilla-Yukirin/TimeTrace/pull/27) 合入 `main`。Windows 客户端 v0.3.0 已发布，加入图形化连接配置与透明图标。
 
 本文是唯一的当前待办入口。架构看 [项目 Wiki](../infra/readme.md)，部署看 [部署手册](../infra/architecture/web-deployment.md)，历史过程看 [DevLog 索引](README.md)。事实冲突时以代码、对应提交的测试及有日期的运行证据为准；旧归档只说明当时的状态。
 
@@ -8,12 +8,12 @@
 
 | 对象 | 最近证据 | 边界 |
 |---|---|---|
-| 开发主线 | Windows v0.2.2 对应提交 `df121c7`，[main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42944786169) 成功 | Outbox 和摘要覆盖修复随主线保留 |
-| 本地单元测试（11 月 11 日） | Windows 726 passed / 5 skipped | 临时目录和合成数据，跳过真实 VLM 用例 |
+| 开发主线 | Windows v0.3.0 对应提交 `bd953d4`，[main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42969252642) 成功 | Outbox 和摘要覆盖修复随主线保留 |
+| 本地单元测试（11 月 11 日） | Windows 713 passed / 5 skipped | 临时目录和合成数据，跳过真实 VLM 用例 |
 | 构建与静态检查（11 月 11 日） | Ruff、前端 lint/TypeScript/build、Windows Setup.exe 版本和冻结 EXE 启动检查 | Windows CI 在临时用户环境验证安装器 |
-| 双容器 E2E（11 月 11 日） | 13 个场景通过，含确认写入恢复、带图入队、截图配置和主题。场景用时 32.96 秒，证据 `artifacts/timetrace-e2e-80d8f4f04a/` | 模拟画面、模型及文件替换故障，真实应用、网络、存储和浏览器 |
+| 双容器 E2E（11 月 11 日） | 14 个场景通过，含首次连接后截图上传、确认写入恢复、带图入队和摘要迟到记录。场景用时 33.66 秒，证据 `artifacts/timetrace-e2e-d0741d040e/` | 模拟画面、模型及文件替换故障，真实应用、网络、存储和浏览器 |
 | 发布分支与生产验收 | 11 月 10 日只读核对生产仍为 `81a10b6`；服务端近期分析和摘要持续推进 | 近期正常不代表历史覆盖完整；本轮不更新运行制品 |
-| Windows 安装包 | [v0.2.2](https://github.com/Vanilla-Yukirin/TimeTrace/releases/tag/v0.2.2) 已发布 Setup.exe，安装、升级、卸载及下载校验见 [归档](infra/archive-202611111127-windows-setup-release.md) | 代码签名和自动更新仍待实现，已安装设备版本以运行证据为准 |
+| Windows 安装包 | [v0.3.0](https://github.com/Vanilla-Yukirin/TimeTrace/releases/tag/v0.3.0) 已发布 Setup.exe，安装、升级、卸载及下载校验见 [归档](infra/archive-202611111421-windows-v0.3.0-release.md) | 代码签名和自动更新仍待实现，已安装设备版本以运行证据为准 |
 
 ## 已完成的主线
 
@@ -44,7 +44,7 @@ W1–W6（PR #14–#21）及 PR #23/#24 已合入，且包含于最近验收的�
 
 11 月 10 日故障为 `state.json.tmp → state.json` 的 `PermissionError [WinError 5]` 穿透 TaskGroup。修复后只重试本地确认，成功前保留游标，等待时释放队列锁并响应停止信号。扫描或压缩遇到磁盘错误后重新读取持久游标。控制页显示最近错误，日志记录存储错误和恢复过程。状态和日志替换改用独立临时文件，已有 JSONL/游标格式保持兼容。
 
-Windows 真实 OS 故障、串行/并发确认、停止与重启重放、压缩失败恢复及双容器整体链路已验证。队列事务化和容量策略仍是后续结构调整；修复发布到已安装客户端需要独立发行步骤。过程见 [修复记录](infra/archive-202611101543-outbox-ack-recovery.md)。
+Windows 真实 OS 故障、串行/并发确认、停止与重启重放、压缩失败恢复及双容器整体链路已验证。修复已随 Windows 安装包发布，设备需安装新版。队列事务化和容量策略仍是后续结构调整。过程见 [修复记录](infra/archive-202611101543-outbox-ack-recovery.md)。
 
 ## 已合入：摘要覆盖判定
 
