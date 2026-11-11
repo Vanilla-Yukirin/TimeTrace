@@ -72,13 +72,13 @@ Windows runner and publishes a GitHub Release containing:
 
 The tag must be exactly `vX.Y.Z`, must point to a commit in `main`, and must
 match both `[project].version` in `pyproject.toml` and `timetrace.__version__`.
-For example, after merging version `0.2.1` to `main`:
+For example, after merging version `0.2.2` to `main`:
 
 ```powershell
 git switch main
 git pull --ff-only
-git tag -a v0.2.1 -m "TimeTrace Client v0.2.1"
-git push origin v0.2.1
+git tag -a v0.2.2 -m "TimeTrace Client v0.2.2"
+git push origin v0.2.2
 ```
 
 Normal pushes to `main` run CI. The Windows runner tests installation,

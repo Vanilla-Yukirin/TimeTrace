@@ -50,16 +50,22 @@ Type: files; Name: "{userstartup}\{#AppName}.lnk"
 Type: filesandordirs; Name: "{app}\_internal"
 
 [Code]
+var
+  StartupTaskInitialized: Boolean;
+
 function StartupShortcut: String;
 begin
   Result := ExpandConstant('{userstartup}\{#AppName}.lnk');
 end;
 
-procedure InitializeWizard;
+procedure CurPageChanged(PageID: Integer);
 var
   Index: Integer;
   Argument: String;
 begin
+  if (PageID <> wpSelectTasks) or StartupTaskInitialized then
+    Exit;
+  StartupTaskInitialized := True;
   for Index := 1 to ParamCount do
   begin
     Argument := Uppercase(ParamStr(Index));
@@ -67,7 +73,7 @@ begin
       Exit;
   end;
   // The dashboard can change the shortcut between installations.
-  if FileExists(ExpandConstant('{app}\{#AppExe}')) and not FileExists(StartupShortcut) then
+  if FileExists(AddBackslash(WizardDirValue) + '{#AppExe}') and not FileExists(StartupShortcut) then
     WizardSelectTasks('!autostart');
 end;
 
