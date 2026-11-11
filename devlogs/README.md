@@ -91,6 +91,7 @@ devlogs/
 
 | 文件 | 摘要 |
 |------|------|
+| [archive-202611112011-yuki-win-history-backfill.md](infra/archive-202611112011-yuki-win-history-backfill.md) | Yuki-Win 的 45,189 条历史记录归属、2,341 个设备摘要窗零模型回填，记录生产验收与两处恢复点 |
 | [archive-202611111421-windows-v0.3.0-release.md](infra/archive-202611111421-windows-v0.3.0-release.md) | v0.3.0 图形化连接设置与透明图标，记录本地双容器、主线和标签 CI、Windows EXE 下载及 SHA-256 校验 |
 | [archive-202611111127-windows-setup-release.md](infra/archive-202611111127-windows-setup-release.md) | v0.2.2 双击安装包发布，记录首轮失败修复、首装与覆盖升级验收、CI 和下载校验 |
 | [archive-202611101543-outbox-ack-recovery.md](infra/archive-202611101543-outbox-ack-recovery.md) | PR #25 合并与分支清理；Outbox 确认 I/O 失败可恢复、压缩后重读游标，真实 Windows 文件故障和双容器验收，未部署或修改生产数据 |
