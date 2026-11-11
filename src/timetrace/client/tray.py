@@ -22,7 +22,7 @@ logger = structlog.get_logger(__name__)
 
 
 def _make_icon():
-    """Create the same high-contrast clock used by the packaged executable."""
+    """Load the same icon used by the packaged executable."""
     from timetrace.client.windows_runtime import create_app_icon
 
     return create_app_icon(64)
@@ -73,9 +73,7 @@ class TrayIcon:
             # Windows pystray caches menu text at build time; refresh so the
             # endpoint health glyphs (●/○/✕) track the selector. Only needed
             # when we actually render the connection submenu.
-            if self._endpoints or (
-                self._controller is not None and self._controller.cached_snapshot().endpoints
-            ):
+            if self._endpoints or self._controller is not None:
                 threading.Thread(
                     target=self._refresh_menu_loop, name="tray-refresh", daemon=True
                 ).start()
@@ -148,7 +146,7 @@ class TrayIcon:
                     enabled=lambda item: bool(self._controller.cached_snapshot().control_url),
                 )
             )
-        if self._controller is not None and self._controller.cached_snapshot().endpoints:
+        if self._controller is not None:
             items.append(pystray.MenuItem("连接", self._build_controller_endpoint_menu(pystray)))
         elif self._endpoints:
             items.append(pystray.MenuItem("连接", self._build_endpoint_menu(pystray)))
@@ -206,7 +204,9 @@ class TrayIcon:
                 name=endpoint.name,
                 enabled=not endpoint.enabled,
             )
-            self._controller.set_endpoint_enabled_from_thread(index, not endpoint.enabled)
+            self._controller.set_endpoint_enabled_from_thread(
+                index, not endpoint.enabled, endpoint.name
+            )
 
         def make_label(index: int):
             def endpoint_label(item) -> str:  # noqa: ANN001
@@ -228,14 +228,14 @@ class TrayIcon:
             return endpoint_checked
 
         return pystray.Menu(
-            *[
+            lambda: (
                 pystray.MenuItem(
                     make_label(endpoint.index),
                     make_toggle(endpoint.index),
                     checked=make_checked(endpoint.index),
                 )
                 for endpoint in self._controller.cached_snapshot().endpoints
-            ]
+            )
         )
 
     def _build_endpoint_menu(self, pystray):

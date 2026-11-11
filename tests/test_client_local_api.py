@@ -52,14 +52,22 @@ async def test_local_api_security_status_and_redaction(tmp_path):
         assert root.headers["cache-control"] == "no-store"
         assert "frame-ancestors 'none'" in root.headers["content-security-policy"]
         assert root.headers["x-content-type-options"] == "nosniff"
+        assert "img-src 'self'" in root.headers["content-security-policy"]
+        assert 'src="/assets/timetrace-kuro.ico"' in root.text
+        icon = await client.get("/assets/timetrace-kuro.ico")
+        assert icon.status_code == 200
+        assert icon.headers["content-type"] == "image/vnd.microsoft.icon"
+        assert icon.content.startswith(b"\x00\x00\x01\x00")
         assert "access-control-allow-origin" not in root.headers
 
         status = await client.get("/api/status")
         config = await client.get("/api/config")
-        combined = status.text + config.text
+        connection = await client.get("/api/connection")
+        combined = status.text + config.text + connection.text
         for secret in ("bearer-super-secret", "alice", "password", "query-secret"):
             assert secret not in combined
         assert config.json()["auth_token_present"] is True
+        assert connection.json()["paths"][0]["keep_index"] == 0
         assert (await client.get("/docs")).status_code == 404
         assert (await client.get("/openapi.json")).status_code == 404
 

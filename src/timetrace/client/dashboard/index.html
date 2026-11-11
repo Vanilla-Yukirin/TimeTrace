@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="timetrace-csrf" content="{{csrf}}">
   <title>TimeTrace 客户端</title>
+  <link rel="icon" href="/assets/timetrace-kuro.ico">
   <link rel="stylesheet" href="/assets/style.css">
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
   <aside class="rail">
-    <div class="brand"><span class="brand-icon" aria-hidden="true">◷</span><span>TimeTrace<small>Windows 客户端</small></span></div>
+    <div class="brand"><img class="brand-icon" src="/assets/timetrace-kuro.ico" width="34" height="34" alt=""><span>TimeTrace<small>Windows 客户端</small></span></div>
     <nav aria-label="客户端页面">
       <button class="nav" data-page="status" aria-current="page">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>状态
@@ -28,7 +29,9 @@
     <section id="status" class="page">
       <header class="page-head"><div><h1>状态</h1><p>查看采集、连接和上传进度。</p></div><button id="toggle" disabled>暂停采集</button></header>
       <div class="cards">
-        <article class="tile"><span class="muted">服务端连接</span><strong id="active">—</strong><small id="endpoint-health">等待探测</small></article>
+        <button type="button" class="tile connection-tile" id="open-connection">
+          <span class="muted">服务端连接</span><strong id="active">—</strong><small id="endpoint-health">点击设置</small>
+        </button>
         <article class="tile"><span class="muted">待上传截图</span><strong id="pending">—</strong><small id="backlog"></small></article>
         <article class="tile"><span class="muted">当前模式</span><strong id="mode">—</strong><small id="capture">—</small></article>
       </div>
@@ -71,7 +74,29 @@
       </form>
     </section>
     <section id="software" class="page" hidden>
-      <header class="page-head"><div><h1>软件设置</h1><p>管理外观、Windows 登录启动和版本更新。</p></div></header>
+      <header class="page-head"><div><h1>软件设置</h1></div></header>
+      <form id="connection-form" class="panel" autocomplete="off">
+        <header class="panel-head">
+          <div><h2 id="connection-heading" tabindex="-1">服务端连接</h2><p id="connection-hint">按列表顺序尝试可用地址。</p></div>
+          <button id="add-path" type="button" class="subtle" disabled>添加路径</button>
+        </header>
+        <fieldset id="connection-fields" disabled>
+          <div id="connection-paths"></div>
+          <label class="setting"><span>设备 Token<small id="token-hint"></small></span>
+            <input id="connection-token" type="password" maxlength="4096" autocomplete="new-password">
+          </label>
+          <label class="setting" id="clear-token-field" hidden>
+            <span>清除已保存的 Token</span><input id="clear-token" type="checkbox">
+          </label>
+          <label class="setting" id="same-server-field" hidden>
+            <span>新地址指向同一台服务端<small>已有待上传截图会继续通过这些路径发送。</small></span>
+            <input id="same-server" type="checkbox">
+          </label>
+          <div class="panel-head"><button id="save-connection" type="submit">保存并重连</button>
+            <span id="connection-result" role="status"></span>
+          </div>
+        </fieldset>
+      </form>
       <section class="panel">
         <label class="setting"><span>外观<small>选择浅色、深色或跟随系统</small></span><select id="theme" disabled><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
         <label class="setting"><span>登录时启动<small id="autostart-hint">登录 Windows 后在托盘后台运行</small></span><input id="autostart" type="checkbox" role="switch" disabled></label>

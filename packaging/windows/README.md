@@ -39,6 +39,10 @@ Open **Start Menu → TimeTrace → TimeTrace Client** or the tray's control pan
 item to open the desktop window. The Windows build uses WebView2. The same
 dashboard is available at the configured loopback control address.
 
+On the first launch, select **尚未设置** on the **服务端连接** status card.
+Enter the server address and device token, test the connection, then select
+**保存并重连**. Edit the connection later under **软件设置 → 服务端连接**.
+
 - **状态** shows the active connection, pending image count, capture strategy
   and a live activity feed. Scrolling to the bottom loads older events.
 - **截图配置** applies changes as soon as they are saved. Interval mode captures

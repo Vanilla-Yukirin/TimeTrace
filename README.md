@@ -94,17 +94,11 @@ uv run timetrace-server repair-data-quality --apply  # 先在线备份 SQLite，
 
 `tokens add/revoke` 后**重启服务端**，新 token 才生效。
 
-### Client 端（采集机器）
+### Windows 客户端
 
-```bash
-uv sync
-uv run timetrace-client init             # 交互式填 server URL + token + 设备名等
-uv run timetrace-client                  # 起采集
-```
+从开始菜单打开 TimeTrace Client。首次使用，在状态页点击「尚未设置」进入「服务端连接」，填写服务端地址和设备 Token，测试连接后点击「保存并重连」。地址、路径优先级和 Token 也可在「软件设置」修改。客户端把设置保存在 `%USERPROFILE%/TimeTraceData/client.toml`，每台设备使用独立 Token、设备 ID 和 Outbox。
 
-`init` 把配置写到 `%USERPROFILE%/TimeTraceData/client.toml`。每个字段都显示当前值作为默认，按 Enter 接受。每台客户端使用独立 Token、device ID 和 Outbox；不要复制另一台机器的完整数据目录作为初始化方式。服务端设置页可查看设备、编辑名称/描述与停用，停用设备不会同时撤销其 Token。
-
-客户端启动后会在 `http://127.0.0.1:8764` 提供本机控制面板，也可以从托盘选择“打开控制面板”。页面只展示采集、连接和 outbox 状态，可安全暂停/恢复采集以及启停已配置的 HTTP 连接；它不会返回 bearer token、截图或本地文件路径。控制服务固定绑定 IPv4 loopback，不开放 CORS，写操作同时校验 Host、同源 Origin、会话 cookie 和 CSRF token。
+托盘菜单可重新打开控制面板。控制服务固定绑定 IPv4 loopback，写操作校验 Host、同源 Origin、会话 cookie 和 CSRF token。设置页仅显示 Token 是否已配置。
 
 端口可在 `client.toml` 调整；端口被占用时仅控制面板不可用，采集和上传继续运行：
 
@@ -114,22 +108,15 @@ enabled = true
 port = 8764
 ```
 
-**非交互（CI / Ansible / Docker / systemd 首启）**：
+**无桌面服务（CI、Docker 或 systemd）**：
 
 ```bash
 TIMETRACE_SERVER_URL=https://my-server.example:8765 \
 TIMETRACE_AUTH_TOKEN=tt_live_xxxxxxxxxxxx \
-uv run timetrace-client init --non-interactive
+uv run timetrace-client
 ```
 
 支持的环境变量：`TIMETRACE_SERVER_URL`、`TIMETRACE_AUTH_TOKEN`、`TIMETRACE_DEVICE_ID`、`TIMETRACE_DEVICE_NAME`、`TIMETRACE_DEVICE_DESC`、`TIMETRACE_OUTBOX_DIR`、`TIMETRACE_UPLOAD_MAX_KBPS`、`TIMETRACE_DATA_DIR`、`TIMETRACE_PRIVACY_MODE`。env 优先级 > client.toml。
-
-**调试**：
-
-```bash
-uv run timetrace-client init --probe                # init 后跑一次 GET /healthz
-uv run timetrace-client print-config                # 看实际生效的配置（token mask 显示）
-```
 
 ### 部署到家里小主机
 
@@ -163,8 +150,7 @@ src/timetrace/
 │   ├── capture/     # 切窗监听、截图、隐私门控、空闲检测
 │   ├── core/        # BackendClient Protocol + InProcessBackend / HttpBackend / OutboxBackend
 │   ├── tray.py      # pystray 托盘
-│   ├── cli.py       # timetrace-client 入口（含 init / print-config 子命令）
-│   └── init_cmd.py  # 交互式 / env 驱动的初始化流程
+│   └── cli.py       # timetrace-client 采集和控制面板入口
 ├── server/
 │   ├── api/         # FastAPI app + routes (records / search / feedback / ingest)
 │   ├── auth.py      # bearer token 自生成 + 校验

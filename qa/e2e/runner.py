@@ -200,6 +200,36 @@ async def run(completed):
                     return response.json()
 
                 await until("client control", status)
+                assert not (await status())["connection_configured"]
+                async with async_playwright() as playwright:
+                    browser = await playwright.chromium.launch()
+                    try:
+                        page = await browser.new_page(viewport={"width": 1440, "height": 900})
+                        await page.goto("http://127.0.0.1:18764/")
+                        await expect(page.locator("#active")).to_have_text("尚未设置")
+                        assert (await status())["outbox_pending"] == 0
+                        await page.locator("#open-connection").click()
+                        await expect(page.get_by_role("heading", name="服务端连接")).to_be_visible()
+                        await page.get_by_label("路径名称").fill("fixture")
+                        await page.get_by_label("服务端地址").fill(BASE)
+                        await page.locator("#connection-token").fill("invalid-token")
+                        await page.get_by_role("button", name="测试连接").click()
+                        await expect(page.locator("#connection-result")).to_contain_text("拒绝访问")
+                        assert not (await status())["connection_configured"]
+                        await page.locator("#connection-token").fill(TOKEN)
+                        await page.get_by_role("button", name="测试连接").click()
+                        await expect(page.locator("#connection-result")).to_contain_text(
+                            "服务端可访问"
+                        )
+                        await page.get_by_role("button", name="保存并重连").click()
+                        await expect(page.locator("#connection-result")).to_have_text(
+                            "连接设置已保存"
+                        )
+                        await expect(page.locator("#connection-token")).to_have_value("")
+                        await page.screenshot(path=str(ARTIFACTS / "client-connection.png"))
+                        assert (await status())["connection_configured"]
+                    finally:
+                        await browser.close()
 
                 async def captured_offline():
                     value = await status()
@@ -255,6 +285,7 @@ async def run(completed):
                 assert state["accepted_before_ack_loss"]
                 assert state["image_less_ingests"] == 0
                 completed.append("ack_permission_error_recovery")
+                completed.append("client_first_run_connection")
                 completed.extend(
                     ["offline_capture", "client_crash_recovery", "lost_ack_idempotency"]
                 )

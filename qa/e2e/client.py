@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 
 from timetrace.client.capture.source import WindowInfo
 from timetrace.client.cli import _run
-from timetrace.client.core.config import ClientConfig, EndpointSection
+from timetrace.client.core.config import ClientConfig
 from timetrace.common.logging import configure_logging
 
 
@@ -24,7 +24,7 @@ class FixtureScreen:
         self.epoch = (int(time.time()) // 300 - 4) * 300 + 10
 
     def start(self):
-        pass
+        self.started = time.monotonic()
 
     def stop(self):
         pass
@@ -52,20 +52,18 @@ async def main():
     assert Path.home() == Path("/home/timetrace")
     root = Path.home() / "TimeTraceData"
     configure_logging("client", logs_dir=root / "logs")
-    cfg = ClientConfig()
-    cfg.storage.data_dir = root
-    cfg.outbox.root_dir = root / "outbox"
-    cfg.server.auth_token = "e2e-only-machine-token"
-    cfg.server.endpoints = [EndpointSection(name="fixture", url="http://127.0.0.1:18080")]
-    cfg.device.id = "b2ce6dbd-e18c-40e4-8705-138ef26bf343"
-    cfg.device.name = "E2E Client"
-    cfg.capture.min_capture_interval_s = 0.1
-    cfg.capture.switch_capture_delay_s = 0.1
-    cfg.capture.image_format = "webp"
-    cfg.control.port = 18764
-    # Persist test controls inside the disposable home. The endpoint must
-    # survive GUI settings saves just as it does in an installed client.
-    cfg.save()
+    config_path = root / "client.toml"
+    cfg = ClientConfig.load_or_default(config_path)
+    if not config_path.exists():
+        cfg.storage.data_dir = root
+        cfg.outbox.root_dir = root / "outbox"
+        cfg.device.id = "b2ce6dbd-e18c-40e4-8705-138ef26bf343"
+        cfg.device.name = "E2E Client"
+        cfg.capture.min_capture_interval_s = 0.1
+        cfg.capture.switch_capture_delay_s = 0.1
+        cfg.capture.image_format = "webp"
+        cfg.control.port = 18764
+        cfg.save(config_path)
     if "--deny-ack" in sys.argv:
         # Linux cannot reproduce NTFS sharing modes. Inject the same failure
         # at Path.replace; native Windows tests exercise the actual OS denial.

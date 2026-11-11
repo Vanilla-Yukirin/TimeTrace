@@ -1,6 +1,7 @@
 #define AppId "VanillaYukirin.TimeTrace.Client"
 #define AppName "TimeTrace Client"
 #define AppExe AppName + ".exe"
+#define BrandIcon "_internal\timetrace\client\dashboard\timetrace-kuro.ico"
 
 [Setup]
 AppId={#AppId}
@@ -21,7 +22,7 @@ AppMutex=Local\{#AppId},Local\{#AppId}.Dashboard
 CloseApplications=yes
 RestartApplications=no
 UsePreviousTasks=no
-UninstallDisplayIcon={app}\{#AppExe}
+UninstallDisplayIcon={app}\{#BrandIcon}
 SetupIconFile={#AppIcon}
 OutputDir={#OutputDir}
 OutputBaseFilename=TimeTrace-Client-Setup-x64
@@ -38,8 +39,8 @@ Source: "{#PackageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "--gui"; WorkingDir: "{app}"; AppUserModelID: "{#AppId}"
-Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Tasks: autostart
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "--gui"; WorkingDir: "{app}"; AppUserModelID: "{#AppId}"; IconFilename: "{app}\{#BrandIcon}"
+Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Tasks: autostart; IconFilename: "{app}\{#BrandIcon}"
 
 [Run]
 Filename: "{app}\{#AppExe}"; Parameters: "--gui"; Description: "Open TimeTrace"; Flags: nowait postinstall skipifsilent

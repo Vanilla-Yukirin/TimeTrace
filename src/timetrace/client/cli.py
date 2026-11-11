@@ -12,10 +12,8 @@ Composition:
 Intentionally NOT included: API server, DB, AnalysisWorker. Those live in
 ``timetrace-server``.
 
-First-time setup: drop a ``client.toml`` at
-``%USERPROFILE%/TimeTraceData/client.toml`` (or run ``timetrace-client init``
-when that command lands). Without a valid token + server URL the client will
-still start but every upload will 401 against an auth-gated server.
+First-time setup runs in the desktop dashboard. Headless services can
+provide connection settings through their environment.
 
 For the legacy single-process all-in-one mode, see
 ``src/timetrace/main.py`` (reachable via ``uv run timetrace``).
@@ -73,9 +71,6 @@ timetrace-client — capture-only client half of TimeTrace.
 Usage:
   timetrace-client                 Run the capture loop (default).
   timetrace-client --gui           Start the client and open its dashboard.
-  timetrace-client init [opts]     Interactive first-time setup. Use
-                                   --non-interactive for env-driven setup.
-  timetrace-client print-config    Dump the resolved client.toml + env values.
   timetrace-client -h | --help     Show this help.
 
 Configuration: %USERPROFILE%/TimeTraceData/client.toml (override via env vars
@@ -152,23 +147,10 @@ async def _run(
 
         # 2) Endpoint selection (multi-path failover) — pick an initial active
         # endpoint before the first send so the transport has a base URL.
-        selector = EndpointSelector(client_cfg.server.all_endpoints())
+        client_cfg.server.endpoints = client_cfg.server.all_endpoints()
+        selector = EndpointSelector(client_cfg.server.endpoints)
         if runtime is not None:
             runtime["selector"] = selector  # let the tray read live health
-        await selector.select()
-
-        journal = ActivityJournal(client_cfg.storage.logs_dir / "activity.sqlite3")
-        controller = ClientController(
-            client_cfg,
-            outbox,
-            selector,
-            quit_event,
-            loop=asyncio.get_running_loop(),
-            browser_opener=open_dashboard,
-            journal=journal,
-        )
-        if runtime is not None:
-            runtime["controller"] = controller
 
         async def _on_send_failure() -> None:
             # Fast failover: a failed send re-probes + may switch the active path.
@@ -191,6 +173,20 @@ async def _run(
             timeout_s=120.0,
         )
         stack.push_async_callback(http.aclose)
+
+        journal = ActivityJournal(client_cfg.storage.logs_dir / "activity.sqlite3")
+        controller = ClientController(
+            client_cfg,
+            outbox,
+            selector,
+            quit_event,
+            loop=asyncio.get_running_loop(),
+            browser_opener=open_dashboard,
+            journal=journal,
+            set_transport_token=http.set_auth_token,
+        )
+        if runtime is not None:
+            runtime["controller"] = controller
 
         # 3) Capture-facing backend (queues into outbox)
         backend = OutboxBackend(outbox, data_dir=client_cfg.storage.data_dir)
@@ -240,6 +236,9 @@ async def _run(
             if capture_task is not None:
                 capture_task.cancel()
             if sender_task is not None:
+                if not controller.connection_ready.is_set():
+                    sender_task.cancel()
+                    return
                 try:
                     await asyncio.wait_for(asyncio.shield(sender_task), timeout=3.0)
                 except asyncio.TimeoutError:
@@ -250,12 +249,17 @@ async def _run(
 
         async def _run_capture() -> None:
             try:
+                await controller.connection_ready.wait()
                 await capture_svc.run()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 controller.record_error("capture", exc)
                 raise
+
+        async def _run_sender() -> None:
+            await controller.connection_ready.wait()
+            await sender.run(sender_stop)
 
         # The tray starts only after the controller exists, so its background
         # thread can never mutate config directly or race daemon composition.
@@ -267,7 +271,7 @@ async def _run(
 
         async with asyncio.TaskGroup() as tg:
             capture_task = tg.create_task(_run_capture(), name="capture")
-            sender_task = tg.create_task(sender.run(sender_stop), name="sender")
+            sender_task = tg.create_task(_run_sender(), name="sender")
             tg.create_task(selector.run(sender_stop), name="endpoints")
             tg.create_task(controller.refresh_loop(sender_stop), name="client_status")
             tg.create_task(journal.run(quit_event), name="activity_journal")
@@ -300,13 +304,6 @@ def main() -> None:
         args = []
     if args and args[0] in ("-h", "--help"):
         print(_HELP_TEXT)
-        return
-    if args and args[0] == "init":
-        from timetrace.client.init_cmd import run as init_run  # noqa: PLC0415
-
-        sys.exit(init_run(args[1:]))
-    if args and args[0] == "print-config":
-        _print_config()
         return
     if args:
         print(f"Unknown command: {args[0]}\n", file=sys.stderr)
@@ -346,18 +343,11 @@ def main() -> None:
         if not show_dashboard_on_start or not open_running_dashboard(client_cfg.control.port):
             notify_already_running()
         return
-    # First-launch ergonomics: mint a device_id and persist client.toml so the
-    # user can edit it instead of staring at "where do I put my token".
+    # Seed a stable device identity before presenting first-run setup.
     if not client_cfg.device.id:
         client_cfg.ensure_device_id()
         path = client_cfg.save_seeded_device()
         logger.info("client.config_seeded", path=str(path), device_id=client_cfg.device.id)
-
-    # Materialize the endpoint list in-memory (legacy single `url` → one entry)
-    # so EndpointSelector and ClientController share the same loop-owned
-    # EndpointSection objects. The tray only reads immutable controller snapshots.
-    if not client_cfg.server.endpoints:
-        client_cfg.server.endpoints = client_cfg.server.all_endpoints()
 
     _warn_if_shares_data_dir_with_server(client_cfg.storage)
 
@@ -408,49 +398,6 @@ def main() -> None:
             loop.close()
     finally:
         instance.close()
-
-
-def _print_config() -> None:
-    """Dump the resolved client.toml + env-overlay values to stdout.
-
-    Useful for "what is the daemon actually about to do" debugging without
-    starting the heavy capture loop. Token is shown by length only — never
-    the value — so the output can be safely pasted into a bug report.
-    """
-    cfg = ClientConfig.load_or_default()
-    token_view = f"<{len(cfg.server.auth_token)} chars>" if cfg.server.auth_token else "<empty>"
-    print(f"server.url            = {cfg.server.url}")
-    print(f"server.auth_token     = {token_view}")
-    eps = cfg.server.all_endpoints()
-    src = "configured" if cfg.server.endpoints else "synthesized from url"
-    print(f"server.endpoints      = {len(eps)} ({src})")
-    for i, ep in enumerate(eps):
-        flag = "on " if ep.enabled else "off"
-        extra = (
-            f"  ssh={ep.ssh_host}:{ep.ssh_port}->{ep.remote_host}:{ep.remote_port}"
-            if ep.type == "ssh"
-            else ""
-        )
-        print(f"  [{i}] {flag} {ep.name:12} {ep.type:4} {ep.url}{extra}")
-    print(f"device.id             = {cfg.device.id or '<unset>'}")
-    print(f"device.name           = {cfg.device.name or '<unset>'}")
-    print(f"device.description    = {cfg.device.description or '<unset>'}")
-    print(f"outbox.root_dir       = {cfg.outbox.root_dir}")
-    print(f"upload.max_kbps       = {cfg.upload.max_kbps}")
-    print(f"upload.max_image_mb   = {cfg.upload.max_image_mb}")
-    print(f"upload.concurrency    = {cfg.upload.concurrency}")
-    print(f"control.enabled       = {cfg.control.enabled}")
-    print(f"control.port          = {cfg.control.port}")
-    print(f"storage.data_dir      = {cfg.storage.data_dir}")
-    print(f"capture.min_interval  = {cfg.capture.min_capture_interval_s}s")
-    print(f"capture.max_interval  = {cfg.capture.max_capture_interval_s}s")
-    print(f"capture.idle_threshold= {cfg.capture.idle_threshold_s}s")
-    print(f"capture.mode          = {cfg.capture.capture_mode}")
-    print(f"privacy.mode          = {cfg.privacy.mode}")
-    print(f"privacy.paused        = {cfg.privacy.paused}")
-    print(f"privacy.store_images  = {cfg.privacy.store_images}")
-    print(f"privacy.app_blacklist = {cfg.privacy.app_blacklist}")
-    print(f"privacy.title_keywords= {cfg.privacy.title_keywords}")
 
 
 if __name__ == "__main__":

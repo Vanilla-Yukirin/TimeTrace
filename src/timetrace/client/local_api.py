@@ -14,12 +14,15 @@ import httpx
 import structlog
 import uvicorn
 from fastapi import Body, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import BaseModel, ConfigDict
 
 from timetrace import __version__
 from timetrace.client.capture.settings import ScreenshotSettings, Theme
+from timetrace.client.connection_settings import ConnectionEdit, ConnectionTest
 from timetrace.client.controller import (
     ClientController,
     ControllerMutationError,
@@ -27,7 +30,7 @@ from timetrace.client.controller import (
 from timetrace.client.core.endpoints import redact_endpoint_url
 from timetrace.client.metrics import render_client_metrics
 from timetrace.client.updates import check_for_update
-from timetrace.client.windows_runtime import autostart_enabled, set_autostart
+from timetrace.client.windows_runtime import APP_ICON_PATH, autostart_enabled, set_autostart
 
 logger = structlog.get_logger(__name__)
 
@@ -39,6 +42,10 @@ class EndpointPatch(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     enabled: bool
+
+
+class EndpointToggle(EndpointPatch):
+    expected_name: str | None = None
 
 
 class ThemePatch(BaseModel):
@@ -68,6 +75,12 @@ def create_local_app(
     )
     app.state.csrf_token = csrf_token
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> Response:
+        if request.url.path in {"/api/connection", "/api/connection/test"}:
+            return JSONResponse({"detail": "请检查连接地址、名称和 Token 格式"}, status_code=422)
+        return await request_validation_exception_handler(request, exc)
+
     @app.middleware("http")
     async def _security_boundary(request: Request, call_next):  # noqa: ANN001
         host = request.headers.get("host", "").lower()
@@ -93,7 +106,7 @@ def create_local_app(
         response.headers["Cache-Control"] = "no-store"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "connect-src 'self'; img-src 'none'; frame-ancestors 'none'; "
+            "connect-src 'self'; img-src 'self'; frame-ancestors 'none'; "
             "base-uri 'none'; form-action 'none'"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -129,6 +142,10 @@ def create_local_app(
             (_DASHBOARD / "style.css").read_text(encoding="utf-8"),
             media_type="text/css; charset=utf-8",
         )
+
+    @app.get(f"/assets/{APP_ICON_PATH.name}")
+    async def icon() -> FileResponse:
+        return FileResponse(APP_ICON_PATH, media_type="image/vnd.microsoft.icon")
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -229,12 +246,35 @@ def create_local_app(
         return asdict(await controller.set_paused(False))
 
     @app.patch("/api/endpoints/{index}")
-    async def endpoint(index: int, patch: EndpointPatch, request: Request) -> dict:
+    async def endpoint(index: int, patch: EndpointToggle, request: Request) -> dict:
         try:
-            snapshot = await controller.set_endpoint_enabled(index, patch.enabled)
+            snapshot = await controller.set_endpoint_enabled(
+                index, patch.enabled, expected_name=patch.expected_name
+            )
         except ControllerMutationError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return asdict(snapshot)
+
+    @app.get("/api/connection")
+    async def connection() -> dict:
+        return controller.connection_settings()
+
+    @app.post("/api/connection/test")
+    async def test_connection(edit: ConnectionTest) -> dict[str, bool]:
+        try:
+            await controller.test_connection(edit)
+        except (ControllerMutationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"ok": True}
+
+    @app.put("/api/connection")
+    async def save_connection(edit: ConnectionEdit) -> dict:
+        try:
+            return await controller.save_connection(edit)
+        except ControllerMutationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/shutdown", status_code=202)
     async def shutdown(request: Request, _payload: Annotated[dict, Body()]) -> dict[str, bool]:

@@ -6,7 +6,12 @@ import urllib.request
 import webbrowser
 from urllib.parse import urlsplit
 
-from timetrace.client.windows_runtime import APP_USER_MODEL_ID, ClientInstance
+from timetrace.client.windows_runtime import (
+    APP_ICON_PATH,
+    APP_USER_MODEL_ID,
+    ClientInstance,
+    configure_windows_window_identity,
+)
 
 WINDOW_TITLE = "TimeTrace 客户端"
 
@@ -69,9 +74,12 @@ def show_dashboard(url: str) -> None:
                     pass
             return
         try:
-            webview.create_window(
+            window = webview.create_window(
                 WINDOW_TITLE, url, width=1100, height=780, min_size=(680, 520), text_select=True
             )
-            webview.start(gui="edgechromium", private_mode=True)
+            window.events.before_show += lambda: configure_windows_window_identity(
+                window.native.Handle.ToInt64()
+            )
+            webview.start(gui="edgechromium", private_mode=True, icon=str(APP_ICON_PATH))
         except Exception:
             webbrowser.open(url)

@@ -94,11 +94,11 @@ API 启动后用 `/healthz` 检查存活、`/readyz` 检查数据库和后台任
 
 - **入口**：四个 `[project.scripts]`，前三个是主应用，第四个是独立实验服务：
   - `timetrace` → `main.py:main` 单进程默认（pystray 主线程 + asyncio loop）
-  - `timetrace-client` → `client/cli.py:main` 客户端守护；子命令 `init` (交互/--non-interactive)、`print-config`
+  - `timetrace-client` → `client/cli.py:main` 客户端守护。Windows 用户在桌面控制面板设置连接
   - `timetrace-server` → `server/cli.py:main` 服务端守护；子命令 `info`、`tokens list/add/revoke`、`backfill <start> <end>`（建指标级联）、`narrate <start> <end> [--force] [--grains] [--max-tokens]`（生成/重叙述）、`repair-data-quality [--apply]`（dry-run/备份后修复）—— 管理命令见 admin_cmd.py
   - `timetrace-embserver` → `embserver/cli.py:main` 独立 Qwen3-VL embedding 服务，未接入主 worker/检索；详见 [embserver 文档](infra/architecture/embserver.md)
   - main.py 与 server/cli.py 共享 `server/bootstrap.py`（build_server_components + serve(extra_tasks=...)），不会再次漂移
-- **三层目录**：`src/timetrace/{common,client,server}/`。配置在 `common/config.py` + `client/core/config.py`（ClientConfig 现在吃 storage/capture/privacy 三段，是双进程 client 的单一 source of truth；含 `apply_env_overrides()` 接 9 个 TIMETRACE_* env vars）；wire schema 在 `common/protocol.py`；capture / 托盘 / outbox / backend / init_cmd 在 `client/`；api / db / queue / blob / worker / vlm / phash / mcp / admin_cmd / bootstrap 在 `server/`。
+- **三层目录**：`src/timetrace/{common,client,server}/`。配置在 `common/config.py` + `client/core/config.py`（ClientConfig 读取服务端、storage、capture 和 privacy 配置，支持 `TIMETRACE_*` 环境变量覆盖）。wire schema 在 `common/protocol.py`。采集、托盘、桌面控制面板、Outbox 和上传后端在 `client/`，API、数据库、分析和运维入口在 `server/`。
 - **DB 路径**：`server/db/sqlite.py::SqliteDatabase`，`server/db/__init__.py` 导出 `Database = SqliteDatabase` 别名 —— 现在所有调用方都还是用 `from timetrace.server.db import Database`，PostgresDatabase 在 P5 进来时这条别名升级为 typing.Protocol。
 - **BackendClient Protocol** in `client/core/backend.py`：capture 不再直接用 db，全走 `BackendClient`。三种实现：
   - `InProcessBackend`：直调 `SqliteDatabase` + `PHashIndex`，单进程模式用

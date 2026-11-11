@@ -18,7 +18,7 @@
 | 命令 | 指向 | 说明 |
 |------|------|------|
 | `timetrace` | `timetrace.main:main` | 单进程默认；pystray 主线程 + asyncio 管理 capture、server 主任务、report scheduler 及受开关控制的 rollup/narrate，不依赖固定任务数 |
-| `timetrace-client` | `timetrace.client.cli:main` | 客户端守护；子命令 `init`（交互 / `--non-interactive`）、`print-config` |
+| `timetrace-client` | `timetrace.client.cli:main` | 客户端守护。Windows 连接配置在桌面控制面板中完成 |
 | `timetrace-server` | `timetrace.server.cli:main` | 服务端守护；子命令 `info`、`tokens list/add/revoke`、`backfill`、`narrate`、`repair-data-quality`。与 `main.py` 共享 `server/bootstrap.py` |
 | `timetrace-embserver` | `timetrace.embserver.cli:main` | embedding 服务；子命令 `serve / info / status / load / unload / ttl / selftest`（控制类走 daemon `/admin/` HTTP，仿 `lms`） |
 

@@ -6,14 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from timetrace.client.core.config import ClientConfig
+from timetrace.client.core.config import ClientConfig, EndpointSection
 
 VALID_DEVICE_ID = "57b81d95-8c0d-41d8-8e56-ef116904661c"
 
 
 def test_load_missing_file_returns_defaults(tmp_path):
     cfg = ClientConfig.load_or_default(tmp_path / "nope.toml")
-    assert cfg.server.url == "http://127.0.0.1:8765"
+    assert cfg.server.url == ""
+    assert cfg.server.all_endpoints() == []
     assert cfg.server.auth_token == ""
     assert cfg.device.id == ""
     assert cfg.upload.max_kbps == 0
@@ -25,6 +26,26 @@ def test_load_missing_file_returns_defaults(tmp_path):
     assert cfg.capture.max_capture_interval_s == 30.0
     assert cfg.capture.idle_threshold_s == 180.0
     assert cfg.capture.capture_mode == "active_window"
+
+
+def test_save_connection_preserves_file_settings_and_environment_token(tmp_path, monkeypatch):
+    path = tmp_path / "client.toml"
+    saved = ClientConfig()
+    saved.device.id = VALID_DEVICE_ID
+    saved.server.url = "http://old-route"
+    saved.capture.image_format = "webp"
+    saved.save(path)
+    monkeypatch.setenv("TIMETRACE_AUTH_TOKEN", "environment-only-secret")
+    live = ClientConfig.load_or_default(path)
+    live.save_connection([EndpointSection(name="LAN", url="http://new-route")], None, path)
+
+    assert "environment-only-secret" not in path.read_text(encoding="utf-8")
+    persisted = ClientConfig.load_or_default(path)
+    assert persisted.device.id == VALID_DEVICE_ID
+    assert persisted.capture.image_format == "webp"
+    assert persisted.server.all_endpoints()[0].url == "http://new-route"
+    with pytest.raises(ValueError, match="路径已在配置文件中修改"):
+        live.save_connection([EndpointSection(name="LAN", url="http://stale")], None, path)
 
 
 def test_save_then_load_roundtrips_all_fields(tmp_path):
@@ -171,7 +192,7 @@ def test_apply_env_overrides_is_no_op_when_unset(monkeypatch):
     ):
         monkeypatch.delenv(key, raising=False)
     cfg = ClientConfig().apply_env_overrides()
-    assert cfg.server.url == "http://127.0.0.1:8765"
+    assert cfg.server.url == ""
 
 
 def test_apply_env_overrides_returns_self_for_chain(monkeypatch):

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
 from timetrace import __version__
-from timetrace.client.windows_runtime import create_app_icon
+from timetrace.client.windows_runtime import APP_ICON_PATH
 
 
 def main() -> None:
@@ -14,11 +15,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    create_app_icon(256).save(
-        args.output / "timetrace.ico",
-        format="ICO",
-        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-    )
+    shutil.copyfile(APP_ICON_PATH, args.output / "timetrace.ico")
     version = tuple(int(part) for part in __version__.split("."))
     padded = version + (0,) * (4 - len(version))
     dotted = ".".join(str(part) for part in padded)

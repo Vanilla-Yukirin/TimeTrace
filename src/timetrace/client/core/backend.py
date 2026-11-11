@@ -207,9 +207,7 @@ class HttpBackend:
         timeout_s: float = 30.0,
         base_url_provider: Callable[[], str | None] | None = None,
     ) -> None:
-        # Hold auth_token + device_id on the instance so they're injected on
-        # every request regardless of whether the AsyncClient is owned (headers
-        # baked in at construction) or borrowed (per-request _extra_headers).
+        # Attach credentials per request so the dashboard can replace the token.
         self._auth_token = auth_token or None
         self._device_id = device_id or None
         if self._device_id:
@@ -246,19 +244,16 @@ class HttpBackend:
         else:
             if base_url is None and base_url_provider is None:
                 raise ValueError("HttpBackend needs base_url, base_url_provider, or an AsyncClient")
-            headers: dict[str, str] = {}
-            if self._auth_token:
-                headers["Authorization"] = f"Bearer {self._auth_token}"
-            if self._device_id:
-                headers["X-Device-Id"] = self._device_id
             self._client = httpx.AsyncClient(
                 base_url=base_url or "",
-                headers=headers or None,
                 timeout=timeout_s,
             )
             self._owns_client = True
         # client_record_id -> server-assigned record_id, populated on submit_record
         self._record_id_for: dict[str, str] = {}
+
+    def set_auth_token(self, token: str) -> None:
+        self._auth_token = token or None
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -391,12 +386,7 @@ class HttpBackend:
         return path
 
     def _extra_headers(self) -> dict[str, str] | None:
-        """Per-request headers that need to be added even when the AsyncClient
-        was supplied externally (test path with ASGITransport-bound clients).
-
-        For self-owned clients these headers are also pre-set on the client,
-        so passing them again per-request is harmless duplication, not a bug.
-        """
+        """Build headers from the current credentials for each request."""
         headers: dict[str, str] = {}
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"

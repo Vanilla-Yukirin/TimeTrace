@@ -79,7 +79,7 @@ class EndpointSection:
 
 @dataclass
 class ServerSection:
-    url: str = "http://127.0.0.1:8765"
+    url: str = ""
     auth_token: str = ""
     # Ordered priority list (first = most preferred). Empty → the legacy single
     # `url` is synthesized into one endpoint, so old client.toml keeps working.
@@ -90,7 +90,7 @@ class ServerSection:
         none are declared (backward compatibility with the old single-url form)."""
         if self.endpoints:
             return self.endpoints
-        return [EndpointSection(name="default", url=self.url)]
+        return [EndpointSection(name="default", url=self.url)] if self.url else []
 
     def enabled_endpoints(self) -> list[EndpointSection]:
         """``all_endpoints`` filtered to enabled, preserving priority order."""
@@ -400,6 +400,22 @@ class ClientConfig:
             file_config.capture = capture
         if theme is not None:
             file_config.control.theme = theme
+        return file_config._save_file_layer(path)
+
+    def save_connection(
+        self, endpoints: list[EndpointSection] | None, token: str | None, path: Path | None = None
+    ) -> Path:
+        path = path or _DEFAULT_PATH
+        file_config = self._load_file_or_default(path)
+        if endpoints is not None:
+            if file_config.server.all_endpoints() != self.server.all_endpoints():
+                raise ValueError("服务端路径已在配置文件中修改")
+            file_config.server.endpoints = endpoints
+            file_config.server.url = endpoints[0].url
+        if token is not None:
+            if file_config.server.auth_token != self.server.auth_token:
+                raise ValueError("Token 已在配置文件中修改")
+            file_config.server.auth_token = token
         return file_config._save_file_layer(path)
 
     def save_seeded_device(self, path: Path | None = None) -> Path:

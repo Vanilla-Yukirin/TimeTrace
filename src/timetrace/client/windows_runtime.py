@@ -4,51 +4,29 @@ from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
 import sys
 import uuid
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+import structlog
+from PIL import Image
 
 from timetrace.common.logging import configure_logging
 
 APP_USER_MODEL_ID = "VanillaYukirin.TimeTrace.Client"
+APP_ICON_PATH = Path(__file__).with_name("dashboard") / "timetrace-kuro.ico"
 _INSTANCE_MUTEX = rf"Local\{APP_USER_MODEL_ID}"
 _ERROR_ALREADY_EXISTS = 183
+logger = structlog.get_logger(__name__)
 
 
 def create_app_icon(size: int = 256) -> Image.Image:
-    """Return a high-contrast blue clock that remains legible in the tray."""
+    """Load the bundled mascot at the requested tray icon size."""
     if size < 16:
         raise ValueError("icon size must be at least 16 pixels")
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    margin = max(1, round(size * 0.06))
-    border = max(1, round(size * 0.045))
-    hand = max(1, round(size * 0.065))
-    draw.ellipse(
-        (margin, margin, size - margin - 1, size - margin - 1),
-        fill=(37, 99, 235, 255),
-        outline=(147, 197, 253, 255),
-        width=border,
-    )
-    center = size // 2
-    draw.line(
-        (center, center, center, round(size * 0.25)),
-        fill=(255, 255, 255, 255),
-        width=hand,
-    )
-    draw.line(
-        (center, center, round(size * 0.72), round(size * 0.58)),
-        fill=(255, 255, 255, 255),
-        width=hand,
-    )
-    dot = max(1, round(size * 0.055))
-    draw.ellipse(
-        (center - dot, center - dot, center + dot, center + dot),
-        fill=(255, 255, 255, 255),
-    )
-    return image
+    with Image.open(APP_ICON_PATH) as icon:
+        return icon.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
 
 
 def configure_windows_app_identity() -> None:
@@ -60,6 +38,28 @@ def configure_windows_app_identity() -> None:
     except (AttributeError, OSError):
         # Older Windows/Wine environments can omit this API; the client remains usable.
         return
+
+
+def configure_windows_window_identity(hwnd: int) -> None:
+    """Give the taskbar the same icon and launch command as the Start shortcut."""
+    import pythoncom
+    from win32com.propsys import propsys, pscon
+
+    command = [sys.executable]
+    if not getattr(sys, "frozen", False):
+        command.extend(("-m", "timetrace.client.cli"))
+    command.append("--gui")
+    try:
+        store = propsys.SHGetPropertyStoreForWindow(hwnd)
+        for key, value in (
+            (pscon.PKEY_AppUserModel_RelaunchCommand, subprocess.list2cmdline(command)),
+            (pscon.PKEY_AppUserModel_RelaunchDisplayNameResource, "TimeTrace Client"),
+            (pscon.PKEY_AppUserModel_RelaunchIconResource, f"{APP_ICON_PATH},0"),
+            (pscon.PKEY_AppUserModel_ID, APP_USER_MODEL_ID),
+        ):
+            store.SetValue(key, propsys.PROPVARIANTType(value))
+    except pythoncom.com_error:
+        logger.warning("client.taskbar_identity_failed", exc_info=True)
 
 
 def configure_client_logging(logs_dir: Path) -> Path:
@@ -150,7 +150,7 @@ def set_autostart(enabled: bool) -> bool:
         link = Dispatch("WScript.Shell").CreateShortcut(str(temp))
         link.TargetPath = str(executable)
         link.WorkingDirectory = str(executable.parent)
-        link.IconLocation = f"{executable},0"
+        link.IconLocation = f"{APP_ICON_PATH},0"
         link.Description = "Start TimeTrace when this user signs in"
         link.Save()
         os.replace(temp, shortcut)

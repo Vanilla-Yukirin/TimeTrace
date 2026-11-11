@@ -7,18 +7,43 @@ import uuid
 import pytest
 
 from timetrace.client.windows_runtime import (
+    APP_ICON_PATH,
+    APP_USER_MODEL_ID,
     ClientInstance,
     configure_client_logging,
+    configure_windows_window_identity,
     create_app_icon,
 )
 
 
-def test_app_icon_is_high_contrast_rgba():
+def test_app_icon_has_transparent_background():
     icon = create_app_icon(64)
     assert icon.mode == "RGBA"
     assert icon.size == (64, 64)
-    assert icon.getpixel((32, 32))[3] == 255
+    assert icon.getpixel((32, 32))[3] >= 250
     assert icon.getpixel((0, 0))[3] == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows taskbar properties")
+def test_window_taskbar_uses_bundled_icon():
+    import win32con
+    import win32gui
+    from win32com.propsys import propsys, pscon
+
+    hwnd = win32gui.CreateWindowEx(
+        0, "STATIC", "TimeTrace icon test", win32con.WS_POPUP, 0, 0, 64, 64, 0, 0, 0, None
+    )
+    try:
+        configure_windows_window_identity(hwnd)
+        store = propsys.SHGetPropertyStoreForWindow(hwnd)
+        assert store.GetValue(pscon.PKEY_AppUserModel_ID).GetValue() == APP_USER_MODEL_ID
+        assert (
+            store.GetValue(pscon.PKEY_AppUserModel_RelaunchIconResource).GetValue()
+            == f"{APP_ICON_PATH},0"
+        )
+        assert store.GetValue(pscon.PKEY_AppUserModel_RelaunchCommand).GetValue().endswith("--gui")
+    finally:
+        win32gui.DestroyWindow(hwnd)
 
 
 def test_client_logging_writes_rotating_file(tmp_path):

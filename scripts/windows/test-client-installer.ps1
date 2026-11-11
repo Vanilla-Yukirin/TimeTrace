@@ -12,6 +12,8 @@ $Setup = Join-Path $DistRoot 'TimeTrace-Client-Setup-x64.exe'
 $AppDir = Join-Path $env:LOCALAPPDATA 'Programs\TimeTrace'
 $AppExe = Join-Path $AppDir 'TimeTrace Client.exe'
 $AppRuntime = Join-Path $AppDir '_internal'
+$Dashboard = Join-Path $AppRuntime 'timetrace\client\dashboard'
+$BrandIcon = Join-Path $Dashboard 'timetrace-kuro.ico'
 $DataDir = Join-Path $env:USERPROFILE 'TimeTraceData'
 $MenuDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'TimeTrace'
 $MenuShortcut = Join-Path $MenuDir 'TimeTrace Client.lnk'
@@ -42,6 +44,9 @@ function Assert-Shortcut([string]$Path, [string]$Arguments) {
     if ($Shortcut.TargetPath -ne $AppExe -or [string]$Shortcut.Arguments -ne $Arguments) {
         throw "Unexpected shortcut target or arguments: $Path"
     }
+    if ($Shortcut.IconLocation -ne "$BrandIcon,0") {
+        throw "Unexpected shortcut icon: $Path"
+    }
 }
 
 function Remove-TestInstall([string]$Scenario) {
@@ -59,8 +64,7 @@ $BuiltExe = Join-Path $DistRoot 'TimeTrace Client\TimeTrace Client.exe'
 if ((Get-FileHash -LiteralPath $AppExe).Hash -ne (Get-FileHash -LiteralPath $BuiltExe).Hash) {
     throw 'Installed executable differs from the build output'
 }
-$Dashboard = Join-Path $AppRuntime 'timetrace\client\dashboard'
-foreach ($File in @('index.html', 'app.js', 'style.css')) {
+foreach ($File in @('index.html', 'app.js', 'style.css', 'timetrace-kuro.ico')) {
     if (-not (Test-Path -LiteralPath (Join-Path $Dashboard $File) -PathType Leaf)) {
         throw "Installed dashboard is missing $File"
     }

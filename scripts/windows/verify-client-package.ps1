@@ -25,7 +25,8 @@ foreach ($Path in @(
     $InstallerPath,
     (Join-Path $PackageDir '_internal/timetrace/client/dashboard/index.html'),
     (Join-Path $PackageDir '_internal/timetrace/client/dashboard/app.js'),
-    (Join-Path $PackageDir '_internal/timetrace/client/dashboard/style.css')
+    (Join-Path $PackageDir '_internal/timetrace/client/dashboard/style.css'),
+    (Join-Path $PackageDir '_internal/timetrace/client/dashboard/timetrace-kuro.ico')
 )) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Required package file is missing: $Path"

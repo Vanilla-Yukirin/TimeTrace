@@ -98,6 +98,12 @@ class EndpointSelector:
     def _enabled(self) -> list[EndpointSection]:
         return [e for e in self._endpoints if e.enabled]
 
+    async def replace_endpoints(self, endpoints: list[EndpointSection]) -> None:
+        async with self._lock:
+            self._endpoints = list(endpoints)
+            self._current = None
+            self._health.clear()
+
     async def select(self, *, upgrade_only: bool = False) -> EndpointSection | None:
         """Probe enabled endpoints in priority order; set ``current`` to the
         first healthy one. First healthy in priority order wins.

@@ -10,7 +10,13 @@ class _Menu:
     SEPARATOR = object()
 
     def __init__(self, *items) -> None:  # noqa: ANN002
-        self.items = list(items)
+        self._items = items
+
+    @property
+    def items(self):
+        if len(self._items) == 1 and callable(self._items[0]):
+            return list(self._items[0]())
+        return list(self._items)
 
 
 class _MenuItem:
@@ -59,8 +65,8 @@ class _Controller:
     def request_shutdown_from_thread(self) -> None:
         self.shutdown_requests += 1
 
-    def set_endpoint_enabled_from_thread(self, index: int, enabled: bool) -> None:
-        self.endpoint_request = (index, enabled)
+    def set_endpoint_enabled_from_thread(self, index: int, enabled: bool, name: str) -> None:
+        self.endpoint_request = (index, enabled, name)
 
 
 def test_tray_actions_route_through_controller_without_mutating_privacy():
@@ -113,4 +119,4 @@ def test_controller_endpoint_menu_callbacks_match_pystray_arity():
     assert endpoint_item.text(None) == "● public  (https://timetrace.example)"
     assert endpoint_item.checked(None) is True
     endpoint_item.action(None, None)
-    assert controller.endpoint_request == (0, False)
+    assert controller.endpoint_request == (0, False, "public")

@@ -14,7 +14,7 @@ metadata fields per token:
 
 On server first-start :meth:`ServerAuth.load_or_generate` creates the file
 with a freshly-minted token and returns ``was_generated=True`` so the caller
-can log it for the user to copy into ``timetrace-client init``.
+can log its location for the user to configure a TimeTrace client.
 
 The token-file I/O is intentionally consolidated here. Admin tooling
 (``timetrace-server tokens add/revoke``) reaches into the same on-disk
