@@ -8,12 +8,12 @@
 
 | 对象 | 最近证据 | 边界 |
 |---|---|---|
-| 开发主线 | [PR #27](https://github.com/Vanilla-Yukirin/TimeTrace/pull/27) 合并至 `569d8bd`，[合并后的 main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42883758655) 成功 | Windows 0.2.0 的验收见对应 tag 工作流 |
+| 开发主线 | Windows v0.2.2 对应提交 `df121c7`，[main CI](https://github.com/Vanilla-Yukirin/TimeTrace/actions/runs/42944786169) 成功 | Outbox 和摘要覆盖修复随主线保留 |
 | 本地单元测试（11 月 11 日） | Windows 726 passed / 5 skipped | 临时目录和合成数据，跳过真实 VLM 用例 |
 | 构建与静态检查（11 月 11 日） | Ruff、前端 lint/TypeScript/build、Windows Setup.exe 版本和冻结 EXE 启动检查 | Windows CI 在临时用户环境验证安装器 |
-| 双容器 E2E（11 月 11 日） | 13 个场景通过，含确认写入恢复、带图入队、截图配置和主题。应用链路 32.86 秒，证据 `artifacts/timetrace-e2e-18749a0f6a/` | 模拟画面、模型及文件替换故障，真实应用、网络、存储和浏览器 |
+| 双容器 E2E（11 月 11 日） | 13 个场景通过，含确认写入恢复、带图入队、截图配置和主题。场景用时 32.96 秒，证据 `artifacts/timetrace-e2e-80d8f4f04a/` | 模拟画面、模型及文件替换故障，真实应用、网络、存储和浏览器 |
 | 发布分支与生产验收 | 11 月 10 日只读核对生产仍为 `81a10b6`；服务端近期分析和摘要持续推进 | 近期正常不代表历史覆盖完整；本轮不更新运行制品 |
-| Windows 安装包 | 0.2.2 使用 Setup.exe；Windows CI 覆盖首装、从旧 ZIP 升级、自启动、卸载及数据保留 | 代码签名和自动更新仍待实现，已安装设备版本以运行证据为准 |
+| Windows 安装包 | [v0.2.2](https://github.com/Vanilla-Yukirin/TimeTrace/releases/tag/v0.2.2) 已发布 Setup.exe，安装、升级、卸载及下载校验见 [归档](infra/archive-202611111127-windows-setup-release.md) | 代码签名和自动更新仍待实现，已安装设备版本以运行证据为准 |
 
 ## 已完成的主线
 
